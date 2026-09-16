@@ -1,0 +1,554 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 110;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		5F8EA688305AAF09005261F6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5F8EA672305AAF08005261F6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5F8EA679305AAF08005261F6;
+			remoteInfo = Crossbar;
+		};
+		5F8EA692305AAF09005261F6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5F8EA672305AAF08005261F6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5F8EA679305AAF08005261F6;
+			remoteInfo = Crossbar;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		5F8EA67A305AAF08005261F6 /* Crossbar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Crossbar.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5F8EA687305AAF09005261F6 /* CrossbarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CrossbarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5F8EA691305AAF09005261F6 /* CrossbarUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CrossbarUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		5F8EA67C305AAF08005261F6 /* Crossbar */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Crossbar;
+			sourceTree = "<group>";
+		};
+		5F8EA68A305AAF09005261F6 /* CrossbarTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CrossbarTests;
+			sourceTree = "<group>";
+		};
+		5F8EA694305AAF09005261F6 /* CrossbarUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CrossbarUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5F8EA677305AAF08005261F6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		5F8EA684305AAF09005261F6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		5F8EA68E305AAF09005261F6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5F8EA671305AAF08005261F6 = {
+			isa = PBXGroup;
+			children = (
+				5F8EA67C305AAF08005261F6 /* Crossbar */,
+				5F8EA68A305AAF09005261F6 /* CrossbarTests */,
+				5F8EA694305AAF09005261F6 /* CrossbarUITests */,
+				5F8EA67B305AAF08005261F6 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		5F8EA67B305AAF08005261F6 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5F8EA67A305AAF08005261F6 /* Crossbar.app */,
+				5F8EA687305AAF09005261F6 /* CrossbarTests.xctest */,
+				5F8EA691305AAF09005261F6 /* CrossbarUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5F8EA679305AAF08005261F6 /* Crossbar */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5F8EA699305AAF09005261F6 /* Build configuration list for PBXNativeTarget "Crossbar" */;
+			buildPhases = (
+				5F8EA676305AAF08005261F6 /* Sources */,
+				5F8EA677305AAF08005261F6 /* Frameworks */,
+				5F8EA678305AAF08005261F6 /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				5F8EA67C305AAF08005261F6 /* Crossbar */,
+			);
+			name = Crossbar;
+			productName = Crossbar;
+			productReference = 5F8EA67A305AAF08005261F6 /* Crossbar.app */;
+			productType = "com.apple.product-type.application";
+		};
+		5F8EA686305AAF09005261F6 /* CrossbarTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5F8EA69C305AAF09005261F6 /* Build configuration list for PBXNativeTarget "CrossbarTests" */;
+			buildPhases = (
+				5F8EA683305AAF09005261F6 /* Sources */,
+				5F8EA684305AAF09005261F6 /* Frameworks */,
+				5F8EA685305AAF09005261F6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5F8EA689305AAF09005261F6 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5F8EA68A305AAF09005261F6 /* CrossbarTests */,
+			);
+			name = CrossbarTests;
+			productName = CrossbarTests;
+			productReference = 5F8EA687305AAF09005261F6 /* CrossbarTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		5F8EA690305AAF09005261F6 /* CrossbarUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5F8EA69F305AAF09005261F6 /* Build configuration list for PBXNativeTarget "CrossbarUITests" */;
+			buildPhases = (
+				5F8EA68D305AAF09005261F6 /* Sources */,
+				5F8EA68E305AAF09005261F6 /* Frameworks */,
+				5F8EA68F305AAF09005261F6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5F8EA693305AAF09005261F6 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5F8EA694305AAF09005261F6 /* CrossbarUITests */,
+			);
+			name = CrossbarUITests;
+			productName = CrossbarUITests;
+			productReference = 5F8EA691305AAF09005261F6 /* CrossbarUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5F8EA672305AAF08005261F6 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					5F8EA679305AAF08005261F6 = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					5F8EA686305AAF09005261F6 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 5F8EA679305AAF08005261F6;
+					};
+					5F8EA690305AAF09005261F6 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = 5F8EA679305AAF08005261F6;
+					};
+				};
+			};
+			buildConfigurationList = 5F8EA675305AAF08005261F6 /* Build configuration list for PBXProject "Crossbar" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 5F8EA671305AAF08005261F6;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5F8EA67B305AAF08005261F6 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5F8EA679305AAF08005261F6 /* Crossbar */,
+				5F8EA686305AAF09005261F6 /* CrossbarTests */,
+				5F8EA690305AAF09005261F6 /* CrossbarUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5F8EA678305AAF08005261F6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		5F8EA685305AAF09005261F6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		5F8EA68F305AAF09005261F6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5F8EA676305AAF08005261F6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		5F8EA683305AAF09005261F6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		5F8EA68D305AAF09005261F6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		5F8EA689305AAF09005261F6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5F8EA679305AAF08005261F6 /* Crossbar */;
+			targetProxy = 5F8EA688305AAF09005261F6 /* PBXContainerItemProxy */;
+		};
+		5F8EA693305AAF09005261F6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5F8EA679305AAF08005261F6 /* Crossbar */;
+			targetProxy = 5F8EA692305AAF09005261F6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		5F8EA697305AAF09005261F6 /* Debug configuration for PBXProject "Crossbar" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = NKZHXND255;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		5F8EA698305AAF09005261F6 /* Release configuration for PBXProject "Crossbar" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = NKZHXND255;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		5F8EA69A305AAF09005261F6 /* Debug configuration for PBXNativeTarget "Crossbar" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = NKZHXND255;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.abdullahchaudhry.Crossbar;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5F8EA69B305AAF09005261F6 /* Release configuration for PBXNativeTarget "Crossbar" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = NKZHXND255;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.abdullahchaudhry.Crossbar;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5F8EA69D305AAF09005261F6 /* Debug configuration for PBXNativeTarget "CrossbarTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = NKZHXND255;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.abdullahchaudhry.CrossbarTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Crossbar.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Crossbar";
+			};
+			name = Debug;
+		};
+		5F8EA69E305AAF09005261F6 /* Release configuration for PBXNativeTarget "CrossbarTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = NKZHXND255;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.abdullahchaudhry.CrossbarTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Crossbar.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Crossbar";
+			};
+			name = Release;
+		};
+		5F8EA6A0305AAF09005261F6 /* Debug configuration for PBXNativeTarget "CrossbarUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = NKZHXND255;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.abdullahchaudhry.CrossbarUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Crossbar;
+			};
+			name = Debug;
+		};
+		5F8EA6A1305AAF09005261F6 /* Release configuration for PBXNativeTarget "CrossbarUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = NKZHXND255;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.abdullahchaudhry.CrossbarUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Crossbar;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5F8EA675305AAF08005261F6 /* Build configuration list for PBXProject "Crossbar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F8EA697305AAF09005261F6 /* Debug configuration for PBXProject "Crossbar" */,
+				5F8EA698305AAF09005261F6 /* Release configuration for PBXProject "Crossbar" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		5F8EA699305AAF09005261F6 /* Build configuration list for PBXNativeTarget "Crossbar" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F8EA69A305AAF09005261F6 /* Debug configuration for PBXNativeTarget "Crossbar" */,
+				5F8EA69B305AAF09005261F6 /* Release configuration for PBXNativeTarget "Crossbar" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		5F8EA69C305AAF09005261F6 /* Build configuration list for PBXNativeTarget "CrossbarTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F8EA69D305AAF09005261F6 /* Debug configuration for PBXNativeTarget "CrossbarTests" */,
+				5F8EA69E305AAF09005261F6 /* Release configuration for PBXNativeTarget "CrossbarTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		5F8EA69F305AAF09005261F6 /* Build configuration list for PBXNativeTarget "CrossbarUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5F8EA6A0305AAF09005261F6 /* Debug configuration for PBXNativeTarget "CrossbarUITests" */,
+				5F8EA6A1305AAF09005261F6 /* Release configuration for PBXNativeTarget "CrossbarUITests" */,
+			);
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 5F8EA672305AAF08005261F6 /* Project object */;
+	validationLevel = 1;
+}
