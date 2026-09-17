@@ -159,7 +159,9 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
             state = "joined-namespace"
             emitJoin()
         case "2":
-            append("event \(rest.prefix(600))")
+            // The screen gets a prefix but the file gets the whole event: an SDP is
+            // far too long to read there, and the file is what actually gets pulled.
+            append("event \(rest.prefix(180))", detail: "event \(rest)")
         case "4":
             append("connect_error \(rest)")
             state = "rejected"
@@ -217,10 +219,10 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
 
     // MARK: - Logging
 
-    private func append(_ line: String) {
+    private func append(_ line: String, detail: String? = nil) {
         lines.append(line)
         if lines.count > 40 { lines.removeFirst(lines.count - 40) }
-        writeToLogFile(line)
+        writeToLogFile(detail ?? line)
     }
 
     /// Pulled with devicectl rather than read off a screenshot; screen-only output

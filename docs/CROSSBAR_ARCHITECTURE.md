@@ -550,6 +550,29 @@ specification, only against a live 1.9.64 peer — which is why the PWA-as-
 reference-peer test matters and why the budget belongs in interop testing rather
 than porting effort.
 
+**Native signalling executed (2026-09-17).** That contract had never been run
+outside a browser. A reduced native Engine.IO v4 / Socket.IO v5 client
+(`Crossbar/Prototype/MiroTalkSignalClient.swift`) connected to production MiroTalk
+and was admitted:
+
+```
+connecting wss://<host>/socket.io/?EIO=4&transport=websocket
+engine.io open {"sid":"…","upgrades":[],"pingInterval":25000,"pingTimeout":20000,"maxPayload":10000000}
+socket.io connected {"sid":"…"}
+emit join channel=<uuid>
+event ["serverInfo",{"peers_count":1,"host_protected":false,"user_auth":false,
+                    "is_presenter":true,"join_locked":false,"maxRoomParticipants":1000,…}]
+```
+
+So the wire protocol is executable from native code, and the `join` payload shape
+derived by reading 1.9.64 rather than running it was accepted verbatim.
+`peers_count: 1` correctly reflects the single socket in that room; no `addPeer`
+arrived because no other peer was present.
+
+This proves **admission, not a call**: no peer connection, no SDP, no ICE. It also
+leaves the central unknown exactly where it was — what replaces the browser's
+`negotiationneeded`, which Objective-C libwebrtc does not expose.
+
 Sixteen specific divergence risks are catalogued in the audit, with the
 likelihood of silent divergence for each. The ones rated *likely* are all in the
 trigger rather than the payload: the missing `negotiationneeded`, an offerer with
