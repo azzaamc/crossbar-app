@@ -2,23 +2,27 @@
 
 ## Decision status
 
-Architecture A is the leading investigation but has not been selected as the
-final media architecture.
+Architecture B — native WebRTC plus a native Socket.IO client — was selected by
+the owner on 2026-09-17, on the measured evidence in
+`ARCHITECTURE_A_PROBE.md` P8.7–P8.14: CallKit works fully on physical hardware,
+but WebKit cannot hold an audio session while CallKit owns one, and that failure
+reproduced in three separate configurations. Architecture A's media layer is
+therefore abandoned. The probe that demonstrated it is retained in the
+repository as DEBUG-only diagnostic code and as the evidence record; the
+native/WebKit media bridge is not part of the product path.
 
 ```text
 SwiftUI product UI
   -> Call coordinator and native CallKit
-  -> minimal media-only WKWebView runtime
-  -> smallest legally approved MiroTalk browser WebRTC core
-  -> existing private MiroTalk Socket.IO server
+     -> AVAudioSession owned by the app and adopted by RTCAudioSession
+  -> native WebRTC media engine (mesh, SDP/ICE, capture, render)
+  -> native Socket.IO client speaking the audited MiroTalk contract
+  -> existing private MiroTalk Socket.IO server, reused unchanged
 ```
 
-Architecture B—native WebRTC plus a native Socket.IO client—remains the fallback
-if physical-device evidence shows WebKit cannot reliably participate in CallKit
-audio routing, background/lock, interruption, or resume behavior.
-
-The existing probe proves only the local native/WebKit bridge shape. See
-`ARCHITECTURE_A_PROBE.md`.
+Architecture A remains described below as the alternative considered and
+rejected, and its measured failure is what justifies B. See
+"Architecture B scoping" for the dependency, effort and licensing position.
 
 ## Product boundary
 
@@ -436,8 +440,9 @@ Store distribution if MiroTalk code is ever included.
 
 #### Status
 
-Measured, not decided. The evidence points to B for the media layer; the
-decision is the owner's.
+Decided by the owner on 2026-09-17 in favour of B. Mesh and negotiation
+reimplementation feasibility, and the precise licence position for this
+deployment, are under separate investigation.
 
 ## Backend changes before a usable native release
 
