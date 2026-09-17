@@ -70,6 +70,82 @@ Current constraints: a ring expires after 90 seconds; presence is only an SSE
 hint; `/end` is call-wide, not participant-specific; media connection state is
 not reported to Family Call.
 
+### Native client contract, verified against Family Call source (2026-09-17)
+
+Read-only audit of `src/server.js`, `src/db.js`, `src/identity.js`,
+`src/mirotalk.js`, `src/push.js`, `public/app.js`, `public/sw.js`. The route table
+above is confirmed correct against source. What follows are the facts that
+constrain a native client, and the gaps that need a backend decision rather than
+a client workaround. Load-bearing claims were re-verified directly.
+
+**Identity is network position, not a token.** `resolveIdentity` accepts
+`tailscale-user-login` only when the request arrives from loopback
+(`src/identity.js:19-22`) and `loadConfig` throws unless the listener is loopback
+(`src/config.js:59-62`). A native client cannot set an identity header; it must
+reach the tailnet Serve URL and let Serve inject it. That Serve injects those
+headers for a non-browser client is **[unverified]** and is the load-bearing
+assumption of the entire identity model — one request from a tailnet device
+settles it. Absent `Origin` passes `checkOrigin` (`src/server.js:97-105`), so
+`URLSession` is viable; there is no CORS layer and none is needed.
+
+**The room id is never exposed. This is the blocking question for Architecture
+B.** `callPublic` returns `{id, callerId, status, createdAt, answeredAt,
+participants}` and deliberately omits `roomId` (`src/server.js:150-159`,
+verified). The only media coordinates any client receives are the `joinUrl`
+string from `POST /api/calls`, `POST /api/calls/:id/respond` when accepted, and
+`POST /api/calls/:id/join`. That string is a *web page* URL —
+`https://<embed-origin>/join?room=<uuid>&…` — minted server-side and validated to
+carry `pathname === '/join'` and `room === roomId` before the origin is rewritten
+(`src/mirotalk.js:34-42`, verified). A native Socket.IO client needs the room name
+and the MiroTalk origin, and both are *derivable* by parsing that URL — but
+`docs/PWA_HANDOFF.md` explicitly warns against inferring a native signalling
+contract from the join URL, and the parser would depend on MiroTalk's web route
+shape. Two options, and this is a decision rather than a detail: parse the URL, or
+return the room id, or a native join descriptor, from a native-appropriate field.
+
+**Ringing has no native path.** Foreground ringing is SSE (`GET /api/events`);
+background ringing is W3C Web Push/VAPID with the credential stored as
+`{endpoint, p256dh, auth}` (`src/db.js:421-458`). APNs device tokens are a
+different credential class: there is no APNs table, route or client library
+anywhere, and `package.json` has exactly one dependency (`web-push`). CallKit plus
+PushKit therefore requires a device-token model server-side. This is consistent
+with PushKit being explicitly deferred; it is recorded here so the requirement is
+not discovered late.
+
+**There is no leave — only a call-wide end.** `'left'` is a declared participant
+status (`src/db.js:9`) that is never written, `left_at` is only ever set to NULL,
+and no leave endpoint exists in the exhaustively enumerated route list
+(`src/server.js:186-341`). `POST /api/calls/:id/end` sets the whole call terminal
+(`src/db.js:385-399`). Today one participant hanging up ends the call for
+everyone. Since multiparty is mandatory and Add Person must extend the same room,
+this needs an explicit product decision; a per-participant leave does not exist in
+the backend.
+
+**No audio-only concept.** The join request hardcodes `audio: true, video: true`
+(`src/mirotalk.js:25-26`, verified) and no route accepts a media-type field. An
+audio-only call cannot be requested today.
+
+**Constraints that would affect a native client silently.** SSE carries no event
+ids and no replay (`src/server.js:236-254`), so a client reconnecting mid-ring
+loses `incoming-call` and must reconcile through `GET /api/bootstrap` and
+`GET /api/calls/:id`. Rate limits are in-memory, per process: create 6/min,
+respond 20/min, invite 12/min (`src/rate-limit.js`). Bodies cap at 16 KB. `GET
+/api/session` mutates the database by enrolling on read (`src/server.js:190`), so
+using it as a health check writes rows. A MiroTalk failure aborts call creation
+entirely, because the join URL is minted before the call row is written
+(`src/server.js:175-178`, verified).
+
+**Two documentation defects found by this audit, both in the Family Call
+repository and neither fixed here** (that repository is out of scope for Crossbar
+work). `deploy/map-session-identity.mjs` requires `session.identity.login` (`:17`,
+`:26`, `:30`), a field `GET /api/session` never returns (`src/server.js:194`,
+verified) — that helper cannot pass against current source, so source wins and the
+helper is stale. Separately, that repository's `docs/MIROTALK_UI_INTEGRATION.md`
+describes a `family=1` join marker and a bidirectional `postMessage` bridge; no
+such code exists anywhere in its `src/` or `public/`, the only `postMessage` use
+being the service-worker-to-page channel. That document reads as implemented and
+is not.
+
 ## Proposed native layers
 
 ```text
