@@ -374,6 +374,8 @@
 				DEVELOPMENT_TEAM = NKZHXND255;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Crossbar uses the camera for video calls.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Crossbar uses the microphone for calls.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -406,6 +408,8 @@
 				DEVELOPMENT_TEAM = NKZHXND255;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "Crossbar uses the camera for video calls.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Crossbar uses the microphone for calls.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
