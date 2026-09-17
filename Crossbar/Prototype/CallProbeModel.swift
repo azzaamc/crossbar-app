@@ -12,6 +12,8 @@ final class CallProbeModel: ObservableObject {
     @Published private(set) var isCameraEnabled = true
 
     private let callKit = CallKitManager()
+    /// Architecture B audio-seam spike. Independent of the web engine.
+    let seamProbe = AudioSeamProbe()
     private var currentCallID: UUID?
     private var isMediaOnly = false
     private var processedLaunchArguments = false
@@ -19,6 +21,7 @@ final class CallProbeModel: ObservableObject {
     // before asking CallKit to take the audio session.
     private var awaitsCallKitAfterMedia = false
     private var mediaIsLive = false
+    private var isSeamSpike = false
 
     init() {
         mediaEngine.onEvent = { [weak self] event in
@@ -26,6 +29,14 @@ final class CallProbeModel: ObservableObject {
         }
         callKit.onStart = { [weak self] callID, video in
             guard let self else { return }
+            if self.isSeamSpike {
+                // Architecture B spike: a real CallKit call with the web engine
+                // deliberately left out of the path.
+                self.currentCallID = callID
+                self.status = "Seam spike: CallKit call accepted"
+                self.callKit.reportConnected(callID: callID)
+                return
+            }
             if self.mediaIsLive {
                 // Media-first path: local capture is already running and producing
                 // data, so adopt the CallKit call rather than re-acquiring media
@@ -55,6 +66,12 @@ final class CallProbeModel: ObservableObject {
         callKit.onAudioActivationChanged = { [weak self] active in
             self?.mediaEngine.setAudioSessionActive(active)
         }
+        callKit.onAudioActivated = { [weak self] session in
+            self?.seamProbe.callKitDidActivate(session)
+        }
+        callKit.onAudioDeactivated = { [weak self] session in
+            self?.seamProbe.callKitDidDeactivate(session)
+        }
         callKit.onError = { [weak self] message in
             self?.mediaEngine.leave()
             self?.clearCall(status: message)
@@ -71,6 +88,17 @@ final class CallProbeModel: ObservableObject {
         awaitsCallKitAfterMedia = true
         beginMedia(callID: UUID(), video: true, reason: "pre-call")
         status = "Acquiring local media before the CallKit call…"
+    }
+
+    /// Architecture B spike: start a CallKit call without the web engine, so the
+    /// only media running is native. Answers whether RTCAudioSession adopts the
+    /// CallKit-activated session instead of competing with it.
+    func startSeamSpikeCall() {
+        guard currentCallID == nil else { return }
+        isSeamSpike = true
+        hasCall = true
+        status = "Seam spike: requesting outgoing CallKit call…"
+        currentCallID = callKit.startOutgoing(video: true)
     }
 
     func simulateIncomingCall() {
@@ -145,6 +173,7 @@ final class CallProbeModel: ObservableObject {
         isMediaOnly = false
         awaitsCallKitAfterMedia = false
         mediaIsLive = false
+        isSeamSpike = false
         hasCall = false
         isMuted = false
         isCameraEnabled = true

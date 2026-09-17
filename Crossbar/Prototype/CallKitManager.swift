@@ -11,6 +11,8 @@ final class CallKitManager: NSObject, CXProviderDelegate {
     var onMute: ((UUID, Bool) -> Void)?
     var onReset: (() -> Void)?
     var onAudioActivationChanged: ((Bool) -> Void)?
+    var onAudioActivated: ((AVAudioSession) -> Void)?
+    var onAudioDeactivated: ((AVAudioSession) -> Void)?
     var onError: ((String) -> Void)?
 
     private let callController = CXCallController()
@@ -112,10 +114,12 @@ final class CallKitManager: NSObject, CXProviderDelegate {
     }
 
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+        onAudioActivated?(audioSession)
         onAudioActivationChanged?(true)
     }
 
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        onAudioDeactivated?(audioSession)
         onAudioActivationChanged?(false)
     }
 }

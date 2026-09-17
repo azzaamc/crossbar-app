@@ -1,0 +1,271 @@
+#if DEBUG
+import AVFAudio
+import Combine
+import Foundation
+import SwiftUI
+import WebRTC
+
+/// Architecture B audio-seam spike.
+///
+/// The Architecture A probe proved that WebKit cannot hold an audio session while
+/// CallKit owns one: WebKit owns activation inside the WebContent process, loses
+/// the arbitration, and tears its capture down (see `docs/ARCHITECTURE_A_PROBE.md`
+/// P8.10/P8.13/P8.14).
+///
+/// Native WebRTC is built the other way round. `RTCAudioSession` exists to adopt an
+/// activation that happened outside it — its activation delegate header says the
+/// known use case "is when CallKit activates the audio session for the application"
+/// — after which its own `setActive:` becomes a no-op. This probe measures on real
+/// hardware whether that actually holds: that local capture survives the handover
+/// and that WebRTC does not fight CallKit for the session.
+///
+/// This is a measurement instrument, not product code.
+@MainActor
+final class AudioSeamProbe: NSObject, ObservableObject {
+    @Published private(set) var status = "Not started"
+    @Published private(set) var lines: [String] = []
+    @Published private(set) var isCapturing = false
+    @Published private(set) var rtcSessionIsActive = false
+    @Published private(set) var audioEnabled = false
+    @Published private(set) var playOrRecordCount = 0
+
+    private(set) var videoTrack: RTCVideoTrack?
+
+    private var factory: RTCPeerConnectionFactory?
+    private var videoSource: RTCVideoSource?
+    private var audioSource: RTCAudioSource?
+    private var audioTrack: RTCAudioTrack?
+    private var capturer: RTCCameraVideoCapturer?
+
+    private var didActivateCount = 0
+    private var didDeactivateCount = 0
+
+    // MARK: - Lifecycle
+
+    func start() {
+        guard !isCapturing else { return }
+        configureAudioSession()
+        startCapture()
+        isCapturing = true
+        status = "Capture running — now start a CallKit call"
+        append("capture started")
+        refresh()
+    }
+
+    func stop() {
+        capturer?.stopCapture()
+        capturer = nil
+        RTCAudioSession.sharedInstance().remove(self)
+        RTCAudioSession.sharedInstance().isAudioEnabled = false
+        isCapturing = false
+        videoTrack = nil
+        status = "Stopped"
+        append("capture stopped")
+        refresh()
+    }
+
+    // MARK: - CallKit handover
+
+    /// Called from `CXProviderDelegate.provider(_:didActivate:)`. This is the whole
+    /// point of the spike: hand the session CallKit activated to WebRTC so it
+    /// adopts it rather than activating it again.
+    func callKitDidActivate(_ session: AVAudioSession) {
+        didActivateCount += 1
+        let rtc = RTCAudioSession.sharedInstance()
+        append("didActivate #\(didActivateCount): rtc.isActive before = \(rtc.isActive)")
+        rtc.audioSessionDidActivate(session)
+        rtc.isAudioEnabled = true
+        append("adopted by RTCAudioSession; isAudioEnabled = true")
+        status = "CallKit call active — watch whether the preview survives"
+        refresh()
+    }
+
+    /// Called from `CXProviderDelegate.provider(_:didDeactivate:)`.
+    func callKitDidDeactivate(_ session: AVAudioSession) {
+        didDeactivateCount += 1
+        let rtc = RTCAudioSession.sharedInstance()
+        rtc.isAudioEnabled = false
+        rtc.audioSessionDidDeactivate(session)
+        append("didDeactivate #\(didDeactivateCount): isAudioEnabled = false, session returned")
+        status = "CallKit call ended"
+        refresh()
+    }
+
+    // MARK: - Setup
+
+    private func configureAudioSession() {
+        let config = RTCAudioSessionConfiguration.webRTC()
+        config.category = AVAudioSession.Category.playAndRecord.rawValue
+        config.mode = AVAudioSession.Mode.voiceChat.rawValue
+        config.categoryOptions = [.allowBluetooth]
+        RTCAudioSessionConfiguration.setWebRTC(config)
+
+        let rtc = RTCAudioSession.sharedInstance()
+        rtc.useManualAudio = true
+        rtc.isAudioEnabled = false
+        rtc.add(self)
+        append("configured playAndRecord/voiceChat; useManualAudio=1 isAudioEnabled=0")
+    }
+
+    private func startCapture() {
+        let factory = RTCPeerConnectionFactory(
+            encoderFactory: RTCDefaultVideoEncoderFactory(),
+            decoderFactory: RTCDefaultVideoDecoderFactory()
+        )
+        self.factory = factory
+
+        let videoSource = factory.videoSource()
+        self.videoSource = videoSource
+        videoTrack = factory.videoTrack(with: videoSource, trackId: "seam-video")
+
+        let audioSource = factory.audioSource(
+            with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        )
+        self.audioSource = audioSource
+        audioTrack = factory.audioTrack(with: audioSource, trackId: "seam-audio")
+
+        let capturer = RTCCameraVideoCapturer(delegate: videoSource)
+        self.capturer = capturer
+
+        guard
+            let device = RTCCameraVideoCapturer.captureDevices().first(where: { $0.position == .front })
+                ?? RTCCameraVideoCapturer.captureDevices().first
+        else {
+            append("no capture device available")
+            return
+        }
+        let formats = RTCCameraVideoCapturer.supportedFormats(for: device)
+        guard let format = formats.last else {
+            append("no capture format for \(device.localizedName)")
+            return
+        }
+        capturer.startCapture(with: device, format: format, fps: 30)
+        append("capturer started on \(device.localizedName)")
+    }
+
+    // MARK: - Reporting
+
+    private func refresh() {
+        let rtc = RTCAudioSession.sharedInstance()
+        rtcSessionIsActive = rtc.isActive
+        audioEnabled = rtc.isAudioEnabled
+    }
+
+    private func append(_ line: String) {
+        lines.append(line)
+        if lines.count > 40 { lines.removeFirst(lines.count - 40) }
+    }
+}
+
+extension AudioSeamProbe: RTCAudioSessionDelegate {
+    nonisolated func audioSession(
+        _ audioSession: AVAudioSession,
+        didChangeCanPlayOrRecord canPlayOrRecord: Bool
+    ) {
+        Task { @MainActor in
+            self.append("RTCAudioSession canPlayOrRecord = \(canPlayOrRecord)")
+            self.refresh()
+        }
+    }
+
+    nonisolated func audioSessionDidStartPlayOrRecord(_ audioSession: AVAudioSession) {
+        Task { @MainActor in
+            self.playOrRecordCount += 1
+            self.append("audio unit STARTED (play/record) #\(self.playOrRecordCount)")
+            self.refresh()
+        }
+    }
+
+    nonisolated func audioSessionDidStopPlayOrRecord(_ audioSession: AVAudioSession) {
+        Task { @MainActor in
+            self.append("audio unit STOPPED")
+            self.refresh()
+        }
+    }
+
+    nonisolated func audioSession(
+        _ audioSession: AVAudioSession,
+        didChangeRoute newRoute: AVAudioSessionRouteDescription,
+        reason: AVAudioSession.RouteChangeReason,
+        previousRoute: AVAudioSessionRouteDescription
+    ) {
+        let name = newRoute.outputs.first?.portType.rawValue ?? "none"
+        Task { @MainActor in
+            self.append("route change (reason \(reason.rawValue)) -> \(name)")
+        }
+    }
+}
+
+/// Native camera preview for the spike. `RTCCameraPreviewView` no longer exists in
+/// the SDK; the supported path is an `RTCMTLVideoView` attached to the track.
+struct RTCLocalPreview: UIViewRepresentable {
+    let track: RTCVideoTrack?
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> RTCMTLVideoView {
+        let view = RTCMTLVideoView()
+        view.videoContentMode = .scaleAspectFill
+        view.backgroundColor = .black
+        return view
+    }
+
+    func updateUIView(_ view: RTCMTLVideoView, context: Context) {
+        guard context.coordinator.attached !== track else { return }
+        context.coordinator.attached?.remove(view)
+        track?.add(view)
+        context.coordinator.attached = track
+    }
+
+    static func dismantleUIView(_ view: RTCMTLVideoView, coordinator: Coordinator) {
+        coordinator.attached?.remove(view)
+        coordinator.attached = nil
+    }
+
+    final class Coordinator {
+        var attached: RTCVideoTrack?
+    }
+}
+
+struct AudioSeamView: View {
+    @ObservedObject var probe: AudioSeamProbe
+    let model: CallProbeModel
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Button(probe.isCapturing ? "Stop capture" : "Start capture") {
+                    probe.isCapturing ? probe.stop() : probe.start()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("seam.capture")
+
+                Button("Start CallKit call") {
+                    model.startSeamSpikeCall()
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("seam.call")
+            }
+
+            RTCLocalPreview(track: probe.videoTrack)
+                .frame(height: 150)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+
+            Text(probe.status)
+                .font(.footnote.weight(.semibold))
+                .multilineTextAlignment(.center)
+
+            Text("rtcActive=\(probe.rtcSessionIsActive ? "1" : "0")  audioEnabled=\(probe.audioEnabled ? "1" : "0")  audioUnit=\(probe.playOrRecordCount)")
+                .font(.caption.monospaced())
+
+            ScrollView {
+                Text(probe.lines.joined(separator: "\n"))
+                    .font(.caption2.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(maxHeight: 120)
+        }
+    }
+}
+#endif

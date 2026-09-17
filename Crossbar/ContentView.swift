@@ -74,6 +74,13 @@ struct ContentView: View {
                         .textSelection(.enabled)
                 }
                 .frame(maxHeight: 130)
+
+                Divider()
+
+                Text("Architecture B audio seam")
+                    .font(.subheadline.weight(.semibold))
+
+                AudioSeamView(probe: model.seamProbe, model: model)
             }
             .padding()
             .navigationTitle("Architecture A Probe")
