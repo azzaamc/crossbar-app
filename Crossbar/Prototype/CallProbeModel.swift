@@ -15,13 +15,27 @@ final class CallProbeModel: ObservableObject {
     private var currentCallID: UUID?
     private var isMediaOnly = false
     private var processedLaunchArguments = false
+    // Media-first outgoing experiment: acquire and start producing local media
+    // before asking CallKit to take the audio session.
+    private var awaitsCallKitAfterMedia = false
+    private var mediaIsLive = false
 
     init() {
         mediaEngine.onEvent = { [weak self] event in
             self?.handle(event)
         }
         callKit.onStart = { [weak self] callID, video in
-            self?.beginMedia(callID: callID, video: video, reason: "outgoing")
+            guard let self else { return }
+            if self.mediaIsLive {
+                // Media-first path: local capture is already running and producing
+                // data, so adopt the CallKit call rather than re-acquiring media
+                // after the session has changed hands.
+                self.currentCallID = callID
+                self.status = "CallKit accepted; local media was already active"
+                self.callKit.reportConnected(callID: callID)
+                return
+            }
+            self.beginMedia(callID: callID, video: video, reason: "outgoing")
         }
         callKit.onAnswer = { [weak self] callID in
             self?.beginMedia(callID: callID, video: true, reason: "answered")
@@ -49,9 +63,14 @@ final class CallProbeModel: ObservableObject {
 
     func startOutgoingCall() {
         guard currentCallID == nil else { return }
-        status = "Requesting outgoing CallKit call…"
-        currentCallID = callKit.startOutgoing(video: true)
-        hasCall = true
+        // Media-first experiment. In the original order CallKit activated the audio
+        // session before WebKit held any capture, and WebKit then failed to activate
+        // its own session and tore capture down. Acquiring and starting local media
+        // before the transaction tests whether the ordering, rather than the
+        // ownership boundary, is what breaks it.
+        awaitsCallKitAfterMedia = true
+        beginMedia(callID: UUID(), video: true, reason: "pre-call")
+        status = "Acquiring local media before the CallKit call…"
     }
 
     func simulateIncomingCall() {
@@ -90,7 +109,10 @@ final class CallProbeModel: ObservableObject {
 
     func endCall() {
         guard let currentCallID else { return }
-        if isMediaOnly {
+        // No CallKit call exists yet on the media-only path, or on the media-first
+        // path before media is live and the transaction has been requested, so end
+        // locally instead of sending an unknown UUID to CallKit.
+        if isMediaOnly || awaitsCallKitAfterMedia {
             finish(callID: currentCallID)
             return
         }
@@ -121,6 +143,8 @@ final class CallProbeModel: ObservableObject {
     private func clearCall(status: String) {
         currentCallID = nil
         isMediaOnly = false
+        awaitsCallKitAfterMedia = false
+        mediaIsLive = false
         hasCall = false
         isMuted = false
         isCameraEnabled = true
@@ -134,6 +158,13 @@ final class CallProbeModel: ObservableObject {
         case "joining":
             status = "Requesting camera and microphone…"
         case "joined":
+            mediaIsLive = true
+            if awaitsCallKitAfterMedia {
+                awaitsCallKitAfterMedia = false
+                status = "Local media active; requesting outgoing CallKit call…"
+                currentCallID = callKit.startOutgoing(video: true)
+                return
+            }
             status = "Local media active"
             if let currentCallID, !isMediaOnly {
                 callKit.reportConnected(callID: currentCallID)
