@@ -44,6 +44,11 @@ casually.
    proven browser engine.
 6. Production delivered `iceServers: []` at audit time because STUN and TURN
    were disabled. Calls rely on direct candidates/private topology.
+
+   **Corrected 2026-09-17 from live evidence.** A native client's `addPeer`
+   payloads carried `"iceServers":[{"urls":"stun:stun.l.google.com:19302"}]`, so
+   the deployed server does hand out Google's public STUN and the statement above
+   is not current. See `CROSSBAR_ARCHITECTURE.md`, "Native signalling executed".
 7. Direct copying/adaptation into a distributed app raises AGPLv3 obligations.
    Licensing approval precedes extraction.
 

@@ -75,7 +75,11 @@ Last documented production state (verified 2026-09-16):
 - private Tailscale Serve route HTTPS 443;
 - intentional local loopback-bind source change plus untracked backups that
   must not be reset/cleaned/staged;
-- STUN and TURN disabled in the effective ICE list;
+- STUN and TURN disabled in the effective ICE list — **corrected 2026-09-17: a
+  native client's `addPeer` payloads carried
+  `"iceServers":[{"urls":"stun:stun.l.google.com:19302"}]`, so the deployed
+  server does hand out Google's public STUN. This bullet is not current. See
+  `CROSSBAR_ARCHITECTURE.md`, "Native signalling executed".**
 - no Funnel/public/LAN application listener.
 
 The inactive `/home/admin/mirotalk-family` experiment, port 3002, and the

@@ -573,6 +573,42 @@ This proves **admission, not a call**: no peer connection, no SDP, no ICE. It al
 leaves the central unknown exactly where it was — what replaces the browser's
 `negotiationneeded`, which Objective-C libwebrtc does not expose.
 
+**Two-peer fan-out confirmed live (2026-09-17).** Two native peers joining one room
+produced the mesh exactly as specified. Peer A, joining after a browser peer, was
+told to offer to it (`should_create_offer: true`) and *not* to offer to peer B,
+which joined later (`false`). Peer B, the joiner for both, was told to offer to
+both. `serverInfo.peers_count` tracked the room 1 → 2 → 3; each `addPeer` carried
+the whole `peers` map including the recipient itself; a `peerName` event followed
+each. The browser peer appeared as `Mobile Safari 27.0`, so a real 1.9.64 browser
+client and native clients shared one room and were paired by the server. The
+offerer-selection rule the audit derived by reading `server.js:2433-2451` is
+therefore verified against the running server, not merely transcribed.
+
+**A contradiction with our own documentation.** Every `addPeer` carried:
+
+```
+"iceServers":[{"urls":"stun:stun.l.google.com:19302"}]
+```
+
+`docs/MIROTALK_CORE_AUDIT.md` finding 6 and `docs/OMP_HANDOFF.md` both state that
+production delivers an empty `iceServers` list because STUN and TURN are disabled.
+The live server hands out Google's public STUN. Either the production
+configuration changed after the 2026-09-16 audit or that reading was wrong; either
+way the docs are not current. The impact is not cosmetic: a public third-party
+STUN server sits in the ICE path of a deliberately private application, and it
+learns the peers' reflexive addresses. Re-checking the effective MiroTalk ICE
+configuration is a read-only production task and should precede any decision about
+what Crossbar does with server-supplied `iceServers`.
+
+**Why the first two-peer attempt saw nothing.** In that run the native client was
+admitted and then received no `addPeer` for the browser peer. The cause is now
+clear: joining the room required switching to Safari, which backgrounded the app,
+and a suspended app's WebSocket dies silently — no close frame, no error, nothing
+any log can show. The second run kept both peers in the foreground inside the app
+and both exchanges completed. Signalling does not survive backgrounding without a
+background mode, which the product will need for a call that outlives the app
+being on screen.
+
 Sixteen specific divergence risks are catalogued in the audit, with the
 likelihood of silent divergence for each. The ones rated *likely* are all in the
 trigger rather than the payload: the missing `negotiationneeded`, an offerer with
