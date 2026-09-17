@@ -722,9 +722,34 @@ preview stayed live and `canPlayOrRecord` reported true. Only the inbound-RTP by
 counter showed the audio was gone. This is the defect that ships as "the call connects
 and nobody can hear anything".
 
-**Fix:** `callKitDidActivate` now forces the gate through false and back, raising the
-`canPlayOrRecord` notification that re-arms the ADM. Applied; verification pending —
-the same four steps must show `delta` climbing straight through the call.
+**Fix, verified (2026-09-17).** `callKitDidActivate` now forces the gate through false
+and back, raising the `canPlayOrRecord` notification that re-arms the ADM. Audio
+survives the activation:
+
+```
+didActivate #1: rtc.isActive before = true
+adopted by RTCAudioSession; forced canPlayOrRecord transition
+canPlayOrRecord = false        ← the forced transition
+canPlayOrRecord = true
+WebRTC willSetActive false
+audio unit STOPPED
+WebRTC willSetActive true
+WebRTC didSetActive true
+audio IN bytes=77099  delta=4882     ← alive, where it was previously dead
+audio IN bytes=88479  delta=11380
+audio IN bytes=98657  delta=10178
+```
+
+Ending the call gates audio off (`canPlayOrRecord = false`, `audio unit STOPPED`,
+`delta=0`) and starting another call restores it — both correct under
+`useManualAudio`, where media follows the call.
+
+Cost, stated because it is not free: the re-arm is a deliberate audio-unit teardown
+and restart, visible as `willSetActive false` → `audio unit STOPPED` →
+`willSetActive true`. It is applied at call activation, which is before media normally
+begins. Any implementation that instead starts media *before* CallKit activates must
+include this re-arm, or it will ship a call with no audio and healthy-looking
+telemetry.
 
 - **Still unmeasured:** audio quality — there is no remote peer, so nothing in this
   probe demonstrates audible fidelity.
