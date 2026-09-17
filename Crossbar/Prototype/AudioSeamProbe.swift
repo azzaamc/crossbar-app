@@ -47,6 +47,7 @@ final class AudioSeamProbe: NSObject, ObservableObject {
 
     private var statsTimer: Timer?
     private var lastAudioBytes = -1
+    private var logHandle: FileHandle?
     private var didActivateCount = 0
     private var didDeactivateCount = 0
 
@@ -350,6 +351,23 @@ final class AudioSeamProbe: NSObject, ObservableObject {
     private func append(_ line: String) {
         lines.append(line)
         if lines.count > 40 { lines.removeFirst(lines.count - 40) }
+        writeToLogFile(line)
+    }
+
+    /// The in-app view shows about a dozen lines and the buffer holds forty, which has
+    /// already cost two measurements. The same lines go to Documents/seam.log, which is
+    /// pulled off the device directly so the whole ordered sequence survives. The file
+    /// is truncated on the first write of each launch.
+    private func writeToLogFile(_ line: String) {
+        if logHandle == nil {
+            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let url = dir.appendingPathComponent("seam.log")
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            logHandle = try? FileHandle(forWritingTo: url)
+            logHandle?.truncateFile(atOffset: 0)
+        }
+        guard let data = (line + "\n").data(using: .utf8) else { return }
+        logHandle?.write(data)
     }
 }
 
