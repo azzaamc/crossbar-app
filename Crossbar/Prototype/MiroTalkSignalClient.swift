@@ -51,6 +51,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private var pendingCandidates: [String: [RTCIceCandidate]] = [:]
     private var statsTimer: Timer?
     private var audioBytes: [String: Int] = [:]
+    private var reportedPath: [String: String] = [:]
 
     /// The private MiroTalk origin. Overridable so no deployment detail is baked in.
     private var origin: URL {
@@ -470,8 +471,13 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
                     let energy = (stat.values["totalAudioEnergy"] as? NSNumber)?.doubleValue ?? 0
                     if kind == "audio", found == nil { found = (bytes, energy) }
                 }
+                let path = Self.selectedPairDescription(report)
                 Task { @MainActor in
                     guard let self else { return }
+                    if let path, self.reportedPath[peerId] != path {
+                        self.reportedPath[peerId] = path
+                        self.append("ICE path [\(peerId.prefix(8))] \(path)")
+                    }
                     guard let found else { return }
                     let previous = self.audioBytes[peerId] ?? found.bytes
                     let delta = found.bytes - previous
@@ -484,6 +490,30 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     }
 
     // MARK: - Helpers
+
+    /// Which candidate pair is actually carrying the media. Gathered candidates say
+    /// what was available; the selected pair says what won, and only that can decide
+    /// whether a public STUN server is doing any work.
+    nonisolated private static func selectedPairDescription(_ report: RTCStatisticsReport) -> String? {
+        guard
+            let transport = report.statistics.values.first(where: { $0.type == "transport" }),
+            let pairId = transport.values["selectedCandidatePairId"] as? String,
+            let pair = report.statistics[pairId]
+        else { return nil }
+
+        func describe(_ id: Any?) -> String {
+            guard let id = id as? String, let candidate = report.statistics[id] else { return "?" }
+            let type = candidate.values["candidateType"] as? String ?? "?"
+            let address = candidate.values["address"] as? String ?? "?"
+            let port = (candidate.values["port"] as? NSNumber)?.intValue ?? 0
+            let proto = candidate.values["protocol"] as? String ?? "?"
+            return "\(type) \(address):\(port)/\(proto)"
+        }
+
+        let state = pair.values["state"] as? String ?? "?"
+        return "local=\(describe(pair.values["localCandidateId"])) "
+            + "remote=\(describe(pair.values["remoteCandidateId"])) state=\(state)"
+    }
 
     private static func iceServers(from raw: Any?) -> [RTCIceServer] {
         guard let list = raw as? [[String: Any]] else { return [] }
