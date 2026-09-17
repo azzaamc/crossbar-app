@@ -26,6 +26,16 @@ final class CallKitManager: NSObject, CXProviderDelegate {
         return provider
     }()
 
+    override init() {
+        super.init()
+        // Create the provider eagerly so the app is registered with CallKit before
+        // any transaction is requested. CXCallController.request(_:) is rejected
+        // with CXErrorCodeRequestTransactionErrorUnknownCallProvider (code 2) if
+        // the app has no provider, and `provider` is otherwise only touched by the
+        // incoming-call path.
+        _ = provider
+    }
+
     func startOutgoing(video: Bool) -> UUID {
         let callID = UUID()
         let handle = CXHandle(type: .generic, value: "Architecture A probe")

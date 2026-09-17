@@ -29,9 +29,22 @@
 		5F8EA691305AAF09005261F6 /* CrossbarUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CrossbarUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		5F2B24B3305C0E17003DE8DC /* Exceptions for "Crossbar" folder in "Crossbar" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 5F8EA679305AAF08005261F6 /* Crossbar */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		5F8EA67C305AAF08005261F6 /* Crossbar */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5F2B24B3305C0E17003DE8DC /* Exceptions for "Crossbar" folder in "Crossbar" target */,
+			);
 			path = Crossbar;
 			sourceTree = "<group>";
 		};
@@ -374,6 +387,7 @@
 				DEVELOPMENT_TEAM = NKZHXND255;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Crossbar/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Crossbar uses the camera for video calls.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Crossbar uses the microphone for calls.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -408,6 +422,7 @@
 				DEVELOPMENT_TEAM = NKZHXND255;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Crossbar/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Crossbar uses the camera for video calls.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Crossbar uses the microphone for calls.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
