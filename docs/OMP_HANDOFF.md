@@ -174,8 +174,15 @@ CallKit exists only as DEBUG probe code:
 - audio activation/deactivation callback surface;
 - `.playAndRecord` / `.videoChat` preparation.
 
-The simulator rejected the outgoing transaction, so none of this is physically
-validated. The `Simulate incoming` DEBUG button and
+> Superseded 2026-09-17. The `.playAndRecord` / `.videoChat` preparation was
+> removed in probe experiment P8.13, and this CallKit code has since been
+> validated on a physical iPhone. See `docs/ARCHITECTURE_A_PROBE.md`
+> P8.7–P8.14. This section records the state at handoff and is kept as history.
+
+The simulator rejected the outgoing transaction, so at handoff none of this was
+physically validated. That rejection is now explained rather than mysterious:
+error 1 is `CXErrorCodeRequestTransactionErrorUnentitled`, caused by the missing
+`UIBackgroundModes = [voip]` declaration (P8.7). The `Simulate incoming` DEBUG button and
 `-CrossbarSimulateIncomingCall` launch argument both call the real probe
 `CallKitManager`; neither is a remote notification.
 

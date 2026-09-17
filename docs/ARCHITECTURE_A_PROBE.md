@@ -60,8 +60,13 @@ Important members:
 - `reportConnected(callID:)` updates outgoing progress;
 - delegate handlers for start, answer, end, mute, reset, audio activation, and
   audio deactivation;
-- `prepareAudioSession()` selects `.playAndRecord`, `.videoChat`, Bluetooth HFP,
-  and default speaker.
+- an `init()` that creates the provider eagerly, so the app is registered with
+  CallKit before any transaction is requested (P8.7);
+- **no `AVAudioSession` configuration at all.** An earlier revision of this
+  document described a `prepareAudioSession()` that selected `.playAndRecord`,
+  `.videoChat`, Bluetooth HFP, and default speaker. That method and its call
+  sites were removed in P8.13 so that WebKit is the sole session owner on the
+  media path, and it no longer exists.
 
 The class exposes callbacks to the probe coordinator. It does not call Family
 Call, store backend call IDs, handle remote termination, or implement PushKit.
@@ -325,9 +330,10 @@ screenshots and console capture are fully automatable.
 - Actual: a session console query for
   `audio|callkit|avaudio|tcc|clock|interrupt` returned zero matches across the
   entire device session, while camera and microphone capture were live.
-- Source corroboration: `prepareAudioSession()` is called only from the
-  `CXStartCallAction` and `CXAnswerCallAction` delegates, so the media-only path
-  never sets a category, a mode, or an active state.
+- Source corroboration: at the time of this measurement the session was set only
+  from the `CXStartCallAction` and `CXAnswerCallAction` delegates, so the
+  media-only path never set a category, a mode, or an active state. That setup
+  was subsequently removed altogether in P8.13.
 - Implication: this is a negative result about the probe, not about WebKit.
   WebKit may own a capture session outside the app process, so no conclusion was
   available until the CallKit path was exercised. That path has since been

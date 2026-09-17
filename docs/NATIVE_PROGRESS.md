@@ -74,8 +74,9 @@ product decision.
 
 - `Crossbar/Prototype/CallKitManager.swift`: `CXProvider`/`CXCallController`
   wrapper with start, incoming report, answer, end, mute, connected, reset, and
-  audio-session activation callbacks. Configures `.playAndRecord`, `.videoChat`,
-  Bluetooth HFP, and default speaker when CallKit performs start/answer.
+  audio-session activation callbacks, plus eager provider registration in
+  `init()`. It does **not** configure `AVAudioSession`; that setup was removed in
+  probe experiment P8.13 so WebKit owns the session on the media path.
 - `Crossbar/Prototype/CallProbeModel.swift`: observable coordinator for probe
   UI, CallKit callbacks, WebKit commands, media-only bypass, state text, and the
   `-CrossbarSimulateIncomingCall` launch argument.
