@@ -20,6 +20,7 @@ import SwiftUI
 final class BackendReachabilityProbe: NSObject, ObservableObject {
     @Published private(set) var status = "Not checked"
     @Published private(set) var lines: [String] = []
+    private var logHandle: FileHandle?
 
     /// The private tailnet endpoint, already recorded in the Family Call docs.
     /// Overridable for a different deployment without editing this file.
@@ -89,6 +90,21 @@ final class BackendReachabilityProbe: NSObject, ObservableObject {
     private func append(_ line: String) {
         lines.append(line)
         if lines.count > 40 { lines.removeFirst(lines.count - 40) }
+        writeToLogFile(line)
+    }
+
+    /// Same reasoning as the seam probe's log: screen-only output has already cost
+    /// measurements twice, so results also go to Documents/backend.log for pulling.
+    private func writeToLogFile(_ line: String) {
+        if logHandle == nil {
+            let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let url = dir.appendingPathComponent("backend.log")
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+            logHandle = try? FileHandle(forWritingTo: url)
+            logHandle?.truncateFile(atOffset: 0)
+        }
+        guard let data = (line + "\n").data(using: .utf8) else { return }
+        logHandle?.write(data)
     }
 }
 
