@@ -46,6 +46,13 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     /// verifiably flowing.
     var media: ProbeMediaSource?
 
+    /// When set, the server-supplied `iceServers` are discarded and ICE runs on host
+    /// candidates alone. This is the decision under test, not a preference: with the
+    /// public STUN path demonstrably carrying an off-LAN call, the only way to learn
+    /// whether the Tailscale host candidates could have carried it instead is to
+    /// remove STUN and see.
+    var ignoreServerIceServers = false
+
     // Peer connections, keyed by remote Socket.IO id, as the audited contract does.
     private var peers: [String: RTCPeerConnection] = [:]
     private var pendingCandidates: [String: [RTCIceCandidate]] = [:]
@@ -291,7 +298,9 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
 
         let config = RTCConfiguration()
         config.sdpSemantics = .unifiedPlan
-        config.iceServers = Self.iceServers(from: payload["iceServers"])
+        let serverIceServers = Self.iceServers(from: payload["iceServers"])
+        config.iceServers = ignoreServerIceServers ? [] : serverIceServers
+        append("iceServers: server=\(serverIceServers.count) applied=\(config.iceServers.count)\(ignoreServerIceServers ? " (STUN IGNORED)" : "")")
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         guard let pc = factory.peerConnection(with: config, constraints: constraints, delegate: self) else {
             append("could not create a peer connection for \(peerId.prefix(8))")
@@ -705,6 +714,7 @@ struct SignalProbeSection: View {
     @StateObject private var peerC = MiroTalkSignalClient(label: "C")
     @State private var expanded = false
     @State private var room = "crosstest"
+    @State private var ignoreStun = false
 
     var body: some View {
         DisclosureGroup("MiroTalk signalling (native Socket.IO)", isExpanded: $expanded) {
@@ -718,6 +728,10 @@ struct SignalProbeSection: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .font(.caption2.monospaced())
+
+                Toggle("Ignore server iceServers (STUN off)", isOn: $ignoreStun)
+                    .font(.caption2)
+                    .accessibilityIdentifier("signal.ignorestun")
 
                 HStack {
                     Button("A join") { join(peerA) }
@@ -749,6 +763,7 @@ struct SignalProbeSection: View {
 
     private func join(_ client: MiroTalkSignalClient) {
         client.media = media
+        client.ignoreServerIceServers = ignoreStun
         media.startCapture()
         client.connect(room: room)
     }

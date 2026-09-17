@@ -721,19 +721,32 @@ This is the ICE decision flagged above, now with evidence for it rather than a
 reading of configuration.
 
 **Which pair actually carried the media (2026-09-17).** Gathered candidates say what
-was available; only the selected pair says what is load-bearing:
+was available; only the selected pair says what is load-bearing. Measured with the
+two devices on **different networks** — phone on cellular, Mac on Wi-Fi — which is the
+product's real topology:
 
 ```
-ICE path local=host 192.168.1.120:59492/udp remote=host 192.168.1.127:49786/udp state=succeeded
+ICE path [T01] local=srflx 154.80.38.134:60615 remote=srflx 119.154.255.67:63718 state=succeeded bytesSent=132468
+ICE path [T01] local=prflx 192.168.1.130:53530 remote=host  192.168.1.127:63718 state=succeeded bytesSent=206979
+… growing to bytesSent=898047
 ```
 
-Both devices were on the same Wi-Fi, so the call rode LAN host candidates and
-**neither the Tailscale candidates nor the Google-derived srflx candidates carried
-anything**. That confirms host candidates outrank srflx when reachable, and that the
-public STUN server contributed nothing to this call — but it does **not** settle
-whether srflx is load-bearing when no direct host path exists, which is the product's
-real topology: family members on separate networks. That case needs the two devices on
-different networks, which is the next measurement.
+**The public path carried the off-LAN call.** With Wi-Fi off, the selected pair was
+`srflx ↔ srflx`, resolved through `stun.l.google.com`, and it moved 132 KB of media.
+When Wi-Fi returned, ICE migrated to a host pair and the byte count grew to ~900 KB.
+So the server-supplied public STUN server is load-bearing off-LAN, not decorative.
+
+Earlier the same measurement on a shared LAN selected `host ↔ host`, confirming host
+candidates outrank srflx when reachable — which is why the first attempt could not
+answer this question.
+
+**Still undetermined: whether it was necessary.** The phone also advertised Tailscale
+host candidates (`100.88.61.34`, `fd7a:115c:a1e0::9a32:3d22`). What is not visible is
+whether those pairs *failed* or were merely outranked, and those are very different
+outcomes — the first means dropping STUN breaks cross-network calls, the second means
+the overlay could carry them unaided. The probe now has a switch that discards the
+server-supplied `iceServers` entirely and runs on host candidates alone, which answers
+it directly rather than by inference.
 
 Sixteen specific divergence risks are catalogued in the audit, with the
 likelihood of silent divergence for each. The ones rated *likely* are all in the
