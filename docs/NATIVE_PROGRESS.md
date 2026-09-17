@@ -5,8 +5,12 @@ Last audited: 2026-09-17 (Asia/Karachi)
 ## Status in one sentence
 
 Crossbar is an Xcode-generated SwiftUI application containing a DEBUG-only,
-original-code Architecture A feasibility probe; it is not connected to Family
-Call or MiroTalk signaling and has not made a real device-to-device call.
+original-code Architecture B spike. As of 2026-09-17 that spike authenticates
+against the real Family Call API, speaks MiroTalk's signalling protocol natively,
+and has completed a real device-to-device call with MiroTalk's own browser client
+carrying media both ways. It contains **no product code**: no call UI, no contacts,
+no CallKit-in-product-flow, no persistence. Instruments, reproduction commands and
+the list of what is *not* measured are in `ARCHITECTURE_B_PROBE.md`.
 
 ## Repository and checkpoint
 
@@ -92,6 +96,20 @@ All four files are inside `#if DEBUG` on the Swift side. The HTML resource may
 still be copied into a Release bundle by Xcode's synchronized group, but no
 Release Swift code loads or exposes it.
 
+The Architecture B instruments live beside them and are also `#if DEBUG`:
+
+- `Crossbar/Prototype/AudioSeamProbe.swift`: the seam spike — CallKit session
+  adoption, a local loopback peer connection so the audio device module is genuinely
+  exercised, produced video frames, app lifecycle, and the SwiftUI screen.
+- `Crossbar/Prototype/MiroTalkSignalClient.swift`: a reduced native Engine.IO v4 /
+  Socket.IO v5 client, peer connections with the synthesised offer policy, a shared
+  media source, and per-transport ICE path reporting.
+- `Crossbar/Prototype/BackendReachabilityProbe.swift`: a bare `URLSession` GET used to
+  establish that tailnet Serve injects the identity header for a non-browser client.
+
+Each writes to a file in the app's Documents directory (`seam.log`, `signal-*.log`,
+`backend.log`) so results can be pulled rather than read off a screenshot.
+
 ### Tests
 
 - `CrossbarTests/CrossbarTests.swift`: generated placeholder unit test; it has
@@ -106,29 +124,44 @@ label can still be `Loading runtime…`. See **Verification record**.
 
 ## What exists today
 
+Architecture A (the WebKit probe — retained as evidence, not on the product path):
+
 - Native SwiftUI host and diagnostic controls.
 - A CallKit wrapper/interface and DEBUG incoming-call simulation path.
 - A visible frameless WKWebView media surface.
 - Native-to-JavaScript commands: `join`, `leave`, `setMuted`,
   `setCameraEnabled`, `switchCamera`, and `setAudioSessionActive`.
 - JavaScript-to-native event delivery through one `crossbar` message handler.
-- Local camera/microphone acquisition and local preview in the probe runtime.
 - Explicit local track stop on leave.
-- Camera and microphone Info.plist purpose strings.
+
+Architecture B (DEBUG instruments, measured on the physical iPhone):
+
+- Native WebRTC media under CallKit, with `RTCAudioSession` adopting the CallKit
+  session and audio measured flowing through a full activate → deactivate → activate
+  cycle.
+- A native Engine.IO v4 / Socket.IO v5 client that connects to production MiroTalk,
+  joins a room, and relays SDP and ICE in the audited shapes.
+- Peer connections with a synthesised offer policy, a data-channel renegotiation
+  answered against MiroTalk's own browser client, and a three-peer mesh.
+- A shared local capture feeding every peer connection.
+- One authenticated call to the Family Call API (`GET /api/session`) through tailnet
+  Serve, with no backend change.
 
 ## What does not exist
 
-- Family Call HTTP API client, models, contacts, groups, presence, or SSE.
-- Tailscale/backend session verification from the native app.
-- Socket.IO client or MiroTalk signaling.
-- `RTCPeerConnection`, SDP, ICE, remote tracks, or peer state.
-- Any two-device or multiparty call.
-- Extracted/copied/adapted MiroTalk source.
-- Production call UI.
+- Family Call call lifecycle — the spike only calls `GET /api/session`. No contacts,
+  groups, presence, SSE (`/api/events`), or call create/respond/invite/join/end.
+- Product call UI, contacts list, ringing, navigation, or CallKit in the product flow
+  (CallKit is exercised only by the DEBUG probe).
 - PushKit, APNs, VoIP token registration, notification extension, or backend
   native-device registration routes.
-- Background-audio capability or VoIP background mode.
-- Keychain/UserDefaults usage.
+- Background-audio capability or VoIP background mode. None is configured, so the
+  signalling socket does not survive backgrounding.
+- Native rendering of a remote video track. Frames are counted at the capture source
+  and RTP bytes are counted; nothing draws remote video.
+- Persistence, Keychain, or UserDefaults usage.
+- Extracted/copied/adapted MiroTalk source. None — the spike is original code written
+  against `MIROTALK_CORE_AUDIT.md`, so the AGPL review still precedes any reuse.
 
 ## Verification record
 
