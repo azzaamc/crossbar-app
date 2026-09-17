@@ -213,8 +213,14 @@ final class AudioSeamProbe: NSObject, ObservableObject {
                 }
             }
         }
+        // With useManualAudio on, audio stays gated until isAudioEnabled is set. The
+        // CallKit path sets it in didActivate; enable it here too so the loopback on
+        // its own can actually exercise the audio unit.
+        RTCAudioSession.sharedInstance().isAudioEnabled = true
+        append("isAudioEnabled = true (media wants audio)")
         status = "Loopback negotiating — audio unit should start"
         append("loopback started")
+        refresh()
     }
 
     // MARK: - Reporting
@@ -232,17 +238,21 @@ final class AudioSeamProbe: NSObject, ObservableObject {
 }
 
 extension AudioSeamProbe: RTCAudioSessionDelegate {
+    // Every method on this protocol takes RTCAudioSession, NOT AVAudioSession. An
+    // earlier revision used AVAudioSession, so none of these matched the ObjC
+    // selectors and the instrumentation was silently dead - no canPlayOrRecord, no
+    // audio-unit events, nothing.
     nonisolated func audioSession(
-        _ audioSession: AVAudioSession,
+        _ session: RTCAudioSession,
         didChangeCanPlayOrRecord canPlayOrRecord: Bool
     ) {
         Task { @MainActor in
-            self.append("RTCAudioSession canPlayOrRecord = \(canPlayOrRecord)")
+            self.append("canPlayOrRecord = \(canPlayOrRecord)")
             self.refresh()
         }
     }
 
-    nonisolated func audioSessionDidStartPlayOrRecord(_ audioSession: AVAudioSession) {
+    nonisolated func audioSessionDidStartPlayOrRecord(_ session: RTCAudioSession) {
         Task { @MainActor in
             self.playOrRecordCount += 1
             self.append("audio unit STARTED (play/record) #\(self.playOrRecordCount)")
@@ -250,20 +260,35 @@ extension AudioSeamProbe: RTCAudioSessionDelegate {
         }
     }
 
-    nonisolated func audioSessionDidStopPlayOrRecord(_ audioSession: AVAudioSession) {
+    nonisolated func audioSessionDidStopPlayOrRecord(_ session: RTCAudioSession) {
         Task { @MainActor in
             self.append("audio unit STOPPED")
             self.refresh()
         }
     }
 
-    nonisolated func audioSession(
-        _ audioSession: AVAudioSession,
-        didChangeRoute newRoute: AVAudioSessionRouteDescription,
+    /// Direct evidence for or against the adoption mechanism. WebRTC's setActive: is
+    /// supposed to be a no-op while CallKit holds the session, so if these fire with
+    /// true while a call is active, the suppression is not happening.
+    nonisolated func audioSession(_ session: RTCAudioSession, willSetActive active: Bool) {
+        Task { @MainActor in
+            self.append("WebRTC willSetActive \(active)")
+        }
+    }
+
+    nonisolated func audioSession(_ session: RTCAudioSession, didSetActive active: Bool) {
+        Task { @MainActor in
+            self.append("WebRTC didSetActive \(active)")
+            self.refresh()
+        }
+    }
+
+    nonisolated func audioSessionDidChangeRoute(
+        _ session: RTCAudioSession,
         reason: AVAudioSession.RouteChangeReason,
         previousRoute: AVAudioSessionRouteDescription
     ) {
-        let name = newRoute.outputs.first?.portType.rawValue ?? "none"
+        let name = session.currentRoute.outputs.first?.portType.rawValue ?? "none"
         Task { @MainActor in
             self.append("route change (reason \(reason.rawValue)) -> \(name)")
         }
