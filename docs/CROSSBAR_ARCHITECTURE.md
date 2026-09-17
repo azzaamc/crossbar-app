@@ -672,10 +672,39 @@ DTX silence produces). The byte rate is the load-bearing evidence that audio flo
 all six streams; the energy split is unexplained and would need a longer run with
 known speech to interpret.
 
-**Still not validated: interop with MiroTalk's own browser client.** The audit
-requires the policy be checked against a live 1.9.64 peer. A browser cannot share
-the foreground with Crossbar on one phone, because whichever app is backgrounded
-loses its socket — so this needs a second device on the tailnet.
+**Interop with MiroTalk's own browser client (2026-09-17).** The audit requires the
+offer policy be validated against a live 1.9.64 peer rather than against our own
+reading of the contract, and a browser cannot share the foreground with Crossbar on
+one phone. With a second tailnet device — Safari on the Mac, joined first as
+`MacPeer` so that the native side had to offer:
+
+```
+addPeer J8_efcyt should_create_offer=true iceServers=1
+policy: offering to J8_efcyt after appending tracks
+signaling state -> 1                                        (have-local-offer)
+offer -> J8_efcyt (3914 chars, 2 m-lines (audio,video))
+answer <- J8_efcyt (3823 chars, 2 m-lines (audio,video))    ← MiroTalk's browser answered
+signaling state -> 0
+offer <- J8_efcyt (5201 chars, 3 m-lines (audio,video,application))   ← then re-offered
+signaling state -> 3 → 0
+answer -> J8_efcyt (10227 chars, 3 m-lines (audio,video,application))
+remote audio track, remote video track, streams (1a/0v) and (0a/1v)
+pc state -> 2, ice state -> 2 → 3 (completed)
+media IN delta ≈ 5000 bytes per sample, steady
+```
+
+The browser accepted our offer, then renegotiated on its own to add a data channel,
+and our client applied that and answered again — while the phone's camera rendered in
+Safari, so media crossed in both directions.
+
+This closes the audit's requirement and retires the risks it rated *likely*: A1 (no
+`negotiationneeded`) is answered by the synthesised policy; A2 and A11 did not appear;
+A4 (no glare handling) was exercised by a real browser-initiated renegotiation and did
+not fail; and A6 (candidates carrying only `sdpMLineIndex`) did not prevent ICE
+completing against Chrome, which is stricter here than libwebrtc-to-libwebrtc.
+
+The `&name=` parameter was required: a bare `/join?room=<uuid>` shows MiroTalk's
+pre-join dialog and opens no Socket.IO connection at all.
 
 **The STUN finding is now concrete.** Both peers' candidate lists contained srflx
 candidates resolved through `stun:stun.l.google.com:19302`:

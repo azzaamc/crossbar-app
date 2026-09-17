@@ -219,9 +219,9 @@ marked as such there.
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
 | Audio route behaviour | Yes | Not meaningfully tested | **Spike (B) partial** — AirPods connect/disconnect produced route reasons 1 and 2 and WebRTC followed the route rather than fighting it; speaker override and wired not tested |
 | RTCPeerConnection/SDP/ICE | Yes | — | **Spike (B) loopback** — two peer connections negotiate offer/answer locally over host candidates with real ICE, DTLS-SRTP and SRTP media; single process, no server |
-| Remote media | No | No | Loopback only — audio measured *flowing* (11–27 kbps, `totalAudioEnergy` rising) between two in-process peer connections; no second device yet |
-| MiroTalk signaling | No | No | No |
-| Two-device call | No | No | No |
+| Remote media | Yes | — | **Yes** — inbound RTP measured flowing both ways with a real browser peer on a separate device, and the phone's camera rendered in MiroTalk's own client |
+| MiroTalk signaling | Yes | — | **Yes** — native Engine.IO/Socket.IO connects to production MiroTalk, joins, receives `addPeer`/`serverInfo`, and relays SDP and ICE in the audited shapes |
+| Two-device call | Yes | — | **Yes, with MiroTalk's own browser client** — a native peer and Safari on a second tailnet device negotiated, the browser answered the native offer and then renegotiated a data channel which the native client answered, ICE completed, and media crossed both ways with the phone's camera rendering in Safari |
 | Three-/four-person mesh | Yes | — | **Spike (B) three peers** — three native peers formed three links with two connections each; every link reached `pc state 2` and carried media both ways, with one shared capture feeding all senders. Four peers untested |
 | Background/lock/resume | No | No | **Spike (B) yes** — with a call active, audio survived lock and background (`audioUnit=1` throughout, no stop); video capture stopped on suspension (frame count frozen) and resumed cleanly on return |
 | PushKit/APNs | No | No | No |
