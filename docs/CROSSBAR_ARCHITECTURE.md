@@ -638,6 +638,31 @@ completed against a peer built only from the written contract. Divergence risks 
 (an offerer with no tracks never offering) and A11 (server-assigned offerer role
 against opportunistic renegotiation) did not materialise in this configuration.
 
+**Three peers, three links (2026-09-17).** The same run extended to multiparty, which
+is mandatory for the product. Joining order decided the offers exactly as specified:
+the first peer offered to nobody, the second offered only to the first, and the third
+offered to both.
+
+| Peer | Offered to | Connections | Media received |
+| --- | --- | --- | --- |
+| A (first) | — | 2 | from B, from C |
+| B (second) | A | 2 | from A, from C |
+| C (third) | A and B | 2 | from A, from B |
+
+Every link reached `pc state -> 2` and `ice state -> 2`, each reported a remote audio
+track, a remote video track and a `1a/1v` stream, and all six directed streams carried
+bytes. This also confirms the one-capture-many-senders model: a single shared
+`RTCAudioTrack` and `RTCVideoTrack` were added to every connection, which is what the
+product needs and what the previous revision got wrong by giving each peer its own
+camera capturer.
+
+One observation is recorded rather than explained: `totalAudioEnergy` concentrated in
+the A↔B link (≈0.047) and stayed near zero on the links to C (≈0.002), while the byte
+rates were comparable everywhere (~6–17 KB per sample, far above the near-zero bytes
+DTX silence produces). The byte rate is the load-bearing evidence that audio flows on
+all six streams; the energy split is unexplained and would need a longer run with
+known speech to interpret.
+
 **Still not validated: interop with MiroTalk's own browser client.** The audit
 requires the policy be checked against a live 1.9.64 peer. A browser cannot share
 the foreground with Crossbar on one phone, because whichever app is backgrounded

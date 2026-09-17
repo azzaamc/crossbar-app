@@ -222,7 +222,7 @@ marked as such there.
 | Remote media | No | No | Loopback only — audio measured *flowing* (11–27 kbps, `totalAudioEnergy` rising) between two in-process peer connections; no second device yet |
 | MiroTalk signaling | No | No | No |
 | Two-device call | No | No | No |
-| Three-/four-person mesh | No | No | No |
+| Three-/four-person mesh | Yes | — | **Spike (B) three peers** — three native peers formed three links with two connections each; every link reached `pc state 2` and carried media both ways, with one shared capture feeding all senders. Four peers untested |
 | Background/lock/resume | No | No | **Spike (B) yes** — with a call active, audio survived lock and background (`audioUnit=1` throughout, no stop); video capture stopped on suspension (frame count frozen) and resumed cleanly on return |
 | PushKit/APNs | No | No | No |
 
