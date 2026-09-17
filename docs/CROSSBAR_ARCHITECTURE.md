@@ -740,13 +740,30 @@ Earlier the same measurement on a shared LAN selected `host ↔ host`, confirmin
 candidates outrank srflx when reachable — which is why the first attempt could not
 answer this question.
 
-**Still undetermined: whether it was necessary.** The phone also advertised Tailscale
-host candidates (`100.88.61.34`, `fd7a:115c:a1e0::9a32:3d22`). What is not visible is
-whether those pairs *failed* or were merely outranked, and those are very different
-outcomes — the first means dropping STUN breaks cross-network calls, the second means
-the overlay could carry them unaided. The probe now has a switch that discards the
-server-supplied `iceServers` entirely and runs on host candidates alone, which answers
-it directly rather than by inference.
+**With STUN discarded (2026-09-17).** The probe was changed to drop the
+server-supplied `iceServers` entirely and run on host candidates alone:
+
+```
+iceServers: server=1 applied=0 (STUN IGNORED)
+gathered: host only, no srflx — 169.254.210.170, 10.187.100.156, 192.0.0.6,
+          100.88.61.34, fd74:6572:6d6e:7573:c:…, fd74:6572:6d6e:7573:d:…,
+          fd7a:115c:a1e0::9a32:3d22
+ICE path [T01] local=prflx 192.168.1.130:52397 remote=host 192.168.1.127:49513
+                state=succeeded bytesSent=… 819259
+```
+
+ICE completed and carried ~819 KB with no STUN at all. But **the path was the LAN, not
+the overlay**: the selected pair's local port matches the Tailscale candidate's port,
+yet the Mac received those packets from `192.168.1.130`, an address it had never been
+advertised and therefore learned as peer-reflexive. Packets only arrive from a LAN
+address over the LAN, so Wi-Fi was up by the time ICE paired. The run therefore shows
+that STUN is not always required, but **does not** show that the Tailscale overlay can
+carry a call between networks.
+
+That last question needs a run where Wi-Fi stays off for the whole exchange and the
+selected pair is read while it is still off. Until then, what Crossbar should do with
+server-supplied `iceServers` is undecided by evidence, and the conservative reading is
+that dropping them is unproven rather than free.
 
 Sixteen specific divergence risks are catalogued in the audit, with the
 likelihood of silent divergence for each. The ones rated *likely* are all in the
