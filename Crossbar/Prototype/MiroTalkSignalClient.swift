@@ -9,14 +9,15 @@ import SwiftUI
 /// `docs/MIROTALK_CORE_AUDIT.md` determines what is sent and in what shape — the
 /// `join` payload, `addPeer`, `relaySDP`/`sessionDescription`,
 /// `relayICE`/`iceCandidate`, `removePeer` — but nothing has ever executed that
-/// contract from native code. This instrument answers the first question only:
-/// can a native client open the transport, complete both handshakes, and be
-/// accepted into a room?
+/// contract from native code.
 ///
 /// It deliberately does NOT create peer connections yet. Offer/answer policy is
 /// the part the audit flags as undetermined, because Objective-C libwebrtc
 /// exposes no `negotiationneeded`; mixing that into a transport probe would make
 /// a failure ambiguous.
+///
+/// Two instances in one app can occupy one room, which tests the server's mesh
+/// fan-out without depending on a browser client behaving.
 ///
 /// Wire format, for reference:
 ///   Engine.IO v4 over WebSocket: `0` open, `1` close, `2` ping, `3` pong, `4` message
@@ -27,13 +28,15 @@ import SwiftUI
 final class MiroTalkSignalClient: NSObject, ObservableObject {
     @Published private(set) var state = "idle"
     @Published private(set) var lines: [String] = []
-    @Published private(set) var roomId: String
-    @Published var roomInput: String
+
+    /// Distinguishes the two probe peers in the log and to the server.
+    let label: String
 
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private var logHandle: FileHandle?
-    private var peerUUID = UUID().uuidString
+    private var roomId = ""
+    private let peerUUID = UUID().uuidString
 
     /// The private MiroTalk origin. Overridable so no deployment detail is baked in.
     private var origin: URL {
@@ -42,18 +45,16 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
             ?? URL(string: "https://qatar-vpn.tailea67b0.ts.net")!
     }
 
-    override init() {
-        let generated = UUID().uuidString
-        roomId = generated
-        roomInput = generated
+    init(label: String) {
+        self.label = label
         super.init()
     }
 
     // MARK: - Connection
 
-    func connect() {
+    func connect(room: String) {
         disconnect()
-        let room = roomInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let room = room.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !room.isEmpty else { return }
         roomId = room
 
@@ -70,7 +71,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         }
 
         state = "connecting"
-        append("room=\(room)")
+        append("peer \(label) room=\(room) uuid=\(peerUUID.prefix(8))")
         append("connecting \(url.absoluteString)")
 
         let session = URLSession(configuration: .default)
@@ -88,7 +89,6 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         session?.invalidateAndCancel()
         session = nil
         state = "disconnected"
-        append("disconnected")
     }
 
     private func receiveLoop(_ task: URLSessionWebSocketTask) {
@@ -140,7 +140,11 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
             append("engine.io close")
             state = "closed"
         case "2":
-            send("3") // pong; EIO v4 has the server ping
+            // Logged because liveness across a test window is otherwise invisible:
+            // a socket the server has dropped and a socket that simply received
+            // nothing look identical in every other line.
+            append("engine.io ping -> pong")
+            send("3")
         case "3":
             break
         case "4":
@@ -161,7 +165,8 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         case "2":
             // The screen gets a prefix but the file gets the whole event: an SDP is
             // far too long to read there, and the file is what actually gets pulled.
-            append("event \(rest.prefix(180))", detail: "event \(rest)")
+            let name = Self.eventName(in: rest)
+            append("event \(name) \(rest.prefix(120))", detail: "event \(name) \(rest)")
         case "4":
             append("connect_error \(rest)")
             state = "rejected"
@@ -172,12 +177,22 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         }
     }
 
+    /// `["addPeer",{…}]` -> `addPeer`, so events are greppable in the pulled log.
+    private static func eventName(in payload: String) -> String {
+        guard
+            let data = payload.data(using: .utf8),
+            let array = try? JSONSerialization.jsonObject(with: data) as? [Any],
+            let name = array.first as? String
+        else { return "?" }
+        return name
+    }
+
     // MARK: - Join
 
     /// The payload shape is taken from the audited contract
-    /// (`docs/MIROTALK_CORE_AUDIT.md`, "join payload"). `peer_name` is left as a
-    /// probe label rather than the family display name because this instrument is
-    /// not yet an authenticated product client.
+    /// (`docs/MIROTALK_CORE_AUDIT.md`, "join payload"). `peer_name` is a probe
+    /// label rather than the family display name because this instrument is not
+    /// yet an authenticated product client.
     private func emitJoin() {
         let version = ProcessInfo.processInfo.operatingSystemVersionString
         let payload: [String: Any] = [
@@ -192,7 +207,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
                 "extras": [:],
             ],
             "peer_uuid": peerUUID,
-            "peer_name": "Crossbar Signal Probe",
+            "peer_name": "Crossbar \(label)",
             "peer_avatar": "",
             "peer_token": NSNull(),
             "peer_video": true,
@@ -226,11 +241,12 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     }
 
     /// Pulled with devicectl rather than read off a screenshot; screen-only output
-    /// has already cost measurements on this project.
+    /// has already cost measurements on this project. One file per peer so the two
+    /// sides of a mesh exchange can be compared.
     private func writeToLogFile(_ line: String) {
         if logHandle == nil {
             let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let url = dir.appendingPathComponent("signal.log")
+            let url = dir.appendingPathComponent("signal-\(label).log")
             FileManager.default.createFile(atPath: url.path, contents: nil)
             logHandle = try? FileHandle(forWritingTo: url)
             logHandle?.truncateFile(atOffset: 0)
@@ -241,33 +257,45 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
 }
 
 struct SignalProbeSection: View {
-    @StateObject private var client = MiroTalkSignalClient()
+    @StateObject private var peerA = MiroTalkSignalClient(label: "A")
+    @StateObject private var peerB = MiroTalkSignalClient(label: "B")
     @State private var expanded = false
+    @State private var room = "crosstest"
 
     var body: some View {
         DisclosureGroup("MiroTalk signalling (native Socket.IO)", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 6) {
-                TextField("room id", text: $client.roomInput)
+                TextField("room id", text: $room)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .font(.caption2.monospaced())
 
                 HStack {
-                    Button("Connect and join") { client.connect() }
+                    Button("A join") { peerA.connect(room: room) }
                         .buttonStyle(.bordered)
-                        .accessibilityIdentifier("signal.connect")
-
-                    Button("Disconnect") { client.disconnect() }
+                        .accessibilityIdentifier("signal.a.join")
+                    Button("B join") { peerB.connect(room: room) }
                         .buttonStyle(.bordered)
-                        .accessibilityIdentifier("signal.disconnect")
+                        .accessibilityIdentifier("signal.b.join")
+                    Button("Disconnect both") {
+                        peerA.disconnect()
+                        peerB.disconnect()
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("signal.disconnect")
                 }
 
-                Text(client.state)
+                Text("A: \(peerA.state)   B: \(peerB.state)")
                     .font(.caption.weight(.semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(client.lines.joined(separator: "\n"))
+                Text(peerA.lines.suffix(8).joined(separator: "\n"))
+                    .font(.caption2.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+
+                Text(peerB.lines.suffix(8).joined(separator: "\n"))
                     .font(.caption2.monospaced())
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
