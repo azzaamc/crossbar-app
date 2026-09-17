@@ -524,6 +524,42 @@ the whole app; whether AGPLv3 and App Store terms can be satisfied together unde
 §10; whether an iPhone is a §6 "User Product"; what "prominently offer" requires
 in practice; and whether the deployment's §13 duty has been discharged to date.
 
+#### Audio-seam spike result (2026-09-17)
+
+The first Architecture B code was a DEBUG-only instrument, run on the physical
+iPhone. It asks the one question that reading code cannot answer: does
+`RTCAudioSession` adopt a CallKit-activated session, and does native capture
+survive the handover where WebKit's did not?
+
+Procedure: configure `RTCAudioSession` for `playAndRecord`/`voiceChat` with
+`useManualAudio = 1` and `isAudioEnabled = 0`; start native camera capture with a
+local `RTCMTLVideoView` preview; then start a real CallKit call with the web
+engine deliberately out of the path.
+
+| Step | Observed |
+| --- | --- |
+| Capture started | preview live, `rtcActive=0 audioEnabled=0 audioUnit=0` |
+| CallKit call started | **preview still live**, `rtcActive=1 audioEnabled=1 audioUnit=0` |
+
+Device log, verbatim: `didActivate #1: rtc.isActive before = false` →
+`adopted by RTCAudioSession; isAudioEnabled = true`.
+
+- **Proven:** CallKit activated the audio session; the app handed it to
+  `RTCAudioSession` via `audioSessionDidActivate(_:)`; WebRTC did **not** attempt a
+  competing activation; and **native capture kept running through the handover**.
+  WebKit did the opposite in the same situation — `maybeActivateAudioSession …
+  failed to activate AudioSession`, capture muted and stopped, preview dead in
+  about half a second (P8.10, P8.13, P8.14).
+- **Not yet proven:** that audio actually flows. `audioUnit=0` means the audio
+  unit never started, because the spike creates an audio track but nothing consumes
+  it, so WebRTC's ADM never configures itself and `canPlayOrRecord` never changes.
+  Audio playout and record under CallKit are therefore unmeasured, as are routes,
+  interruption and background behaviour.
+
+The next increment is to give the spike a local loopback peer connection so the ADM
+is actually exercised — the smallest change that turns "capture survives" into
+"audio runs".
+
 #### Status
 
 Decided by the owner on 2026-09-17 in favour of B. Mesh and negotiation
