@@ -441,6 +441,34 @@ fixture anywhere in the tree. The browser client is the only executable
 reference for the client protocol, which is why the existing PWA matters as a
 reference peer.
 
+**Reimplementation verdict: tractable with care.** The wire protocol is fully
+determined — what is sent and in what shape — and the offer/answer/ICE/teardown
+sequence, the per-peer candidate queue, and the native API mapping are now
+written down in `docs/MIROTALK_CORE_AUDIT.md` under "Mesh and negotiation
+specification". Most of the usual porting risk is absent by construction: no SDP
+munging, no transceiver API, no codec preferences, no ICE restart, and
+`replaceTrack` maps one-to-one onto `RTCRtpSender.track`.
+
+What is *not* determined is **when the local side decides to offer.** MiroTalk
+delegates that entirely to the browser's `negotiationneeded` event — the only
+`createOffer(` call in the file sits inside that handler — and **Objective-C
+libwebrtc does not expose an equivalent**. A Swift port must therefore synthesise
+the trigger as explicit policy: offer after adding tracks, offer after removing a
+track, offer after answering when local transceivers went unmatched, and never
+offer for a pure `replaceTrack` swap. That policy cannot be validated against a
+specification, only against a live 1.9.64 peer — which is why the PWA-as-
+reference-peer test matters and why the budget belongs in interop testing rather
+than porting effort.
+
+Sixteen specific divergence risks are catalogued in the audit, with the
+likelihood of silent divergence for each. The ones rated *likely* are all in the
+trigger rather than the payload: the missing `negotiationneeded`, an offerer with
+zero tracks never offering, the late-track latch having no deterministic effect,
+pre-existing local transceivers versus answer m-line association, the two
+different camera-off paths, positional sender bookkeeping, and the mismatch
+between a server-assigned offerer role and opportunistic bidirectional
+renegotiation.
+
 #### Licensing
 
 MiroTalk P2P is **AGPL-3.0-only** (SPDX). `package.json` carries the deprecated

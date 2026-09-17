@@ -396,3 +396,148 @@ peers; it can. The gating questions are physical iOS CallKit/audio/background
 reliability, a maintainable extraction boundary from the monolithic client, and
 the AGPL distribution decision. Crossbar has not yet executed this signaling
 contract.
+
+## Mesh and negotiation specification (reimplementation reference)
+
+Extracted from the pinned upstream commit `5af51e0c…` to support Architecture B,
+where the client is reimplemented in Swift rather than reused. Citations:
+`client.js:NNNN` = `public/js/client.js`, `server.js:NNNN` =
+`app/src/server.js`, both at that commit.
+
+**Verdict: tractable with care.** The wire protocol is fully determined — what is
+sent, and in what shape — and can be implemented from this section without
+reference to the original. What is *not* determined is **when the local side
+decides to offer**, because MiroTalk delegates that to the browser's
+`negotiationneeded` event, which Objective-C libwebrtc does not expose. The port
+must re-derive the trigger as explicit policy and validate it against a real
+1.9.64 peer. Budget for interop testing, not for porting effort.
+
+### Offer, answer and mesh shape
+
+1. On `join`, the server creates `channels`/`peers`/`presenters` for the room and
+   writes the joiner's metadata into the room peer map, then calls
+   `addPeerTo(channel)` **before** adding the joiner to `channels`
+   (`server.js:1629` vs `server.js:1631`). The `for (let id in channels[channel])`
+   loop therefore iterates only pre-existing members, so the joiner is never
+   asked to peer with itself.
+2. For each existing member the server emits two `addPeer` events
+   (`server.js:2433-2451`): to the existing member
+   `{peer_id, peers, should_create_offer: false, iceServers}` and to the joiner
+   `{peer_id, peers, should_create_offer: true, iceServers}`. `peers` is the
+   **entire** room peer map, including the recipient itself and the room-metadata
+   keys (`lock`, `password`, `joinLock`). The offerer role is decided once at join
+   time and never re-elected.
+3. Topology is a pairwise full mesh: N(N−1)/2 independent peer connections.
+4. `handleAddPeer` (`client.js:2827-2907`) dedupes against `peerConnections`,
+   constructs the connection with **only** `iceServers` set — no
+   `iceTransportPolicy`, `bundlePolicy` or `rtcpMuxPolicy`, verified absent — and
+   caches `allPeers = peers`, installs handlers, then adds local tracks in the
+   order **video → screen → audio** (`client.js:3087-3120`).
+5. **Ordering invariant:** handlers are installed and the offer path armed
+   *before* tracks are added, so the offerer's single `negotiationneeded` fires
+   after its tracks exist.
+6. Offer path (`handleRtcOffer`, `client.js:3212-3239`) does nothing but assign
+   `pc.onnegotiationneeded = () => createOffer().then(setLocalDescription)
+   .then(relaySDP)`. `createOffer(` occurs exactly once in the file, with **no
+   arguments**. There is no code path that creates an offer at an
+   application-chosen moment.
+7. Answer path (`handleSessionDescription`, `client.js:3246-3305`):
+   `setRemoteDescription` is applied **unconditionally, with no `signalingState`
+   check**, failures logged only. On success it flushes queued ICE **before**
+   creating an answer; only for `type == 'offer'` does it `createAnswer` →
+   `setLocalDescription` → `relaySDP`, then consume the late-track latch. An
+   `answer` does nothing but apply.
+8. ICE (`client.js:2947-3002`, `3312-3367`): candidates relay as
+   `{sdpMLineIndex, candidate}` only — **`sdpMid` and `usernameFragment` are never
+   sent**. The null end-of-candidates event is deliberately dropped. Incoming
+   candidates are queued per `peer_id` when the connection is missing or
+   `remoteDescription` is unset, and the queue is flushed in exactly one place:
+   immediately after a successful `setRemoteDescription`. SDP and ICE are
+   unordered on the wire; that queue is the only protection.
+9. Remote tracks (`client.js:3009-3080`): one inbound audio stream per peer keyed
+   by socket id; video and screen share share one branch discriminated by a
+   four-way heuristic. The DOM/tile construction around it is meeting UI and is
+   droppable.
+10. Teardown (`client.js:3444-3515`, `server.js:2457-2509`): per peer, close the
+    connection and delete `peerConnections`, `pendingIceCandidates`, the
+    media-element maps and `allPeers[peer_id]`. Remote tracks are never explicitly
+    stopped; `close()` is relied on. The leaver also receives `removePeer` for each
+    remaining peer.
+11. Reconnect: a new transport yields a new socket id; `handleDisconnect`
+    (`client.js:3373-3435`) closes all connections and clears the maps but
+    **retains local media**, and `handleConnect` re-sends `join` when local streams
+    already exist (`client.js:1586-1587`). Every `peer_id` is new, so the mesh is
+    rebuilt from scratch.
+
+### `replaceTrack` and the negotiation trigger
+
+- `replaceTrack` never renegotiates and never touches SDP; MiroTalk relies on this
+  for camera switch, mic switch and noise-suppression pipeline changes
+  (`client.js:9876, 9897, 9919`).
+- Adding or removing a track does require renegotiation, and those branches re-arm
+  the offer handler via `handleRtcOffer` rather than creating an offer directly
+  (`client.js:9879-9880, 9900-9901, 9907-9908, 9922-9923`).
+- **Mute is not renegotiation**: `track.enabled` flips and a `peerStatus` message
+  goes out for UI interop only (`client.js:9266-9321`).
+- **Camera off has two different paths**: `handleVideo` stops the track
+  (`track.stop()`, no SDP), while `refreshMyStreamToPeers` uses
+  `replaceTrack(null)` when no camera track is present in the local stream
+  (`client.js:9886`). The remote peer's observable result differs per path.
+- **Sender roles are positional**: `videoSenders[0]` is treated as the camera
+  sender and `videoSenders[1]` as the screen sender (`client.js:9869-9871`), with
+  no explicit role tag. A reimplementation should keep the `RTCRtpSender` returned
+  by `add(_:streamIds:)` as the role tag instead.
+- The **late-track latch** (`needToCreateOfferByPeer`, declared `client.js:824`,
+  set `client.js:2882-2884`, consumed `client.js:3284-3286`) only *arms* the offer
+  handler after an answer when the remote joined with video or screen off. It sends
+  nothing itself and is never cleared on disconnect. It references upstream issue
+  #110 and is a behavioural patch, not a rule.
+
+### Divergence risks for a Swift port
+
+| # | Risk | Likelihood of silent divergence |
+| --- | --- | --- |
+| A1 | Objective-C libwebrtc exposes **no `onnegotiationneeded`**, so MiroTalk's offer trigger has no native equivalent | likely |
+| A2 | An offerer with no tracks never offers — the event fires only because `addTrack` created a transceiver | likely |
+| A3 | The late-track latch has no deterministic effect; the repair offer depends on a browser event | likely |
+| A4 | No `signalingState` guards and no glare handling; concurrent offers fail silently | possible |
+| A5 | Local transceivers exist before `setRemoteDescription(offer)`; answer m-line association relies on libwebrtc transceiver recycling | likely |
+| A6 | Candidates carry only `sdpMLineIndex` — no `sdpMid` or `usernameFragment` | possible |
+| A7 | End-of-candidates is never signalled | unlikely |
+| A8 | Camera-off takes two paths with different remote-visible results | likely |
+| A9 | Positional sender bookkeeping can silently swap camera and screen | likely |
+| A10 | Mute is invisible at the signalling layer; a track-stopping port looks different to peers | possible |
+| A11 | The offerer role is server-assigned while renegotiation is opportunistic and bidirectional | likely |
+| A12 | Audio silently switches to screen-share audio while screen sharing | possible |
+| A13 | The `peers` map embeds room-metadata keys alongside peer entries | possible |
+| A14 | `needToCreateOfferByPeer` is never cleared across reconnect | possible |
+| A15 | SDP and ICE are unordered on the wire, with a single flush trigger | possible |
+| A16 | No SDP munging, transceiver API or codec preferences anywhere — a positive finding that removes most porting risk | unlikely (as a risk) |
+
+### Native API mapping
+
+| MiroTalk JS | Native iOS WebRTC |
+| --- | --- |
+| `new RTCPeerConnection({iceServers})` | `RTCPeerConnection(configuration:)`; `iceServers` from the `addPeer` payload, never hard-coded |
+| `pc.addTrack(track, stream)` | `pc.add(_:streamIds:)` — keep the returned sender as the role tag |
+| `pc.getSenders()` filtered by kind | `pc.senders` filtered by `track?.kind`; do not rely on index order |
+| `sender.replaceTrack(t)` / `(null)` | `RTCRtpSender.track = t` / `= nil` |
+| `pc.removeTrack(sender)` | `pc.removeTrack(sender)`, then renegotiate |
+| `pc.onnegotiationneeded` | **no equivalent** — synthesise the trigger |
+| `pc.createOffer()` / `createAnswer()` | `offer(for:)` / `answer(for:)` with default options |
+| `pc.setLocalDescription` / `setRemoteDescription` | same names; add the `signalingState` guard the JS lacks |
+| `new RTCIceCandidate({sdpMLineIndex, candidate})` | `RTCIceCandidate(sdp:sdpMid:sdpMLineIndex:)` with `sdpMid` `nil` |
+| `pendingIceCandidates[peer_id]` + `flushIceCandidates` | application-level `[String: [RTCIceCandidate]]`; libwebrtc does not queue for you |
+| `pc.ontrack` | `peerConnection(_:didAdd:streams:)` keyed by remote socket id |
+| `<audio>`/`<video>` + `srcObject` | `RTCAudioTrack` auto-played via `RTCAudioSession`; `RTCVideoTrack` + an `RTCVideoRenderer` |
+| `pc.onconnectionstatechange` (logging only in JS) | `peerConnection(_:didChange:)`; drive reconnect and UI from it |
+| `io({transports:['websocket']})` | `SocketIO` client forced to websocket transport |
+
+### Open questions requiring an experiment, not more reading
+
+- Does the offerer-with-zero-tracks deadlock actually occur in 1.9.64? Requires
+  observing a live pair where both sides joined with camera, mic and screen off.
+- Does libwebrtc on iOS associate a pre-existing local transceiver with an
+  incoming offer's m-line identically to Chrome?
+- Is an offer in practice ever produced by the latch path?
+- Does libwebrtc accept `replaceTrack` with a track whose `readyState` is `ended`?
