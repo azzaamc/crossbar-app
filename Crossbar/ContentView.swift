@@ -14,6 +14,13 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
+                Text("Architecture B audio seam")
+                    .font(.subheadline.weight(.semibold))
+
+                AudioSeamView(probe: model.seamProbe, model: model)
+
+                Divider()
+
                 WebRuntimeView(engine: model.mediaEngine)
                     .frame(maxWidth: .infinity)
                     .frame(height: 360)
@@ -74,16 +81,9 @@ struct ContentView: View {
                         .textSelection(.enabled)
                 }
                 .frame(maxHeight: 130)
-
-                Divider()
-
-                Text("Architecture B audio seam")
-                    .font(.subheadline.weight(.semibold))
-
-                AudioSeamView(probe: model.seamProbe, model: model)
             }
             .padding()
-            .navigationTitle("Architecture A Probe")
+            .navigationTitle("Crossbar Probe")
             .task {
                 model.runLaunchArgumentsIfNeeded()
             }

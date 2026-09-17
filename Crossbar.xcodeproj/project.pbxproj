@@ -121,10 +121,10 @@
 				5F8EA67C305AAF08005261F6 /* Crossbar */,
 			);
 			name = Crossbar;
-			productName = Crossbar;
 			packageProductDependencies = (
 				7C4D5E6F708192A3B4C5D6E2 /* WebRTC */,
 			);
+			productName = Crossbar;
 			productReference = 5F8EA67A305AAF08005261F6 /* Crossbar.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -202,10 +202,10 @@
 			);
 			mainGroup = 5F8EA671305AAF08005261F6;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
 			packageReferences = (
 				7C4D5E6F708192A3B4C5D6E1 /* XCRemoteSwiftPackageReference "WebRTC" */,
 			);
+			preferredProjectObjectVersion = 77;
 			productRefGroup = 5F8EA67B305AAF08005261F6 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
