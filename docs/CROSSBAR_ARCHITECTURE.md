@@ -276,6 +276,75 @@ reconnect-hang and 60-second socket-close fixes, so reconnect behaviour is the
 part of that dependency with the most defect history and needs its own test
 harness.
 
+#### Why the native audio path is separated by construction
+
+Code evidence from the WebRTC source tree — **not** a hardware measurement.
+`RTCAudioSession` publishes an activation delegate whose own header states it
+exists "to inform `RTCAudioSession` when the audio session activation state has
+changed outside of `RTCAudioSession`… The current known use case of this is when
+CallKit activates the audio session for the application."
+
+`audioSessionDidActivate:` sets `isActive = YES`, after which `setActive:`
+computes `shouldSetActive = (active && !isActive) || …` — false — so **WebRTC
+deliberately makes no `AVAudioSession.setActive:` call when CallKit already holds
+the session.** That is the precise inversion of WebKit's `MediaSessionManageriOS`,
+which owns activation inside the web process and therefore tries, and fails, to
+activate a session CallKit already owns. The native design has exactly one owner,
+which is what Apple's CallKit model requires.
+
+This separation holds only if the app does its part: `provider(_:didActivate:)`
+must call `RTCAudioSession.sharedInstance().audioSessionDidActivate(audioSession)`,
+and `didDeactivate` must call `audioSessionDidDeactivate(_:)`. Omitting that
+leaves `isActive` false, the ADM falls through to activating the session itself,
+and competing activation is reintroduced.
+
+| When | Do |
+| --- | --- |
+| Before reporting or answering | category `.playAndRecord`, mode `.voiceChat`, include `.allowBluetooth`; `useManualAudio = true`; `isAudioEnabled = false` |
+| In `perform CXStartCallAction` / `CXAnswerCallAction` | configure the session; do **not** call `setActive(true)`; then fulfill |
+| `didActivate` | `audioSessionDidActivate(audioSession)`; then `isAudioEnabled = true` |
+| `didDeactivate` | `isAudioEnabled = false`; then `audioSessionDidDeactivate(audioSession)` |
+| `providerDidReset` | disable audio; tear media down |
+
+`RTCAudioSession` also observes interruptions, route changes, media-services
+resets, and `canPlayOrRecord` transitions and drives the ADM from them, so
+criteria 4 and 5 need policy rather than hand-built plumbing.
+
+**On-device confirmation is still unrun**, for either architecture. The code
+evidence above shows the native path is separated by construction; it does not
+show that a Crossbar media engine produces capture, two-way audio, and route
+changes on a physical iPhone under a live CallKit call.
+
+#### Distribution decision
+
+There is no official Google prebuilt iOS binary: prebuilt mobile binaries were
+discontinued around the M80 release, and the `GoogleWebRTC` pod has been frozen
+at 1.1.32000 since March 2023. The practical route is a maintained community
+xcframework consumed through SwiftPM, pinned to a tag — `stasel/WebRTC` 153.0.0
+as primary, `webrtc-sdk/Specs` if the fork's iOS audio patches are ever wanted.
+
+Building from source is a ~6 GB checkout plus 1–3 hours per xcframework and is
+not justified here. CocoaPods should be avoided outright for a new project:
+CocoaPods trunk becomes permanently read-only on 2026-12-02.
+
+The framework is dynamic and prebuilt, so App Store thinning cannot dead-strip
+it; a roughly 30–40 MB download-size delta is the expectation. **That is an
+inference from the framework's shape, not a measurement**, and must be confirmed
+from `App Thinning Size Report.txt` before it is treated as fact.
+
+One API correction worth recording because most tutorials get it wrong:
+`RTCCameraPreviewView` no longer exists in the current SDK. The local preview is
+an `RTCMTLVideoView` attached to the local `RTCVideoTrack` — the same mechanism
+as remote rendering.
+
+One shared risk: an Apple developer forum thread (837211) reports an iOS 27
+`callservicesd`/`mediaservicesd` race in which `didActivate` is not delivered,
+with a workaround of refreshing `CXProvider.configuration` before reporting
+calls. That is **CallKit behaviour affecting A and B equally**, so it is a reason
+to instrument `didActivate` delivery in either architecture rather than a reason
+to prefer one. The thread could not be read directly; its substance is recorded
+as a lead to check by hand, not as a finding.
+
 #### Signaling surface
 
 Nine events are mandatory for a 2–4 person mesh: `connect`, `join`, `addPeer`,
@@ -344,14 +413,26 @@ they must be rebuilt and re-proven.
 
 #### Licensing
 
-Documented facts: MiroTalk P2P is AGPLv3; native WebRTC is BSD-3-Clause;
-`socket.io-client-swift` is MIT with an Apache-2.0 Starscream dependency.
-Crossbar currently contains no MiroTalk source. Under B no MiroTalk code is
-copied, so no AGPL-covered work enters the binary, and the modified production
-MiroTalk service remains a separate network-service question unaffected by the
-client's media architecture. Unresolved and not decided here: whether a native
-reimplementation of the protocol is a derivative work, and whether AGPLv3 terms
-are compatible with App Store distribution if MiroTalk code is ever included.
+Documented facts: MiroTalk P2P is AGPLv3; the WebRTC framework is BSD-3-Clause
+plus a Google patent grant (perpetual, no-charge, irrevocable, with defensive
+termination and an explicit carve-out for claims infringed only as a consequence
+of further modification); `socket.io-client-swift` is MIT with an Apache-2.0
+Starscream dependency. Crossbar currently contains no MiroTalk source.
+
+Under B no MiroTalk code is copied, so no AGPL-covered work enters the binary,
+and the modified production MiroTalk service remains a separate network-service
+question unaffected by the client's media architecture. The framework itself
+imposes no copyleft obligation. BSD binary redistribution does require the
+notice to travel with the binary, so the actionable step is to extract
+`WebRTC.xcframework/LICENSE` from the chosen release and surface it in the app's
+acknowledgements. That file is also the authoritative transitive-licence list
+for the binary actually shipped: component licences asserted from build metadata
+— notably Opus, which does not appear in the pinned `DEPS` — are unverified and
+should be resolved from it rather than assumed.
+
+Unresolved and not decided here: whether a native reimplementation of the
+protocol is a derivative work, and whether AGPLv3 terms are compatible with App
+Store distribution if MiroTalk code is ever included.
 
 #### Status
 
