@@ -658,6 +658,8 @@ struct AudioSeamView: View {
 
             BackendReachabilitySection()
 
+            SignalProbeSection()
+
             ScrollView {
                 Text(probe.lines.joined(separator: "\n"))
                     .font(.caption2.monospaced())
