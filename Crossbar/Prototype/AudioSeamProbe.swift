@@ -656,6 +656,8 @@ struct AudioSeamView: View {
             Text("rtcActive=\(probe.rtcSessionIsActive ? "1" : "0")  audioEnabled=\(probe.audioEnabled ? "1" : "0")  audioUnit=\(probe.playOrRecordCount)")
                 .font(.caption.monospaced())
 
+            BackendReachabilitySection()
+
             ScrollView {
                 Text(probe.lines.joined(separator: "\n"))
                     .font(.caption2.monospaced())
