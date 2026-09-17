@@ -491,28 +491,41 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
 
     // MARK: - Helpers
 
-    /// Which candidate pair is actually carrying the media. Gathered candidates say
-    /// what was available; the selected pair says what won, and only that can decide
-    /// whether a public STUN server is doing any work.
+    /// Which candidate pair is actually carrying the media, for **every** transport.
+    ///
+    /// An earlier revision reported `statistics.values.first(where: { $0.type ==
+    /// "transport" })`; dictionary iteration order is arbitrary, so with more than one
+    /// transport it returned a different one each poll and two pairs appeared to
+    /// alternate. ICE selects one pair per transport, and only naming them all shows
+    /// which path actually carried media.
     nonisolated private static func selectedPairDescription(_ report: RTCStatisticsReport) -> String? {
-        guard
-            let transport = report.statistics.values.first(where: { $0.type == "transport" }),
-            let pairId = transport.values["selectedCandidatePairId"] as? String,
-            let pair = report.statistics[pairId]
-        else { return nil }
+        var parts: [String] = []
+        for transport in report.statistics.values.filter({ $0.type == "transport" }).sorted(by: { $0.id < $1.id }) {
+            guard
+                let pairId = transport.values["selectedCandidatePairId"] as? String,
+                let pair = report.statistics[pairId]
+            else { continue }
 
-        func describe(_ id: Any?) -> String {
-            guard let id = id as? String, let candidate = report.statistics[id] else { return "?" }
-            let type = candidate.values["candidateType"] as? String ?? "?"
-            let address = candidate.values["address"] as? String ?? "?"
-            let port = (candidate.values["port"] as? NSNumber)?.intValue ?? 0
-            let proto = candidate.values["protocol"] as? String ?? "?"
-            return "\(type) \(address):\(port)/\(proto)"
+            func describe(_ key: String) -> String {
+                guard
+                    let id = pair.values[key] as? String,
+                    let candidate = report.statistics[id]
+                else { return "?" }
+                let type = candidate.values["candidateType"] as? String ?? "?"
+                let address = candidate.values["address"] as? String ?? "?"
+                let port = (candidate.values["port"] as? NSNumber)?.intValue ?? 0
+                let proto = candidate.values["protocol"] as? String ?? "?"
+                return "\(type) \(address):\(port)/\(proto)"
+            }
+
+            let state = pair.values["state"] as? String ?? "?"
+            let bytesSent = (pair.values["bytesSent"] as? NSNumber)?.intValue ?? -1
+            parts.append(
+                "[\(transport.id)] local=\(describe("localCandidateId")) "
+                    + "remote=\(describe("remoteCandidateId")) state=\(state) bytesSent=\(bytesSent)"
+            )
         }
-
-        let state = pair.values["state"] as? String ?? "?"
-        return "local=\(describe(pair.values["localCandidateId"])) "
-            + "remote=\(describe(pair.values["remoteCandidateId"])) state=\(state)"
+        return parts.isEmpty ? nil : parts.joined(separator: " | ")
     }
 
     private static func iceServers(from raw: Any?) -> [RTCIceServer] {
@@ -572,6 +585,9 @@ extension MiroTalkSignalClient: RTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
         Task { @MainActor in
             guard let peerId = self.peerId(for: pc) else { return }
+            // Our own candidates were previously only emitted, never logged, which
+            // left no record of what this device actually offered.
+            self.append("local candidate [\(peerId.prefix(8))] \(candidate.sdp)")
             self.emit("relayICE", [
                 "peer_id": peerId,
                 "ice_candidate": [
