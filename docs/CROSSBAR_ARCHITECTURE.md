@@ -720,6 +720,21 @@ were present alongside them and are what a tailnet-only deployment actually need
 This is the ICE decision flagged above, now with evidence for it rather than a
 reading of configuration.
 
+**Which pair actually carried the media (2026-09-17).** Gathered candidates say what
+was available; only the selected pair says what is load-bearing:
+
+```
+ICE path local=host 192.168.1.120:59492/udp remote=host 192.168.1.127:49786/udp state=succeeded
+```
+
+Both devices were on the same Wi-Fi, so the call rode LAN host candidates and
+**neither the Tailscale candidates nor the Google-derived srflx candidates carried
+anything**. That confirms host candidates outrank srflx when reachable, and that the
+public STUN server contributed nothing to this call — but it does **not** settle
+whether srflx is load-bearing when no direct host path exists, which is the product's
+real topology: family members on separate networks. That case needs the two devices on
+different networks, which is the next measurement.
+
 Sixteen specific divergence risks are catalogued in the audit, with the
 likelihood of silent divergence for each. The ones rated *likely* are all in the
 trigger rather than the payload: the missing `negotiationneeded`, an offerer with
