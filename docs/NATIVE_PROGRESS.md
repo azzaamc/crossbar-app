@@ -211,7 +211,7 @@ marked as such there.
 | CallKit incoming | Yes | Not supported | **Yes** — native Accept/Decline; answer and decline delivered (P8.8) |
 | CallKit outgoing | Yes | Rejected (`.unentitled`) | **Yes after two probe fixes** — error `(null)` on a cold start (P8.7) |
 | `didActivate` / `didDeactivate` | Yes | Not tested | **Yes** — states 1 and 0 delivered (P8.9) |
-| WebKit capture during a CallKit call | Yes | Not tested | **FAIL** — WebKit cannot activate its audio session; capture muted and stopped, player ends paused. Reproduced with app-configured and WebKit-only session ownership (P8.10, P8.13) |
+| WebKit capture during a CallKit call | Yes | Not tested | **FAIL** — WebKit loses its audio session the instant CallKit takes it; capture muted/stopped and preview dies. Fails in all three arrangements tested: app-configured session, WebKit-only, and media-first ordering (P8.10, P8.13, P8.14) |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
 | Audio route behaviour | Yes | Not meaningfully tested | Not tested |
 | Remote media | No | No | No |

@@ -456,6 +456,35 @@ screenshots and console capture are fully automatable.
   read as "media works": with the non-blocking `play()`, that status now means
   only that capture was acquired.
 
+#### P8.14 — Media-first ordering experiment
+
+- Hypothesis: if local media were acquired and already producing data before
+  CallKit took the audio session, WebKit would keep its session and the preview
+  would survive the handover.
+- Change: `startOutgoingCall()` now acquires local media first and requests the
+  `CXStartCallAction` only after `joined` fires; `onStart` adopts the CallKit
+  call instead of re-acquiring media.
+- Result: **HYPOTHESIS REJECTED — ordering does not matter.**
+- Actual: the preview appeared and rendered for approximately half a second,
+  then went black the moment the CallKit transaction was accepted. The status
+  reached `CallKit accepted; local media was already active`, so the media-first
+  path ran as designed and the call really was started. Ending the call returned
+  the probe to `Call ended` / `Runtime ready`.
+- Evidence: operator observation of the live preview and the probe status text.
+  No device unified log was collected for this run; the mechanism is established
+  by P8.10 and P8.13, which recorded
+  `maybeActivateAudioSession … failed to activate AudioSession` followed by
+  `RealtimeMediaSource::setMuted` and `RealtimeMediaSource::stop` in exactly this
+  situation.
+- Implication: **WebKit loses the audio session the instant CallKit takes it, in
+  every ordering and ownership arrangement tested.** Three configurations now
+  fail identically: CallKit-first with an app-configured session (P8.10),
+  CallKit-first with WebKit as sole owner (P8.13), and media-first with WebKit as
+  sole owner (P8.14). Local capture and rendering demonstrably work while CallKit
+  is idle — the preview rendered here before the handover — so this is
+  specifically the CallKit/WebKit session boundary, not a general WebKit media
+  defect.
+
 #### P8 — device items still NOT TESTED
 
 - Visible camera-off blanking and camera-on restore.
@@ -480,11 +509,13 @@ Only these conclusions are supported:
 6. The native/WebKit ownership boundary is technically constructible: on real
    hardware CallKit accepts outgoing calls, presents incoming calls, and
    delivers `didActivate` / `didDeactivate` (P8.7–P8.9).
-7. WebKit capture and a CallKit-activated audio session conflict. With a call
-   active, WebKit fails to activate its own audio session, treats the result as
-   an interruption, and stops the capture sources, and the page's `play()`
-   never settles (P8.10). The boundary is constructible but, as configured, is
-   not functional.
+7. WebKit capture and a CallKit-activated audio session conflict, and the
+   conflict is not avoidable by configuration. With a call active, WebKit fails
+   to activate its own audio session, treats the result as an interruption, and
+   stops the capture sources. This holds with the app configuring the session
+   (P8.10), with WebKit as sole owner (P8.13), and with media acquired and
+   already rendering before the call starts (P8.14). The boundary is
+   constructible but, on this evidence, not functional.
 
 ## What the probe does not prove
 

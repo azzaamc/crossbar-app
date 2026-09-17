@@ -240,13 +240,16 @@ CallKit accepts outgoing calls, presents incoming calls, and delivers
 The separating seam fails. With a call active, WebKit reports
 `MediaSessionManageriOS::maybeActivateAudioSession(0) failed to activate
 AudioSession`, then mutes and stops its capture sources and leaves the media
-player paused, so no preview renders (P8.10). This was reproduced in two
-different ownership arrangements — app-configured `AVAudioSession` and
-WebKit-only (P8.13) — so it is not a competing-owner defect the runtime can fix
-by yielding ownership.
+player paused, so no preview renders (P8.10). This was reproduced in three
+arrangements — app-configured `AVAudioSession`, WebKit-only (P8.13), and
+media-first ordering where the preview renders and then dies on handover
+(P8.14) — so it is neither a competing-owner defect nor an ordering defect. It
+is the CallKit/WebKit session boundary itself.
 
-Criteria 4, 5, and 9 remain unmeasured. No decision to replace Architecture A is
-recorded here; this note records the measurement that decision now rests on.
+Criteria 4, 5, and 9 remain unmeasured, and are now largely moot until the audio
+ownership question is settled, because they all sit on the disabled capture
+path. No decision to replace Architecture A is recorded here; this note records
+the measurement that decision now rests on.
 
 ## Backend changes before a usable native release
 
