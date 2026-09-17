@@ -149,8 +149,15 @@ final class AudioSeamProbe: NSObject, ObservableObject {
         let rtc = RTCAudioSession.sharedInstance()
         append("didActivate #\(didActivateCount): rtc.isActive before = \(rtc.isActive)")
         rtc.audioSessionDidActivate(session)
+        // Force a real gate transition. Assigning true when it is already true is not a
+        // change, so RTCAudioSession never notifies canPlayOrRecord, the ADM never
+        // re-evaluates its audio unit, and no setActive ever reaches the session. That
+        // is how audio stayed dead for the whole of a call when capture was already
+        // running: metrics read 1/1/1 and the audio unit kept claiming to run. Dropping
+        // to false and back raises exactly the notification that re-arms the path.
+        rtc.isAudioEnabled = false
         rtc.isAudioEnabled = true
-        append("adopted by RTCAudioSession; isAudioEnabled = true")
+        append("adopted by RTCAudioSession; forced canPlayOrRecord transition")
         status = "CallKit call active — watch whether the preview survives"
         refresh()
     }

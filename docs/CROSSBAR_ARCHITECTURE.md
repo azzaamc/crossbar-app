@@ -697,11 +697,34 @@ that actually deactivates the session — remains unmeasured, and the realistic
 instance (an incoming call during a live call) is not reproducible here: FaceTime
 between the Mac and the iPhone is blocked by the shared Apple ID.
 
-The session-teardown path is instead exercised through CallKit, which is how the
-product will meet a real call: `didDeactivate` returned the session with
-`canPlayOrRecord = false` and metrics `0 0 0`, and `didActivate` restored it.
-Behaviour across a full activate → deactivate → activate cycle is measured separately
-below.
+**Finding: media already running dies when CallKit activates the session
+(2026-09-17).** With capture and the loopback running, audio flowed at ~5 KB per 3s
+sample. Starting a CallKit call stopped it dead — `delta=0` for the entire call — and
+it returned only when a *later* call re-armed the path:
+
+| | media running → call | call ended → new call |
+| --- | --- | --- |
+| `isAudioEnabled` before | already true | false, from `didDeactivate` |
+| so `didActivate` sets | true → true — *not a change* | false → true — *a change* |
+| `canPlayOrRecord` line | **absent** | **present** |
+| `WebRTC willSetActive` | **absent** | **present** |
+| audio | **dead for the whole call** | flows |
+
+Setting `isAudioEnabled = true` on a gate that is already true raises no
+notification, so `RTCAudioSession` never tells the ADM that `canPlayOrRecord` changed,
+the ADM never re-evaluates its audio unit, and no `setActive` reaches the session —
+while CallKit has reconfigured that session underneath it. Every working case in the
+log has that transition followed by `willSetActive`; the one dead case has neither.
+
+**No other instrument saw this.** Throughout the dead period the metrics read
+`rtcActive=1 audioEnabled=1 audioUnit=1`, `playOrRecordCount` never advanced, the
+preview stayed live and `canPlayOrRecord` reported true. Only the inbound-RTP byte
+counter showed the audio was gone. This is the defect that ships as "the call connects
+and nobody can hear anything".
+
+**Fix:** `callKitDidActivate` now forces the gate through false and back, raising the
+`canPlayOrRecord` notification that re-arms the ADM. Applied; verification pending —
+the same four steps must show `delta` climbing straight through the call.
 
 - **Still unmeasured:** audio quality — there is no remote peer, so nothing in this
   probe demonstrates audible fidelity.
