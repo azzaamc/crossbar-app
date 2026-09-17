@@ -606,6 +606,22 @@ audio grant CallKit had just made — the log showed `isAudioEnabled` falling ba
 but the gate was dropped and re-raised rather than held. Setup must never write
 `isAudioEnabled`; teardown owns that. Fixed in the same commit.
 
+**Gate and teardown re-measured after the fix (2026-09-17):**
+
+| Step | Observed |
+| --- | --- |
+| Call active, nothing else running | `rtcActive=1 audioEnabled=1 audioUnit=0` — no consumer for audio, so the unit correctly stays down |
+| Capture started mid-call | metrics unchanged at `1 1 0`; log reads `... useManualAudio=1 isAudioEnabled=1 left alone` — CallKit's grant is now held, where before it fell to 0 here |
+| Call ended | `didDeactivate #1: isAudioEnabled = false, session returned`, `canPlayOrRecord = false`, metrics `0 0 0` |
+| Capture stopped | `capture stopped`; app responsive |
+
+**On reading the preview as evidence.** `RTCMTLVideoView` keeps its last rendered
+frame after the track is detached, so the preview still shows a picture once capture
+has stopped and it cannot by itself show whether the camera was released. The
+authoritative signal is the system privacy indicator in the status bar: after Stop
+it is **absent**, which is what confirms both camera and microphone were released.
+Do not use the frozen preview to argue that capture is still running.
+
 - **Still unmeasured:** audio routes beyond the default (speaker, wired, Bluetooth),
   interruption, background/lock, and audio quality — there is no remote peer, so
   nothing in this probe demonstrates audible fidelity.

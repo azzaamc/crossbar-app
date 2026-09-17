@@ -214,6 +214,7 @@ marked as such there.
 | `didActivate` / `didDeactivate` | Yes | Not tested | **Yes** — states 1 and 0 delivered (P8.9) |
 | WebKit capture during a CallKit call | Yes | Not tested | **FAIL** — WebKit loses its audio session the instant CallKit takes it; capture muted/stopped and preview dies. Fails in all three arrangements tested: app-configured session, WebKit-only, and media-first ordering (P8.10, P8.13, P8.14) |
 | Native WebRTC under CallKit (Architecture B spike) | Yes | — | **Passes in both orderings** — media-first: the audio unit started and kept running when CallKit took the session; CallKit-first: capture survived and audio still started, ending at `rtcActive=1 audioEnabled=1 audioUnit=1`. WebRTC made no `setActive:` of its own while CallKit owned the session. WebKit's capture died in the same situation |
+| Native capture teardown (Architecture B spike) | Yes | — | **Yes** — after Stop, `capture stopped` is logged and the status-bar camera/mic privacy indicators are absent, which is the objective evidence capture was released. The preview keeps its last rendered frame, so the preview alone proves nothing |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
 | Audio route behaviour | Yes | Not meaningfully tested | Not tested |
 | Remote media | No | No | No |
