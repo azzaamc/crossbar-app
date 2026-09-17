@@ -117,6 +117,15 @@ contract from the join URL, and the parser would depend on MiroTalk's web route
 shape. Two options, and this is a decision rather than a detail: parse the URL, or
 return the room id, or a native join descriptor, from a native-appropriate field.
 
+Read from the deployed client (`/js/client.js`, `getQueryParam` at `:1410` and its
+callers), the parameters that URL can carry are `room`, `name`, `avatar`, `token`,
+`audio`, `video`, `screen`, `chat`, `notify`, `hide` and `duration`. `room` is the
+only one a native client needs, plus the origin for its own Socket.IO connection;
+the rest configure MiroTalk's browser client and are inert for native. A bare
+`/join?room=<uuid>` does **not** auto-join — the client shows a pre-join dialog
+asking for a name, and the Socket.IO connection is not opened until after it. That
+is why Family Call sends `name` to the join API and why the returned URL carries it.
+
 **Ringing has no native path.** Foreground ringing is SSE (`GET /api/events`);
 background ringing is W3C Web Push/VAPID with the credential stored as
 `{endpoint, p256dh, auth}` (`src/db.js:421-458`). APNs device tokens are a
