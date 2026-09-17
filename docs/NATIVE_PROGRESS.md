@@ -222,7 +222,7 @@ marked as such there.
 | RTCPeerConnection/SDP/ICE | No | No | No |
 | Two-device call | No | No | No |
 | Three-/four-person mesh | No | No | No |
-| Background/lock/resume | No | No | Background observed only; lock/relaunch not tested |
+| Background/lock/resume | No | No | **Spike (B) yes** — with a call active, audio survived lock and background (`audioUnit=1` throughout, no stop); video capture stopped on suspension (frame count frozen) and resumed cleanly on return |
 | PushKit/APNs | No | No | No |
 
 ## Immediate maintenance issue

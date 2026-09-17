@@ -622,9 +622,36 @@ authoritative signal is the system privacy indicator in the status bar: after St
 it is **absent**, which is what confirms both camera and microphone were released.
 Do not use the frozen preview to argue that capture is still running.
 
+**Lock, wake and backgrounding (2026-09-17).** Measured with the call active and the
+loopback running, using produced-frame counts rather than the preview — the preview
+cannot distinguish a frozen picture from a live one.
+
+| Event | Lock/wake | Background |
+| --- | --- | --- |
+| `willResignActive` | frames=454 | frames=309 |
+| `didEnterBackground` | frames=497 | frames=331 |
+| `willEnterForeground` | frames=497 | frames=331 |
+| `didBecomeActive` | frames=517 | frames=334 |
+| after ~10s, capture stopped | 883 | 845 |
+
+**Video capture stops on suspension and resumes cleanly.** Frames freeze exactly at
+`didEnterBackground` (497 / 331) and are unchanged at `willEnterForeground`: the
+camera produced nothing while the app was suspended, as iOS requires. They resume on
+return (497 → 517 → 883; 331 → 334 → 845). No stale state, no intervention needed —
+the capturer came back on its own. `audioUnit=1` throughout and no
+`audio unit STOPPED` line in either test, **with the call active the audio unit kept
+running across lock and background.**
+
+**No route change on lock or unlock.** Reason 6 `wakeFromSleep` never appeared; the
+session was not reconfigured.
+
+Product implication: a backgrounded call keeps audio but loses video, so a remote
+peer would see a frozen frame unless the app signals camera-off explicitly. That is
+an application-level decision this probe deliberately does not make.
+
 - **Still unmeasured:** audio routes beyond the default (speaker, wired, Bluetooth),
-  interruption, background/lock, and audio quality — there is no remote peer, so
-  nothing in this probe demonstrates audible fidelity.
+  interruption, and audio quality — there is no remote peer, so nothing in this probe
+  demonstrates audible fidelity.
 
 #### Status
 
