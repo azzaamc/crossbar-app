@@ -1,23 +1,24 @@
 #if DEBUG
+import AVFoundation
 import Combine
 import Foundation
 import SwiftUI
+import WebRTC
 
-/// A native Engine.IO v4 / Socket.IO v5 client, reduced to the subset the audited
-/// MiroTalk contract requires.
+/// A native Engine.IO v4 / Socket.IO v5 client plus peer connections, reduced to
+/// the subset the audited MiroTalk contract requires.
 ///
-/// `docs/MIROTALK_CORE_AUDIT.md` determines what is sent and in what shape — the
-/// `join` payload, `addPeer`, `relaySDP`/`sessionDescription`,
-/// `relayICE`/`iceCandidate`, `removePeer` — but nothing has ever executed that
-/// contract from native code.
+/// `docs/MIROTALK_CORE_AUDIT.md` determines what is sent and in what shape. Two
+/// parts of it had never been executed from native code and are what this
+/// instrument now tests:
 ///
-/// It deliberately does NOT create peer connections yet. Offer/answer policy is
-/// the part the audit flags as undetermined, because Objective-C libwebrtc
-/// exposes no `negotiationneeded`; mixing that into a transport probe would make
-/// a failure ambiguous.
-///
-/// Two instances in one app can occupy one room, which tests the server's mesh
-/// fan-out without depending on a browser client behaving.
+/// 1. **Admission** — connect, handshake, `join`. Verified 2026-09-17.
+/// 2. **The offer trigger.** MiroTalk delegates this entirely to the browser's
+///    `negotiationneeded` event, which Objective-C libwebrtc does not expose. The
+///    audit calls this the one undetermined part and says it can only be validated
+///    against a live 1.9.64 peer. The policy synthesised here is deliberately
+///    explicit and logged as such: append tracks, then offer once, because the
+///    server said `should_create_offer`.
 ///
 /// Wire format, for reference:
 ///   Engine.IO v4 over WebSocket: `0` open, `1` close, `2` ping, `3` pong, `4` message
@@ -37,6 +38,16 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private var logHandle: FileHandle?
     private var roomId = ""
     private let peerUUID = UUID().uuidString
+
+    // Peer connections, keyed by remote Socket.IO id, as the audited contract does.
+    private var factory: RTCPeerConnectionFactory?
+    private var peers: [String: RTCPeerConnection] = [:]
+    private var pendingCandidates: [String: [RTCIceCandidate]] = [:]
+    private var audioTrack: RTCAudioTrack?
+    private var videoTrack: RTCVideoTrack?
+    private var capturer: RTCCameraVideoCapturer?
+    private var statsTimer: Timer?
+    private var audioBytes: [String: Int] = [:]
 
     /// The private MiroTalk origin. Overridable so no deployment detail is baked in.
     private var origin: URL {
@@ -84,6 +95,18 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     }
 
     func disconnect() {
+        statsTimer?.invalidate()
+        statsTimer = nil
+        for (_, pc) in peers { pc.close() }
+        peers.removeAll()
+        pendingCandidates.removeAll()
+        audioBytes.removeAll()
+        capturer?.stopCapture()
+        capturer = nil
+        audioTrack = nil
+        videoTrack = nil
+        factory = nil
+
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session?.invalidateAndCancel()
@@ -116,6 +139,17 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
             guard let error else { return }
             Task { @MainActor in self?.append("send failed: \(error.localizedDescription)") }
         }
+    }
+
+    private func emit(_ event: String, _ payload: [String: Any]) {
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: [event, payload]),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            append("could not encode \(event)")
+            return
+        }
+        send("42\(json)")
     }
 
     // MARK: - Framing
@@ -161,12 +195,10 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         case "0":
             append("socket.io connected \(rest)")
             state = "joined-namespace"
+            prepareMedia()
             emitJoin()
         case "2":
-            // The screen gets a prefix but the file gets the whole event: an SDP is
-            // far too long to read there, and the file is what actually gets pulled.
-            let name = Self.eventName(in: rest)
-            append("event \(name) \(rest.prefix(120))", detail: "event \(name) \(rest)")
+            handleEvent(rest)
         case "4":
             append("connect_error \(rest)")
             state = "rejected"
@@ -177,14 +209,66 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         }
     }
 
-    /// `["addPeer",{…}]` -> `addPeer`, so events are greppable in the pulled log.
-    private static func eventName(in payload: String) -> String {
+    private func handleEvent(_ payload: String) {
         guard
             let data = payload.data(using: .utf8),
             let array = try? JSONSerialization.jsonObject(with: data) as? [Any],
             let name = array.first as? String
-        else { return "?" }
-        return name
+        else {
+            append("unparseable event \(payload.prefix(120))")
+            return
+        }
+        let argument = array.count > 1 ? array[1] as? [String: Any] : nil
+
+        // Screens get a prefix, the file gets the whole payload: an SDP is far too
+        // long to read on screen and the file is what actually gets pulled.
+        append("event \(name) \(payload.prefix(100))", detail: "event \(name) \(payload)")
+
+        switch name {
+        case "addPeer": if let argument { handleAddPeer(argument) }
+        case "sessionDescription": if let argument { handleSessionDescription(argument) }
+        case "iceCandidate": if let argument { handleIceCandidate(argument) }
+        case "removePeer": if let argument, let id = argument["peer_id"] as? String { removePeer(id) }
+        default: break
+        }
+    }
+
+    // MARK: - Media
+
+    /// Separate factories, not shared with the audio-seam probe: two camera
+    /// capturers in one process fight over the capture session. Do not run both
+    /// instruments at once.
+    private func prepareMedia() {
+        guard factory == nil else { return }
+        let factory = RTCPeerConnectionFactory(
+            encoderFactory: RTCDefaultVideoEncoderFactory(),
+            decoderFactory: RTCDefaultVideoDecoderFactory()
+        )
+        self.factory = factory
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+
+        let audioSource = factory.audioSource(with: constraints)
+        audioTrack = factory.audioTrack(with: audioSource, trackId: "crossbar-audio")
+
+        let videoSource = factory.videoSource()
+        videoTrack = factory.videoTrack(with: videoSource, trackId: "crossbar-video")
+        let capturer = RTCCameraVideoCapturer(delegate: videoSource)
+        self.capturer = capturer
+
+        guard
+            let device = RTCCameraVideoCapturer.captureDevices().first(where: { $0.position == .front })
+                ?? RTCCameraVideoCapturer.captureDevices().first
+        else {
+            append("media prepared (audio only — no capture device)")
+            return
+        }
+        let formats = RTCCameraVideoCapturer.supportedFormats(for: device)
+        guard let format = formats.last else {
+            append("media prepared (audio only — no capture format)")
+            return
+        }
+        capturer.startCapture(with: device, format: format, fps: 30)
+        append("media prepared (audio + \(device.localizedName))")
     }
 
     // MARK: - Join
@@ -220,23 +304,251 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
             "peer_privacy_status": false,
             "userAgent": "Crossbar/1.0 (iOS)",
         ]
+        append("emit join channel=\(roomId)")
+        emit("join", payload)
+        state = "join sent — awaiting addPeer/serverInfo"
+    }
+
+    // MARK: - Peering
+
+    private func handleAddPeer(_ payload: [String: Any]) {
         guard
-            let data = try? JSONSerialization.data(withJSONObject: ["join", payload]),
-            let json = String(data: data, encoding: .utf8)
-        else {
-            append("could not encode the join payload")
+            let peerId = payload["peer_id"] as? String,
+            let factory
+        else { return }
+        // The audited contract dedupes against existing connections.
+        guard peers[peerId] == nil else {
+            append("addPeer \(peerId.prefix(8)) ignored (already connected)")
             return
         }
-        append("emit join channel=\(roomId)")
-        send("42\(json)")
-        state = "join sent — awaiting addPeer/serverInfo"
+        let shouldOffer = payload["should_create_offer"] as? Bool ?? false
+
+        let config = RTCConfiguration()
+        config.sdpSemantics = .unifiedPlan
+        config.iceServers = Self.iceServers(from: payload["iceServers"])
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        guard let pc = factory.peerConnection(with: config, constraints: constraints, delegate: self) else {
+            append("could not create a peer connection for \(peerId.prefix(8))")
+            return
+        }
+        peers[peerId] = pc
+
+        append("addPeer \(peerId.prefix(8)) should_create_offer=\(shouldOffer) iceServers=\(config.iceServers.count)")
+
+        // Offer trigger, synthesised. MiroTalk arms `negotiationneeded` and lets the
+        // browser decide when to fire; libwebrtc has no such event, so tracks are
+        // appended first and the offer follows deliberately. This ordering is the
+        // audited invariant: the offer must be made after tracks exist, or an
+        // offerer with nothing to send produces no usable m-lines.
+        if let audioTrack { _ = pc.add(audioTrack, streamIds: ["crossbar"]) }
+        if let videoTrack { _ = pc.add(videoTrack, streamIds: ["crossbar"]) }
+
+        if shouldOffer {
+            append("policy: offering to \(peerId.prefix(8)) after appending tracks")
+            makeOffer(peerId)
+        } else {
+            append("policy: awaiting an offer from \(peerId.prefix(8))")
+        }
+    }
+
+    private func makeOffer(_ peerId: String) {
+        guard let pc = peers[peerId] else { return }
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        pc.offer(for: constraints) { [weak self] sdp, error in
+            Task { @MainActor in
+                guard let self else { return }
+                guard let sdp else {
+                    self.append("offer failed: \(error?.localizedDescription ?? "unknown")")
+                    return
+                }
+                pc.setLocalDescription(sdp) { [weak self] error in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        if let error {
+                            self.append("setLocalDescription(offer) failed: \(error.localizedDescription)")
+                            return
+                        }
+                        self.append("offer -> \(peerId.prefix(8)) (\(sdp.sdp.count) chars, \(Self.mLines(sdp.sdp)))")
+                        self.emit("relaySDP", [
+                            "peer_id": peerId,
+                            "session_description": ["type": "offer", "sdp": sdp.sdp],
+                        ])
+                    }
+                }
+            }
+        }
+    }
+
+    private func makeAnswer(_ peerId: String, to offer: RTCSessionDescription) {
+        guard let pc = peers[peerId] else { return }
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        pc.answer(for: constraints) { [weak self] sdp, error in
+            Task { @MainActor in
+                guard let self else { return }
+                guard let sdp else {
+                    self.append("answer failed: \(error?.localizedDescription ?? "unknown")")
+                    return
+                }
+                pc.setLocalDescription(sdp) { [weak self] error in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        if let error {
+                            self.append("setLocalDescription(answer) failed: \(error.localizedDescription)")
+                            return
+                        }
+                        self.append("answer -> \(peerId.prefix(8)) (\(sdp.sdp.count) chars, \(Self.mLines(sdp.sdp)))")
+                        self.emit("relaySDP", [
+                            "peer_id": peerId,
+                            "session_description": ["type": "answer", "sdp": sdp.sdp],
+                        ])
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleSessionDescription(_ payload: [String: Any]) {
+        guard
+            let peerId = payload["peer_id"] as? String,
+            let description = payload["session_description"] as? [String: Any],
+            let typeString = description["type"] as? String,
+            let sdp = description["sdp"] as? String
+        else { return }
+        guard let pc = peers[peerId] else {
+            append("sessionDescription from unknown peer \(peerId.prefix(8))")
+            return
+        }
+        let type: RTCSdpType
+        switch typeString {
+        case "offer": type = .offer
+        case "answer": type = .answer
+        default: type = .prAnswer
+        }
+        append("\(typeString) <- \(peerId.prefix(8)) (\(sdp.count) chars, \(Self.mLines(sdp)))")
+
+        pc.setRemoteDescription(RTCSessionDescription(type: type, sdp: sdp)) { [weak self] error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.append("setRemoteDescription failed: \(error.localizedDescription)")
+                    return
+                }
+                // The audited contract flushes queued candidates immediately after a
+                // successful setRemoteDescription, and that is the only flush point:
+                // SDP and ICE are unordered on the wire.
+                self.flushCandidates(peerId)
+                if type == .offer { self.makeAnswer(peerId, to: RTCSessionDescription(type: type, sdp: sdp)) }
+            }
+        }
+    }
+
+    private func handleIceCandidate(_ payload: [String: Any]) {
+        guard
+            let peerId = payload["peer_id"] as? String,
+            let candidate = payload["ice_candidate"] as? [String: Any],
+            let sdp = candidate["candidate"] as? String
+        else { return }
+        // The contract sends only sdpMLineIndex and candidate; sdpMid is absent.
+        let lineIndex = (candidate["sdpMLineIndex"] as? NSNumber)?.int32Value ?? 0
+        let ice = RTCIceCandidate(sdp: sdp, sdpMLineIndex: lineIndex, sdpMid: nil)
+
+        guard let pc = peers[peerId], pc.remoteDescription != nil else {
+            pendingCandidates[peerId, default: []].append(ice)
+            return
+        }
+        pc.add(ice) { [weak self] error in
+            guard let error else { return }
+            Task { @MainActor in self?.append("addIceCandidate failed: \(error.localizedDescription)") }
+        }
+    }
+
+    private func flushCandidates(_ peerId: String) {
+        guard let pc = peers[peerId], let queued = pendingCandidates[peerId], !queued.isEmpty else { return }
+        pendingCandidates[peerId] = []
+        append("flushing \(queued.count) queued candidates to \(peerId.prefix(8))")
+        for candidate in queued { pc.add(candidate) { _ in } }
+    }
+
+    private func removePeer(_ peerId: String) {
+        guard let pc = peers.removeValue(forKey: peerId) else { return }
+        pc.close()
+        pendingCandidates[peerId] = nil
+        audioBytes[peerId] = nil
+        append("removePeer \(peerId.prefix(8)) — connection closed")
+    }
+
+    private func peerId(for pc: RTCPeerConnection) -> String? {
+        peers.first(where: { $0.value === pc })?.key
+    }
+
+    // MARK: - Measurement
+
+    /// The only measure here that shows media rather than negotiation. A completed
+    /// exchange with silent m-lines looks identical to a working call everywhere
+    /// else — which is exactly the defect found in the audio-seam probe.
+    private func startStatsPolling() {
+        statsTimer?.invalidate()
+        statsTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollStats() }
+        }
+    }
+
+    private func pollStats() {
+        for (peerId, pc) in peers {
+            pc.statistics { [weak self] report in
+                var found: (bytes: Int, energy: Double)?
+                for (_, stat) in report.statistics {
+                    guard stat.type == "inbound-rtp",
+                          let kind = stat.values["kind"] as? String
+                    else { continue }
+                    let bytes = (stat.values["bytesReceived"] as? NSNumber)?.intValue ?? 0
+                    let energy = (stat.values["totalAudioEnergy"] as? NSNumber)?.doubleValue ?? 0
+                    if kind == "audio", found == nil { found = (bytes, energy) }
+                }
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard let found else { return }
+                    let previous = self.audioBytes[peerId] ?? found.bytes
+                    let delta = found.bytes - previous
+                    self.audioBytes[peerId] = found.bytes
+                    let energy = String(format: "%.3f", found.energy)
+                    self.append("media IN <- \(peerId.prefix(8)) bytes=\(found.bytes) delta=\(delta) energy=\(energy)")
+                }
+            }
+        }
+    }
+
+    // MARK: - Helpers
+
+    private static func iceServers(from raw: Any?) -> [RTCIceServer] {
+        guard let list = raw as? [[String: Any]] else { return [] }
+        return list.compactMap { entry in
+            let urls: [String]
+            if let one = entry["urls"] as? String { urls = [one] }
+            else if let many = entry["urls"] as? [String] { urls = many }
+            else { return nil }
+            if let username = entry["username"] as? String,
+               let credential = entry["credential"] as? String {
+                return RTCIceServer(urlStrings: urls, username: username, credential: credential)
+            }
+            return RTCIceServer(urlStrings: urls)
+        }
+    }
+
+    /// `v=0…` -> `3 m-lines (audio,video,application)`, so the log shows what was
+    /// actually negotiated without printing an SDP.
+    private static func mLines(_ sdp: String) -> String {
+        let kinds = sdp.split(separator: "\n")
+            .filter { $0.hasPrefix("m=") }
+            .map { String($0.dropFirst(2).split(separator: " ").first ?? "") }
+        return "\(kinds.count) m-lines (\(kinds.joined(separator: ",")))"
     }
 
     // MARK: - Logging
 
     private func append(_ line: String, detail: String? = nil) {
         lines.append(line)
-        if lines.count > 40 { lines.removeFirst(lines.count - 40) }
+        if lines.count > 60 { lines.removeFirst(lines.count - 60) }
         writeToLogFile(detail ?? line)
     }
 
@@ -256,6 +568,68 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     }
 }
 
+extension MiroTalkSignalClient: RTCPeerConnectionDelegate {
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
+        Task { @MainActor in
+            guard let peerId = self.peerId(for: pc) else { return }
+            self.emit("relayICE", [
+                "peer_id": peerId,
+                "ice_candidate": [
+                    "sdpMLineIndex": Int(candidate.sdpMLineIndex),
+                    "candidate": candidate.sdp,
+                ],
+            ])
+        }
+    }
+
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didAdd stream: RTCMediaStream) {
+        Task { @MainActor in
+            self.append("remote stream <- \(self.peerId(for: pc)?.prefix(8) ?? "?") (\(stream.audioTracks.count)a/\(stream.videoTracks.count)v)")
+            self.startStatsPolling()
+        }
+    }
+
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {
+        let raw = stateChanged.rawValue
+        Task { @MainActor in
+            self.append("signaling state -> \(raw) [\(self.peerId(for: pc)?.prefix(8) ?? "?")]")
+        }
+    }
+
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
+        let raw = newState.rawValue
+        Task { @MainActor in
+            self.append("pc state -> \(raw) [\(self.peerId(for: pc)?.prefix(8) ?? "?")]")
+            if raw == 2 { self.startStatsPolling() }
+        }
+    }
+
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
+        let raw = newState.rawValue
+        Task { @MainActor in self.append("ice state -> \(raw) [\(self.peerId(for: pc)?.prefix(8) ?? "?")]") }
+    }
+
+    // Required by the protocol; nothing to do.
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
+    nonisolated func peerConnectionShouldNegotiate(_ pc: RTCPeerConnection) {}
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCIceGatheringState) {}
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
+    nonisolated func peerConnection(_ pc: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
+
+    // Optional, worth reporting.
+    nonisolated func peerConnection(
+        _ pc: RTCPeerConnection,
+        didAdd receiver: RTCRtpReceiver,
+        streams: [RTCMediaStream]
+    ) {
+        let kind = receiver.track?.kind ?? "?"
+        Task { @MainActor in
+            self.append("remote \(kind) track <- \(self.peerId(for: pc)?.prefix(8) ?? "?")")
+            self.startStatsPolling()
+        }
+    }
+}
+
 struct SignalProbeSection: View {
     @StateObject private var peerA = MiroTalkSignalClient(label: "A")
     @StateObject private var peerB = MiroTalkSignalClient(label: "B")
@@ -265,6 +639,10 @@ struct SignalProbeSection: View {
     var body: some View {
         DisclosureGroup("MiroTalk signalling (native Socket.IO)", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 6) {
+                Text("Do not run the seam capture at the same time — two camera capturers conflict.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
                 TextField("room id", text: $room)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
@@ -290,12 +668,12 @@ struct SignalProbeSection: View {
                     .font(.caption.weight(.semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(peerA.lines.suffix(8).joined(separator: "\n"))
+                Text(peerA.lines.suffix(10).joined(separator: "\n"))
                     .font(.caption2.monospaced())
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
 
-                Text(peerB.lines.suffix(8).joined(separator: "\n"))
+                Text(peerB.lines.suffix(10).joined(separator: "\n"))
                     .font(.caption2.monospaced())
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
