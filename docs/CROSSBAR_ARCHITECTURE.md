@@ -674,14 +674,34 @@ Silence under DTX would be near-zero bytes with a flat energy counter; here
 `totalAudioEnergy` advances, so the stream carries real content rather than
 keepalive. Audio genuinely flows: capture source → pc1 → pc2.
 
-Interruption recovery was not captured. The log view anchored to the oldest lines, so
-the lines the interruption produced were pushed out of view — `audioUnit=2` was
-observed afterwards, indicating the unit started twice, but that is suggestive rather
-than measured. Re-measured separately below.
+**What the alarm interruption actually did (2026-09-17).** With no CallKit call:
 
-Test C — a real incoming call, the interruption case the product will actually meet
-— is **NOT TESTED**: FaceTime from the Mac to the iPhone is not possible because
-both use the same Apple ID.
+```
+audio IN bytes=123668 delta=9564  energy=0.224
+AVAudioSession interruption BEGAN (raw 1) options=0
+INTERRUPTION began (RTCAudioSession)
+audio IN bytes=128796 delta=5128  energy=0.225
+AVAudioSession interruption ENDED (raw 0) options=1
+INTERRUPTION ended, shouldResume=true
+audio IN bytes=131574 delta=2778  energy=0.226
+```
+
+Audio never stopped. Bytes kept arriving across BEGAN and ENDED, the audio unit never
+reported stopping, and the route moved to speaker and back. An alarm is therefore a
+*notification without a teardown*: iOS announces the interruption but does not
+deactivate this session, and the ADM leaves the unit running.
+
+**This must not be recorded as "audio survives interruptions."** It shows this
+particular interruption had no effect on the media path. A genuine interruption — one
+that actually deactivates the session — remains unmeasured, and the realistic
+instance (an incoming call during a live call) is not reproducible here: FaceTime
+between the Mac and the iPhone is blocked by the shared Apple ID.
+
+The session-teardown path is instead exercised through CallKit, which is how the
+product will meet a real call: `didDeactivate` returned the session with
+`canPlayOrRecord = false` and metrics `0 0 0`, and `didActivate` restored it.
+Behaviour across a full activate → deactivate → activate cycle is measured separately
+below.
 
 - **Still unmeasured:** audio quality — there is no remote peer, so nothing in this
   probe demonstrates audible fidelity.
