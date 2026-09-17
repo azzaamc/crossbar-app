@@ -765,6 +765,29 @@ selected pair is read while it is still off. Until then, what Crossbar should do
 server-supplied `iceServers` is undecided by evidence, and the conservative reading is
 that dropping them is unproven rather than free.
 
+**Conclusion: keep the server-supplied `iceServers` (2026-09-17).** Six runs produced
+three different nominated paths, which is itself the finding — the selected pair is a
+property of the topology, not something to reason from:
+
+- Shared LAN → `host ↔ host`. Host candidates outrank srflx when reachable.
+- Phone on cellular → `srflx ↔ srflx`, via `stun.l.google.com`, carrying 132 KB. The
+  public path is load-bearing off-LAN.
+- `iceServers` discarded → the call still connected, but the nominated pair was a LAN
+  address the phone had never advertised, so the run does not show the overlay
+  carrying it.
+- Tailscale pairs were observed `in-progress`, and once `succeeded` on
+  `fd7a:115c:a1e0::9a32:3d22` with zero bytes: connectivity verified, never nominated.
+
+So the overlay has connectivity but has never been observed carrying a call, while the
+public STUN path demonstrably has. Filtering would remove a path proven to work in
+exchange for one that is not.
+
+**Decision:** Crossbar consumes server-supplied `iceServers` unchanged, as the audit
+advised. The consequence is recorded rather than glossed: a third-party STUN server
+observes each peer's reflexive address. That is accepted for now and should be
+revisited when real two-household calls exist to measure, or if TURN is introduced —
+at which point short-lived credential design becomes the question.
+
 Sixteen specific divergence risks are catalogued in the audit, with the
 likelihood of silent divergence for each. The ones rated *likely* are all in the
 trigger rather than the payload: the missing `negotiationneeded`, an offerer with
