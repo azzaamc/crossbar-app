@@ -29,7 +29,7 @@ worktree.
 | Item | Current value |
 | --- | --- |
 | Xcode | 27.0 (`27A266a`) |
-| Scheme | `Crossbar` (only discoverable scheme; **no `.xcscheme` file is tracked** — Xcode auto-creates it, so `-scheme Crossbar` resolves on this machine but is absent from a clean checkout) |
+| Scheme | `Crossbar`, now tracked as a shared scheme at `Crossbar.xcodeproj/xcshareddata/xcschemes/Crossbar.xcscheme` (added 2026-09-17). Before that, only Xcode's in-memory autocreated scheme existed, so a clean checkout had none |
 | App target | `Crossbar` |
 | Unit-test target | `CrossbarTests` (Swift Testing) |
 | UI-test target | `CrossbarUITests` (XCTest) |
@@ -48,8 +48,8 @@ worktree.
 | Capabilities | None configured |
 | Background modes | None configured |
 | PushKit/APNs | Not implemented; no capability or entitlement |
-| Packages | None |
-| Linked third-party frameworks | None |
+| Packages | `stasel/WebRTC` 153.0.0 via SwiftPM, pinned in `Package.resolved` (revision `4266157c`). The xcframework is a binary artifact fetched at build time — not vendored in the repository |
+| Linked third-party frameworks | `WebRTC.framework` (BSD-3-Clause plus a Google patent grant), embedded in the app bundle and linked as `@rpath/WebRTC.framework/WebRTC` |
 | Persistence | None; no SwiftData/Core Data |
 
 Do not record team identifiers, certificates, profiles, or other signing

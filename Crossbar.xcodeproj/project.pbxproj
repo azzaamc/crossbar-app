@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		7C4D5E6F708192A3B4C5D6E3 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 7C4D5E6F708192A3B4C5D6E2 /* WebRTC */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		5F8EA688305AAF09005261F6 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -64,6 +68,7 @@
 		5F8EA677305AAF08005261F6 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				7C4D5E6F708192A3B4C5D6E3 /* WebRTC in Frameworks */,
 			);
 		};
 		5F8EA684305AAF09005261F6 /* Frameworks */ = {
@@ -117,6 +122,9 @@
 			);
 			name = Crossbar;
 			productName = Crossbar;
+			packageProductDependencies = (
+				7C4D5E6F708192A3B4C5D6E2 /* WebRTC */,
+			);
 			productReference = 5F8EA67A305AAF08005261F6 /* Crossbar.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -195,6 +203,9 @@
 			mainGroup = 5F8EA671305AAF08005261F6;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			packageReferences = (
+				7C4D5E6F708192A3B4C5D6E1 /* XCRemoteSwiftPackageReference "WebRTC" */,
+			);
 			productRefGroup = 5F8EA67B305AAF08005261F6 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -567,6 +578,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		7C4D5E6F708192A3B4C5D6E1 /* XCRemoteSwiftPackageReference "WebRTC" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stasel/WebRTC.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 153.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		7C4D5E6F708192A3B4C5D6E2 /* WebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7C4D5E6F708192A3B4C5D6E1 /* XCRemoteSwiftPackageReference "WebRTC" */;
+			productName = WebRTC;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 5F8EA672305AAF08005261F6 /* Project object */;
 	validationLevel = 1;
