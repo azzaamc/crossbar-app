@@ -45,6 +45,8 @@ final class AudioSeamProbe: NSObject, ObservableObject {
     private let frameCounter = SeamFrameCounter()
     private var didObserveLifecycle = false
 
+    private var statsTimer: Timer?
+    private var lastAudioBytes = -1
     private var didActivateCount = 0
     private var didDeactivateCount = 0
 
@@ -117,6 +119,9 @@ final class AudioSeamProbe: NSObject, ObservableObject {
     }
 
     func stop() {
+        statsTimer?.invalidate()
+        statsTimer = nil
+        lastAudioBytes = -1
         pc1?.close()
         pc2?.close()
         pc1 = nil
@@ -289,7 +294,51 @@ final class AudioSeamProbe: NSObject, ObservableObject {
         append("isAudioEnabled = true (media wants audio)")
         status = "Loopback negotiating — audio unit should start"
         append("loopback started")
+        startStatsPolling()
         refresh()
+    }
+
+    /// Counting audio-unit starts cannot show whether audio is actually flowing,
+    /// which is precisely the question an interruption raises. These are the
+    /// inbound-RTP byte and energy counters: a climbing byte count is audio moving,
+    /// a flat one is silence regardless of what the audio unit claims.
+    private func startStatsPolling() {
+        statsTimer?.invalidate()
+        statsTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollAudioStats() }
+        }
+    }
+
+    private func pollAudioStats() {
+        guard let pc2 else { return }
+        pc2.statistics { [weak self] report in
+            var found: (bytes: Int, energy: Double, level: Double)?
+            for (_, stat) in report.statistics {
+                guard stat.type == "inbound-rtp",
+                      let kind = stat.values["kind"] as? String,
+                      kind == "audio"
+                else { continue }
+                found = (
+                    (stat.values["bytesReceived"] as? NSNumber)?.intValue ?? 0,
+                    (stat.values["totalAudioEnergy"] as? NSNumber)?.doubleValue ?? 0,
+                    (stat.values["audioLevel"] as? NSNumber)?.doubleValue ?? 0
+                )
+            }
+            Task { @MainActor in
+                guard let self else { return }
+                guard let found else {
+                    self.append("audio IN: no inbound audio stats yet")
+                    self.refresh()
+                    return
+                }
+                let delta = self.lastAudioBytes >= 0 ? found.bytes - self.lastAudioBytes : found.bytes
+                self.lastAudioBytes = found.bytes
+                let energy = String(format: "%.3f", found.energy)
+                let level = String(format: "%.4f", found.level)
+                self.append("audio IN bytes=\(found.bytes) delta=\(delta) energy=\(energy) level=\(level)")
+                self.refresh()
+            }
+        }
     }
 
     // MARK: - Reporting
