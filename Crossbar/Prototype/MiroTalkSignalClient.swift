@@ -39,13 +39,16 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private var roomId = ""
     private let peerUUID = UUID().uuidString
 
+    /// One camera and microphone shared by every peer connection, which is how the
+    /// product must work: a single capture, many senders. An earlier revision gave
+    /// each client its own capturer and they fought over the capture session — both
+    /// peers reported "media prepared (audio + Front Camera)" while only audio was
+    /// verifiably flowing.
+    var media: ProbeMediaSource?
+
     // Peer connections, keyed by remote Socket.IO id, as the audited contract does.
-    private var factory: RTCPeerConnectionFactory?
     private var peers: [String: RTCPeerConnection] = [:]
     private var pendingCandidates: [String: [RTCIceCandidate]] = [:]
-    private var audioTrack: RTCAudioTrack?
-    private var videoTrack: RTCVideoTrack?
-    private var capturer: RTCCameraVideoCapturer?
     private var statsTimer: Timer?
     private var audioBytes: [String: Int] = [:]
 
@@ -101,11 +104,6 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         peers.removeAll()
         pendingCandidates.removeAll()
         audioBytes.removeAll()
-        capturer?.stopCapture()
-        capturer = nil
-        audioTrack = nil
-        videoTrack = nil
-        factory = nil
 
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -195,7 +193,6 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         case "0":
             append("socket.io connected \(rest)")
             state = "joined-namespace"
-            prepareMedia()
             emitJoin()
         case "2":
             handleEvent(rest)
@@ -234,42 +231,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     }
 
     // MARK: - Media
-
-    /// Separate factories, not shared with the audio-seam probe: two camera
-    /// capturers in one process fight over the capture session. Do not run both
-    /// instruments at once.
-    private func prepareMedia() {
-        guard factory == nil else { return }
-        let factory = RTCPeerConnectionFactory(
-            encoderFactory: RTCDefaultVideoEncoderFactory(),
-            decoderFactory: RTCDefaultVideoDecoderFactory()
-        )
-        self.factory = factory
-        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-
-        let audioSource = factory.audioSource(with: constraints)
-        audioTrack = factory.audioTrack(with: audioSource, trackId: "crossbar-audio")
-
-        let videoSource = factory.videoSource()
-        videoTrack = factory.videoTrack(with: videoSource, trackId: "crossbar-video")
-        let capturer = RTCCameraVideoCapturer(delegate: videoSource)
-        self.capturer = capturer
-
-        guard
-            let device = RTCCameraVideoCapturer.captureDevices().first(where: { $0.position == .front })
-                ?? RTCCameraVideoCapturer.captureDevices().first
-        else {
-            append("media prepared (audio only — no capture device)")
-            return
-        }
-        let formats = RTCCameraVideoCapturer.supportedFormats(for: device)
-        guard let format = formats.last else {
-            append("media prepared (audio only — no capture format)")
-            return
-        }
-        capturer.startCapture(with: device, format: format, fps: 30)
-        append("media prepared (audio + \(device.localizedName))")
-    }
+    // Local media now lives in ProbeMediaSource and is shared by every peer.
 
     // MARK: - Join
 
@@ -314,8 +276,11 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private func handleAddPeer(_ payload: [String: Any]) {
         guard
             let peerId = payload["peer_id"] as? String,
-            let factory
-        else { return }
+            let factory = media?.factory
+        else {
+            append("addPeer ignored — no local media source")
+            return
+        }
         // The audited contract dedupes against existing connections.
         guard peers[peerId] == nil else {
             append("addPeer \(peerId.prefix(8)) ignored (already connected)")
@@ -340,8 +305,8 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         // appended first and the offer follows deliberately. This ordering is the
         // audited invariant: the offer must be made after tracks exist, or an
         // offerer with nothing to send produces no usable m-lines.
-        if let audioTrack { _ = pc.add(audioTrack, streamIds: ["crossbar"]) }
-        if let videoTrack { _ = pc.add(videoTrack, streamIds: ["crossbar"]) }
+        if let audioTrack = media?.audioTrack { _ = pc.add(audioTrack, streamIds: ["crossbar"]) }
+        if let videoTrack = media?.videoTrack { _ = pc.add(videoTrack, streamIds: ["crossbar"]) }
 
         if shouldOffer {
             append("policy: offering to \(peerId.prefix(8)) after appending tracks")
@@ -635,16 +600,70 @@ extension MiroTalkSignalClient: RTCPeerConnectionDelegate {
     }
 }
 
+/// One local camera and microphone, shared by every peer connection in this probe.
+///
+/// This is the correct model for the product: a single capture feeding N senders.
+/// Each peer connection adds the same tracks, which is what MiroTalk's own client
+/// does with one local stream added to every connection.
+@MainActor
+final class ProbeMediaSource: ObservableObject {
+    let factory: RTCPeerConnectionFactory
+    let audioTrack: RTCAudioTrack
+    let videoTrack: RTCVideoTrack
+
+    private var capturer: RTCCameraVideoCapturer?
+    private var started = false
+
+    init() {
+        factory = RTCPeerConnectionFactory(
+            encoderFactory: RTCDefaultVideoEncoderFactory(),
+            decoderFactory: RTCDefaultVideoDecoderFactory()
+        )
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        let audioSource = factory.audioSource(with: constraints)
+        audioTrack = factory.audioTrack(with: audioSource, trackId: "crossbar-audio")
+        let videoSource = factory.videoSource()
+        videoTrack = factory.videoTrack(with: videoSource, trackId: "crossbar-video")
+        capturer = RTCCameraVideoCapturer(delegate: videoSource)
+    }
+
+    /// Idempotent by design: three peers must not start three captures, which is
+    /// exactly what went wrong when each client owned its own.
+    @discardableResult
+    func startCapture() -> String {
+        guard !started else { return "capture already running" }
+        guard let capturer else { return "no capturer" }
+        guard
+            let device = RTCCameraVideoCapturer.captureDevices().first(where: { $0.position == .front })
+                ?? RTCCameraVideoCapturer.captureDevices().first
+        else { return "no capture device — audio only" }
+        guard let format = RTCCameraVideoCapturer.supportedFormats(for: device).last else {
+            return "no capture format — audio only"
+        }
+        capturer.startCapture(with: device, format: format, fps: 30)
+        started = true
+        return "capture started on \(device.localizedName)"
+    }
+
+    func stopCapture() {
+        guard started else { return }
+        capturer?.stopCapture()
+        started = false
+    }
+}
+
 struct SignalProbeSection: View {
+    @StateObject private var media = ProbeMediaSource()
     @StateObject private var peerA = MiroTalkSignalClient(label: "A")
     @StateObject private var peerB = MiroTalkSignalClient(label: "B")
+    @StateObject private var peerC = MiroTalkSignalClient(label: "C")
     @State private var expanded = false
     @State private var room = "crosstest"
 
     var body: some View {
         DisclosureGroup("MiroTalk signalling (native Socket.IO)", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Do not run the seam capture at the same time — two camera capturers conflict.")
+                Text("Do not run the seam capture at the same time — the camera is shared.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
@@ -655,37 +674,51 @@ struct SignalProbeSection: View {
                     .font(.caption2.monospaced())
 
                 HStack {
-                    Button("A join") { peerA.connect(room: room) }
+                    Button("A join") { join(peerA) }
                         .buttonStyle(.bordered)
                         .accessibilityIdentifier("signal.a.join")
-                    Button("B join") { peerB.connect(room: room) }
+                    Button("B join") { join(peerB) }
                         .buttonStyle(.bordered)
                         .accessibilityIdentifier("signal.b.join")
-                    Button("Disconnect both") {
-                        peerA.disconnect()
-                        peerB.disconnect()
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("signal.disconnect")
+                    Button("C join") { join(peerC) }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("signal.c.join")
+                    Button("Disconnect") { disconnectAll() }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("signal.disconnect")
                 }
 
-                Text("A: \(peerA.state)   B: \(peerB.state)")
+                Text("A: \(peerA.state)   B: \(peerB.state)   C: \(peerC.state)")
                     .font(.caption.weight(.semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text(peerA.lines.suffix(10).joined(separator: "\n"))
-                    .font(.caption2.monospaced())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-
-                Text(peerB.lines.suffix(10).joined(separator: "\n"))
-                    .font(.caption2.monospaced())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+                log(peerA.lines)
+                log(peerB.lines)
+                log(peerC.lines)
             }
             .padding(.top, 4)
         }
         .font(.caption)
+    }
+
+    private func join(_ client: MiroTalkSignalClient) {
+        client.media = media
+        media.startCapture()
+        client.connect(room: room)
+    }
+
+    private func disconnectAll() {
+        peerA.disconnect()
+        peerB.disconnect()
+        peerC.disconnect()
+        media.stopCapture()
+    }
+
+    private func log(_ lines: [String]) -> some View {
+        Text(lines.suffix(10).joined(separator: "\n"))
+            .font(.caption2.monospaced())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
     }
 }
 #endif
