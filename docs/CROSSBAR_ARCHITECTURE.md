@@ -415,28 +415,86 @@ clients would run the same browser engine); and single-engine maintenance. The
 one-to-one and 2–4 person requirements survive in intent but inherit nothing —
 they must be rebuilt and re-proven.
 
+#### Reuse payoff
+
+Would reusing MiroTalk's client cut the work? The answer is clear and it is not
+the hoped-for one. MiroTalk's browser client is a monolithic, UI-coupled
+~18,297-line `public/js/client.js` with no WebRTC module; there is no `webrtc.js`
+to lift. Of the nine rebuild groups, only the two L-sized ones (mesh peer
+lifecycle; negotiation and ICE) contain MiroTalk-specific logic, and even those
+yield an **executable specification, not reusable code**. The other seven are
+browser-API plumbing with no native equivalent, third-party library work
+(`socket.io-client-swift`, `RTCMTLVideoView`), or native concerns MiroTalk says
+nothing about (audio-session ownership, explicit teardown, reconnect policy).
+
+**No group's size drops a band.** The saving is uncertainty, not volume: the
+sub-task "reverse-engineer a non-standard handshake from a black-box server"
+collapses into "translate known handler behaviour". That is real risk reduction
+on the two largest groups and worth having, but it must not be booked as effort
+saved. Read purely as a specification, MiroTalk's client is free to consult —
+which is already what `docs/MIROTALK_CORE_AUDIT.md` does.
+
+There is no client-side oracle upstream either: the repository's mocha suite
+(`tests/*.js`) covers only server-side behaviour — API, validation, host
+protection, room templates, whisper, XSS — with no mesh, SDP or ICE test or
+fixture anywhere in the tree. The browser client is the only executable
+reference for the client protocol, which is why the existing PWA matters as a
+reference peer.
+
 #### Licensing
 
-Documented facts: MiroTalk P2P is AGPLv3; the WebRTC framework is BSD-3-Clause
-plus a Google patent grant (perpetual, no-charge, irrevocable, with defensive
-termination and an explicit carve-out for claims infringed only as a consequence
-of further modification); `socket.io-client-swift` is MIT with an Apache-2.0
-Starscream dependency. Crossbar currently contains no MiroTalk source.
+MiroTalk P2P is **AGPL-3.0-only** (SPDX). `package.json` carries the deprecated
+`AGPL-3.0` identifier and no file anywhere in the tree says "or later". There is
+exactly one `LICENSE` — the stock AGPLv3 text — with no `NOTICE`, no `COPYING`,
+no §7 additional terms and no per-file headers; authorship is asserted only as
+`"author": "Miroslav Pejic"`, with no program-level copyright line. The only
+vendored third-party component is an Emscripten RNNoise build
+(`public/js/rnnoiseSync.js`) carrying no notice; upstream RNNoise is BSD-3-Clause,
+so that is a notice obligation, not copyleft. Everything else is CDN-loaded at
+runtime.
 
-Under B no MiroTalk code is copied, so no AGPL-covered work enters the binary,
-and the modified production MiroTalk service remains a separate network-service
-question unaffected by the client's media architecture. The framework itself
-imposes no copyleft obligation. BSD binary redistribution does require the
-notice to travel with the binary, so the actionable step is to extract
-`WebRTC.xcframework/LICENSE` from the chosen release and surface it in the app's
-acknowledgements. That file is also the authoritative transitive-licence list
-for the binary actually shipped: component licences asserted from build metadata
-— notably Opus, which does not appear in the pinned `DEPS` — are unverified and
-should be resolved from it rather than assumed.
+**AGPLv3 §13 already attaches to the production MiroTalk instance today, and
+independently of Crossbar.** The operative sentence carries no "public"
+qualifier: "if you modify the Program, your modified version must prominently
+offer all users interacting with it remotely through a computer network … an
+opportunity to receive the Corresponding Source of your version". The deployment
+is modified — the deliberate loopback bind — and is reached remotely by household
+devices over Tailscale, which is a computer network. The artefact owed is the
+Corresponding Source **of the modified version**, so offering only the upstream
+commit would not satisfy it, and nothing in either repository records such an
+offer being made. Note that Family Call's own `docs/LICENSES.md` conditions its
+concern on "distribution beyond the household", which is narrower than §13's
+text.
 
-Unresolved and not decided here: whether a native reimplementation of the
-protocol is a derivative work, and whether AGPLv3 terms are compatible with App
-Store distribution if MiroTalk code is ever included.
+Client-side options, stated as licence text and its plain requirements rather
+than as legal conclusions:
+
+| Option | Effect |
+| --- | --- |
+| Clean-room Swift reimplementation from a written specification | No MiroTalk-derived code in the app, so no AGPL obligation on the app. The server's §13 duty is unchanged either way. |
+| Porting or translating the JS mesh logic | The app becomes a work based on the Program: §5(a)–(d) attach — modified-notice with date, licence notice, the whole work licensed under AGPL to recipients, and legal notices in interactive UIs — plus §6 if builds are conveyed to family devices. |
+| Copying source verbatim | §4 conditions, plus §5(c) whole-work licensing if modified or combined beyond a §5 aggregate. |
+
+A commercial alternative therefore matters: the upstream README offers a **paid
+one-time licence via CodeCanyon** with terms different from AGPLv3. That is a
+separate proprietary licence, not an exception inside the AGPL grant, and nothing
+today assumes it. Worth knowing it exists — but per "Reuse payoff" above, even a
+permissive licence would not unlock an effort saving, because there is no
+portable mesh module to lift.
+
+Third-party obligations for the shipped app are separate and permissive: the
+WebRTC framework is BSD-3-Clause plus a Google patent grant, and
+`socket.io-client-swift` is MIT with an Apache-2.0 Starscream dependency. BSD
+binary redistribution requires the notice to travel with the binary, so extract
+`WebRTC.xcframework/LICENSE` from the chosen release into the app's
+acknowledgements; that file is also the authoritative transitive-licence list for
+the binary actually shipped.
+
+Unresolved and explicitly left to a lawyer: whether a specification-derived
+clean-room rewrite is a derivative work; whether close porting engages §5(c) on
+the whole app; whether AGPLv3 and App Store terms can be satisfied together under
+§10; whether an iPhone is a §6 "User Product"; what "prominently offer" requires
+in practice; and whether the deployment's §13 duty has been discharged to date.
 
 #### Status
 
