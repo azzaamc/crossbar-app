@@ -59,6 +59,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private var statsTimer: Timer?
     private var audioBytes: [String: Int] = [:]
     private var reportedPath: [String: String] = [:]
+    private var reportedTailnetPairs: Set<String> = []
 
     /// The private MiroTalk origin. Overridable so no deployment detail is baked in.
     private var origin: URL {
@@ -481,11 +482,18 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
                     if kind == "audio", found == nil { found = (bytes, energy) }
                 }
                 let path = Self.selectedPairDescription(report)
+                let tailnet = Self.tailnetPairs(report)
                 Task { @MainActor in
                     guard let self else { return }
                     if let path, self.reportedPath[peerId] != path {
                         self.reportedPath[peerId] = path
                         self.append("ICE path [\(peerId.prefix(8))] \(path)")
+                    }
+                    for entry in tailnet {
+                        if !self.reportedTailnetPairs.contains(entry) {
+                            self.reportedTailnetPairs.insert(entry)
+                            self.append("TAILNET PAIR [\(peerId.prefix(8))] \(entry)")
+                        }
                     }
                     guard let found else { return }
                     let previous = self.audioBytes[peerId] ?? found.bytes
@@ -535,6 +543,38 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
             )
         }
         return parts.isEmpty ? nil : parts.joined(separator: " | ")
+    }
+
+    /// Every candidate pair that involves a Tailscale address, with its state.
+    ///
+    /// This is the question the selected pair cannot answer. Whether the overlay can
+    /// carry media is exactly whether a pair between this device's tailnet address and
+    /// the peer's ever reaches `succeeded` — and ICE checks all pairs, so that is
+    /// observable even when a LAN pair wins the nomination. Reading the selected pair
+    /// alone kept producing a LAN answer that said nothing either way.
+    nonisolated private static func tailnetPairs(_ report: RTCStatisticsReport) -> [String] {
+        func addr(_ key: String, _ pair: RTCStatistics) -> String {
+            guard
+                let id = pair.values[key] as? String,
+                let candidate = report.statistics[id]
+            else { return "?" }
+            return candidate.values["address"] as? String ?? "?"
+        }
+        func isTailnet(_ value: String) -> Bool {
+            value.hasPrefix("100.") || value.hasPrefix("fd7a:115c:a1e0")
+        }
+
+        var out: [String] = []
+        for pair in report.statistics.values where pair.type == "candidate-pair" {
+            let local = addr("localCandidateId", pair)
+            let remote = addr("remoteCandidateId", pair)
+            guard isTailnet(local) || isTailnet(remote) else { continue }
+            let state = pair.values["state"] as? String ?? "?"
+            let bytesSent = (pair.values["bytesSent"] as? NSNumber)?.intValue ?? 0
+            let bytesReceived = (pair.values["bytesReceived"] as? NSNumber)?.intValue ?? 0
+            out.append("\(local) <-> \(remote) state=\(state) sent=\(bytesSent) recv=\(bytesReceived)")
+        }
+        return out.sorted()
     }
 
     private static func iceServers(from raw: Any?) -> [RTCIceServer] {
