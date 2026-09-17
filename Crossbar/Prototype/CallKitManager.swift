@@ -81,31 +81,22 @@ final class CallKitManager: NSObject, CXProviderDelegate {
         }
     }
 
-    private func prepareAudioSession() {
-        do {
-            try AVAudioSession.sharedInstance().setCategory(
-                .playAndRecord,
-                mode: .videoChat,
-                options: [.allowBluetoothHFP, .defaultToSpeaker]
-            )
-        } catch {
-            onError?("Audio session setup failed: \(error.localizedDescription)")
-        }
-    }
-
     func providerDidReset(_ provider: CXProvider) {
         onReset?()
     }
 
+    // The probe deliberately does NOT configure AVAudioSession here. Doing so made
+    // the app and WebKit two competing owners of the session: CallKit activated
+    // the app's session and WebKit then failed to activate its own, treated that
+    // as an interruption, and stopped the capture sources. Leaving WebKit as the
+    // only owner on this path is what makes the ownership question measurable.
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-        prepareAudioSession()
         action.fulfill()
         provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
         onStart?(action.callUUID, action.isVideo)
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        prepareAudioSession()
         action.fulfill()
         onAnswer?(action.callUUID)
     }

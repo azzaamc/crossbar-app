@@ -45,7 +45,13 @@
         };
         stream = await navigator.mediaDevices.getUserMedia(constraints);
         video.srcObject = stream;
-        await video.play();
+        // Do not await playback. It can be refused or interrupted — for example
+        // while a native call owns the audio session — and a promise that never
+        // settles would stall this command forever, leaving the probe hung with no
+        // error. The capture stream is live either way.
+        video.play().catch(error => {
+          emit('playbackBlocked', { message: `${error.name || 'Error'}: ${error.message || error}` });
+        });
         emit('permissionStateChanged', { camera: videoEnabled ? 'granted' : 'unused', microphone: 'granted' });
         emit('localMediaReady', {
           audioTracks: stream.getAudioTracks().length,

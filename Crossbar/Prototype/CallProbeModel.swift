@@ -144,6 +144,8 @@ final class CallProbeModel: ObservableObject {
             status = "Camera state changed"
         case "cameraSwitched":
             status = "Camera switched"
+        case "playbackBlocked":
+            status = "Local playback blocked: \(event.message ?? "unknown")"
         case "left":
             if currentCallID == nil {
                 status = "Call ended"
