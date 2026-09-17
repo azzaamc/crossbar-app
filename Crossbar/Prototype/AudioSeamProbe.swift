@@ -32,6 +32,8 @@ final class AudioSeamProbe: NSObject, ObservableObject {
     private(set) var videoTrack: RTCVideoTrack?
 
     private var factory: RTCPeerConnectionFactory?
+    private var pc1: RTCPeerConnection?
+    private var pc2: RTCPeerConnection?
     private var videoSource: RTCVideoSource?
     private var audioSource: RTCAudioSource?
     private var audioTrack: RTCAudioTrack?
@@ -53,6 +55,10 @@ final class AudioSeamProbe: NSObject, ObservableObject {
     }
 
     func stop() {
+        pc1?.close()
+        pc2?.close()
+        pc1 = nil
+        pc2 = nil
         capturer?.stopCapture()
         capturer = nil
         RTCAudioSession.sharedInstance().remove(self)
@@ -143,6 +149,74 @@ final class AudioSeamProbe: NSObject, ObservableObject {
         append("capturer started on \(device.localizedName)")
     }
 
+    // MARK: - Loopback
+
+    /// The spike so far proves the session is adopted and capture survives, but the
+    /// audio unit never started because nothing consumed the audio track - WebRTC's
+    /// ADM only configures itself when audio is actually needed. This wires two
+    /// peer connections together inside the app so playout and record are genuinely
+    /// exercised, which is what turns "capture survives" into "audio runs".
+    func startLoopback() {
+        guard let factory else {
+            append("start capture first")
+            return
+        }
+        guard pc1 == nil else {
+            append("loopback already running")
+            return
+        }
+
+        let config = RTCConfiguration()
+        config.sdpSemantics = .unifiedPlan
+        config.iceServers = []
+        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+
+        guard
+            let pc1 = factory.peerConnection(with: config, constraints: constraints, delegate: self),
+            let pc2 = factory.peerConnection(with: config, constraints: constraints, delegate: self)
+        else {
+            append("could not create peer connections")
+            return
+        }
+        self.pc1 = pc1
+        self.pc2 = pc2
+
+        if let audioTrack {
+            _ = pc1.add(audioTrack, streamIds: ["loopback"])
+            _ = pc2.add(audioTrack, streamIds: ["loopback"])
+        }
+        if let videoTrack {
+            _ = pc1.add(videoTrack, streamIds: ["loopback"])
+        }
+
+        pc1.offer(for: constraints) { [weak self] offer, error in
+            Task { @MainActor in
+                guard let self else { return }
+                guard let offer else {
+                    self.append("offer failed: \(error?.localizedDescription ?? "unknown")")
+                    return
+                }
+                pc1.setLocalDescription(offer) { _ in
+                    pc2.setRemoteDescription(offer) { _ in
+                        pc2.answer(for: constraints) { answer, _ in
+                            guard let answer else {
+                                Task { @MainActor in self.append("answer failed") }
+                                return
+                            }
+                            pc2.setLocalDescription(answer) { _ in
+                                pc1.setRemoteDescription(answer) { _ in
+                                    Task { @MainActor in self.append("loopback negotiated") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        status = "Loopback negotiating — audio unit should start"
+        append("loopback started")
+    }
+
     // MARK: - Reporting
 
     private func refresh() {
@@ -196,6 +270,79 @@ extension AudioSeamProbe: RTCAudioSessionDelegate {
     }
 }
 
+extension AudioSeamProbe: RTCPeerConnectionDelegate {
+    // Required by the protocol; only the ones that carry signal are logged.
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection,
+        didChange stateChanged: RTCSignalingState
+    ) {}
+
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didAdd stream: RTCMediaStream) {}
+
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
+
+    nonisolated func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {}
+
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection,
+        didChange newState: RTCIceConnectionState
+    ) {
+        let raw = newState.rawValue
+        Task { @MainActor in
+            self.append("ice state -> \(raw)")
+            self.refresh()
+        }
+    }
+
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection,
+        didChange newState: RTCIceGatheringState
+    ) {}
+
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection,
+        didGenerate candidate: RTCIceCandidate
+    ) {
+        Task { @MainActor in
+            if peerConnection === self.pc1 {
+                self.pc2?.add(candidate) { _ in }
+            } else {
+                self.pc1?.add(candidate) { _ in }
+            }
+        }
+    }
+
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection,
+        didRemove candidates: [RTCIceCandidate]
+    ) {}
+
+    nonisolated func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
+
+    // Optional; these are the ones worth reporting.
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection,
+        didChange newState: RTCPeerConnectionState
+    ) {
+        let raw = newState.rawValue
+        Task { @MainActor in
+            self.append("pc state -> \(raw)")
+            self.refresh()
+        }
+    }
+
+    nonisolated func peerConnection(
+        _ peerConnection: RTCPeerConnection,
+        didAdd rtpReceiver: RTCRtpReceiver,
+        streams: [RTCMediaStream]
+    ) {
+        Task { @MainActor in
+            self.append("remote track received")
+            self.refresh()
+        }
+    }
+}
+
 /// Native camera preview for the spike. `RTCCameraPreviewView` no longer exists in
 /// the SDK; the supported path is an `RTCMTLVideoView` attached to the track.
 struct RTCLocalPreview: UIViewRepresentable {
@@ -245,6 +392,12 @@ struct AudioSeamView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("seam.call")
+
+                Button("Start loopback") {
+                    probe.startLoopback()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("seam.loopback")
             }
 
             RTCLocalPreview(track: probe.videoTrack)
