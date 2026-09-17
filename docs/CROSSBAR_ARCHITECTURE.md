@@ -657,10 +657,27 @@ notifications, which the probe's raw observer logged — so an alarm does interr
 With a **CallKit call active**, the same alarm produced none: once CallKit owns the
 session, iOS deconflicts audio above the app and never posts the interruption.
 
-Recovery was not captured. The log view anchored to the oldest lines, so the lines
-the interruption produced were pushed out of view — `audioUnit=2` was observed
-afterwards, indicating the unit started twice, but that is suggestive rather than
-measured. Re-measured separately below.
+**Audio flow measured (2026-09-17).** Every "audio runs" statement before this rested
+on the audio unit starting, which is a proxy: a started unit and a silent one are
+indistinguishable from there. Polling inbound-RTP statistics on the *receiving* peer
+connection shows audio actually crossing the loopback:
+
+```
+audio IN bytes=225995 delta=6515  energy=0.599
+audio IN bytes=236583 delta=10588 energy=0.600
+audio IN bytes=240500 delta=3917  energy=0.600
+audio IN bytes=247757 delta=7257  energy=0.600
+```
+
+4–10 KB per 3s sample is roughly 11–27 kbps — the range Opus occupies for speech.
+Silence under DTX would be near-zero bytes with a flat energy counter; here
+`totalAudioEnergy` advances, so the stream carries real content rather than
+keepalive. Audio genuinely flows: capture source → pc1 → pc2.
+
+Interruption recovery was not captured. The log view anchored to the oldest lines, so
+the lines the interruption produced were pushed out of view — `audioUnit=2` was
+observed afterwards, indicating the unit started twice, but that is suggestive rather
+than measured. Re-measured separately below.
 
 Test C — a real incoming call, the interruption case the product will actually meet
 — is **NOT TESTED**: FaceTime from the Mac to the iPhone is not possible because

@@ -312,7 +312,7 @@ final class AudioSeamProbe: NSObject, ObservableObject {
     private func pollAudioStats() {
         guard let pc2 else { return }
         pc2.statistics { [weak self] report in
-            var found: (bytes: Int, energy: Double, level: Double)?
+            var found: (bytes: Int, energy: Double)?
             for (_, stat) in report.statistics {
                 guard stat.type == "inbound-rtp",
                       let kind = stat.values["kind"] as? String,
@@ -320,8 +320,7 @@ final class AudioSeamProbe: NSObject, ObservableObject {
                 else { continue }
                 found = (
                     (stat.values["bytesReceived"] as? NSNumber)?.intValue ?? 0,
-                    (stat.values["totalAudioEnergy"] as? NSNumber)?.doubleValue ?? 0,
-                    (stat.values["audioLevel"] as? NSNumber)?.doubleValue ?? 0
+                    (stat.values["totalAudioEnergy"] as? NSNumber)?.doubleValue ?? 0
                 )
             }
             Task { @MainActor in
@@ -334,8 +333,7 @@ final class AudioSeamProbe: NSObject, ObservableObject {
                 let delta = self.lastAudioBytes >= 0 ? found.bytes - self.lastAudioBytes : found.bytes
                 self.lastAudioBytes = found.bytes
                 let energy = String(format: "%.3f", found.energy)
-                let level = String(format: "%.4f", found.level)
-                self.append("audio IN bytes=\(found.bytes) delta=\(delta) energy=\(energy) level=\(level)")
+                self.append("audio IN bytes=\(found.bytes) delta=\(delta) energy=\(energy)")
                 self.refresh()
             }
         }

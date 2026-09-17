@@ -217,9 +217,9 @@ marked as such there.
 | Native capture teardown (Architecture B spike) | Yes | — | **Yes** — after Stop, `capture stopped` is logged and the status-bar camera/mic privacy indicators are absent, which is the objective evidence capture was released. The preview keeps its last rendered frame, so the preview alone proves nothing |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
 | Audio route behaviour | Yes | Not meaningfully tested | **Spike (B) partial** — AirPods connect/disconnect produced route reasons 1 and 2 and WebRTC followed the route rather than fighting it; speaker override and wired not tested |
-| Remote media | No | No | No |
+| RTCPeerConnection/SDP/ICE | Yes | — | **Spike (B) loopback** — two peer connections negotiate offer/answer locally over host candidates with real ICE, DTLS-SRTP and SRTP media; single process, no server |
+| Remote media | No | No | Loopback only — audio measured *flowing* (11–27 kbps, `totalAudioEnergy` rising) between two in-process peer connections; no second device yet |
 | MiroTalk signaling | No | No | No |
-| RTCPeerConnection/SDP/ICE | No | No | No |
 | Two-device call | No | No | No |
 | Three-/four-person mesh | No | No | No |
 | Background/lock/resume | No | No | **Spike (B) yes** — with a call active, audio survived lock and background (`audioUnit=1` throughout, no stop); video capture stopped on suspension (frame count frozen) and resumed cleanly on return |
