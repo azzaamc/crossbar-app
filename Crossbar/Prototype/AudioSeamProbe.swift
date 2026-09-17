@@ -67,6 +67,34 @@ final class AudioSeamProbe: NSObject, ObservableObject {
             (UIApplication.willEnterForegroundNotification, "app willEnterForeground"),
             (UIApplication.didBecomeActiveNotification, "app didBecomeActive"),
         ]
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let raw = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) ?? 0
+            let options = (note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0
+            let label = raw == AVAudioSession.InterruptionType.began.rawValue
+                ? "BEGAN"
+                : (raw == AVAudioSession.InterruptionType.ended.rawValue ? "ENDED" : "unknown")
+            Task { @MainActor in
+                guard let self else { return }
+                self.append("AVAudioSession interruption \(label) (raw \(raw)) options=\(options)")
+                self.refresh()
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.append("AVAudioSession media services were RESET")
+                self?.refresh()
+            }
+        }
+
         for (name, label) in events {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
@@ -304,6 +332,40 @@ extension AudioSeamProbe: RTCAudioSessionDelegate {
     nonisolated func audioSessionDidStopPlayOrRecord(_ session: RTCAudioSession) {
         Task { @MainActor in
             self.append("audio unit STOPPED")
+            self.refresh()
+        }
+    }
+
+    // Interruption was previously unobservable here: none of these were implemented,
+    // so an interruption could occur and leave no trace in the log. All are @optional
+    // on the protocol, so the omission compiled silently.
+    nonisolated func audioSessionDidBeginInterruption(_ session: RTCAudioSession) {
+        Task { @MainActor in
+            self.append("INTERRUPTION began (RTCAudioSession)")
+            self.refresh()
+        }
+    }
+
+    nonisolated func audioSessionDidEndInterruption(
+        _ session: RTCAudioSession,
+        shouldResumeSession: Bool
+    ) {
+        Task { @MainActor in
+            self.append("INTERRUPTION ended, shouldResume=\(shouldResumeSession)")
+            self.refresh()
+        }
+    }
+
+    nonisolated func audioSessionMediaServerTerminated(_ session: RTCAudioSession) {
+        Task { @MainActor in
+            self.append("media server TERMINATED")
+            self.refresh()
+        }
+    }
+
+    nonisolated func audioSessionMediaServerReset(_ session: RTCAudioSession) {
+        Task { @MainActor in
+            self.append("media server RESET")
             self.refresh()
         }
     }
