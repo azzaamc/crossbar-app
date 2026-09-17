@@ -3,6 +3,7 @@ import AVFAudio
 import Combine
 import Foundation
 import SwiftUI
+import UIKit
 import WebRTC
 
 /// Architecture B audio-seam spike.
@@ -38,11 +39,44 @@ final class AudioSeamProbe: NSObject, ObservableObject {
     private var audioSource: RTCAudioSource?
     private var audioTrack: RTCAudioTrack?
     private var capturer: RTCCameraVideoCapturer?
+    /// Counts frames the capture source actually produced. The preview cannot be
+    /// trusted for this: RTCMTLVideoView keeps its last frame after the track is
+    /// detached, so a frozen picture and a live one look identical.
+    private let frameCounter = SeamFrameCounter()
+    private var didObserveLifecycle = false
 
     private var didActivateCount = 0
     private var didDeactivateCount = 0
 
     // MARK: - Lifecycle
+
+    override init() {
+        super.init()
+        observeLifecycle()
+    }
+
+    /// App lifecycle is logged so cause can be separated from effect. Without it a
+    /// lock or background test cannot distinguish "nothing happened" from "the app
+    /// was suspended and we saw nothing".
+    private func observeLifecycle() {
+        guard !didObserveLifecycle else { return }
+        didObserveLifecycle = true
+        let events: [(Notification.Name, String)] = [
+            (UIApplication.willResignActiveNotification, "app willResignActive"),
+            (UIApplication.didEnterBackgroundNotification, "app didEnterBackground"),
+            (UIApplication.willEnterForegroundNotification, "app willEnterForeground"),
+            (UIApplication.didBecomeActiveNotification, "app didBecomeActive"),
+        ]
+        for (name, label) in events {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.append("\(label)  frames=\(self.frameCounter.count)  audioUnit=\(self.playOrRecordCount)")
+                    self.refresh()
+                }
+            }
+        }
+    }
 
     func start() {
         guard !isCapturing else { return }
@@ -64,9 +98,10 @@ final class AudioSeamProbe: NSObject, ObservableObject {
         RTCAudioSession.sharedInstance().remove(self)
         RTCAudioSession.sharedInstance().isAudioEnabled = false
         isCapturing = false
+        videoTrack?.remove(frameCounter)
         videoTrack = nil
         status = "Stopped"
-        append("capture stopped")
+        append("capture stopped (frames produced: \(frameCounter.count))")
         refresh()
     }
 
@@ -128,6 +163,7 @@ final class AudioSeamProbe: NSObject, ObservableObject {
         let videoSource = factory.videoSource()
         self.videoSource = videoSource
         videoTrack = factory.videoTrack(with: videoSource, trackId: "seam-video")
+        videoTrack?.add(frameCounter)
 
         let audioSource = factory.audioSource(
             with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
@@ -294,8 +330,9 @@ extension AudioSeamProbe: RTCAudioSessionDelegate {
         previousRoute: AVAudioSessionRouteDescription
     ) {
         let name = session.currentRoute.outputs.first?.portType.rawValue ?? "none"
+        let raw = reason.rawValue
         Task { @MainActor in
-            self.append("route change (reason \(reason.rawValue)) -> \(name)")
+            self.append("route change \(raw) \(seamRouteReasonName(raw)) -> \(name)")
         }
     }
 }
@@ -370,6 +407,42 @@ extension AudioSeamProbe: RTCPeerConnectionDelegate {
             self.append("remote track received")
             self.refresh()
         }
+    }
+}
+
+/// Counts produced frames. `RTCVideoRenderer` is called on WebRTC's thread, so the
+/// counter is guarded rather than main-actor isolated.
+final class SeamFrameCounter: NSObject, RTCVideoRenderer {
+    private let lock = NSLock()
+    private var value = 0
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func setSize(_ size: CGSize) {}
+
+    func renderFrame(_ frame: RTCVideoFrame?) {
+        guard frame != nil else { return }
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+}
+
+/// 6 is `wakeFromSleep`, which unlock should produce; its absence is meaningful.
+private func seamRouteReasonName(_ raw: UInt) -> String {
+    switch raw {
+    case 1: return "newDeviceAvailable"
+    case 2: return "oldDeviceUnavailable"
+    case 3: return "categoryChange"
+    case 4: return "override"
+    case 6: return "wakeFromSleep"
+    case 7: return "noSuitableRouteForCategory"
+    case 8: return "routeConfigurationChange"
+    default: return "unknown"
     }
 }
 
