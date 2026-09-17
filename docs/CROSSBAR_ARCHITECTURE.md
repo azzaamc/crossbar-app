@@ -82,11 +82,25 @@ a client workaround. Load-bearing claims were re-verified directly.
 `tailscale-user-login` only when the request arrives from loopback
 (`src/identity.js:19-22`) and `loadConfig` throws unless the listener is loopback
 (`src/config.js:59-62`). A native client cannot set an identity header; it must
-reach the tailnet Serve URL and let Serve inject it. That Serve injects those
-headers for a non-browser client is **[unverified]** and is the load-bearing
-assumption of the entire identity model — one request from a tailnet device
-settles it. Absent `Origin` passes `checkOrigin` (`src/server.js:97-105`), so
-`URLSession` is viable; there is no CORS layer and none is needed.
+reach the tailnet Serve URL and let Serve inject it.
+
+**Verified on the device, 2026-09-17.** A bare `URLSession` GET from Crossbar to
+`<tailnet-host>:8443/api/session` returned:
+
+```
+HTTP 200
+authenticated=true configured=true
+identity.source=tailscale name=<enrolled display name>
+user.displayName=<enrolled display name>
+```
+
+So Serve does inject the identity headers for a non-browser client, and the
+existing API authenticates a native app with no backend change at all. This was
+the load-bearing assumption of the entire control plane and it holds. The request
+deliberately sent no `Origin` header, which `checkOrigin` permits
+(`src/server.js:97-105`); that is why `URLSession` is viable without a CORS layer.
+The probe that measured it is DEBUG-only and retained at
+`Crossbar/Prototype/BackendReachabilityProbe.swift`.
 
 **The room id is never exposed. This is the blocking question for Architecture
 B.** `callPublic` returns `{id, callerId, status, createdAt, answeredAt,
