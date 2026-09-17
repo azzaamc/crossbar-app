@@ -60,6 +60,13 @@ bridge first, but the CLI commands below are reproducible fallbacks.
 
 - Xcode 27.0 (`27A266a`) was installed at handoff.
 - Scheme: `Crossbar`.
+- No `.xcscheme` file is tracked in this repository, and
+  `Crossbar.xcodeproj/xcshareddata/` contains no schemes. The scheme exists
+  only inside the running Xcode instance; `xcodebuild -scheme Crossbar` and the
+  `xcodebuildmcp` CLI both resolve it because Xcode auto-creates it, and that
+  was verified on 2026-09-17, but a clean checkout does not carry it. The only
+  scheme-related tracked artifact is
+  `xcuserdata/azzaam.xcuserdatad/xcschemes/xcschememanagement.plist`.
 - Targets: `Crossbar`, `CrossbarTests`, `CrossbarUITests`.
 - Bundle ID: `com.abdullahchaudhry.Crossbar`.
 - Minimum target: iOS 27.0.
@@ -201,6 +208,9 @@ git diff --cached
 
 Do not commit DerivedData, `.xcresult` bundles, `.DS_Store`, user interface
 state, secrets, signing credentials, runtime databases, or logs containing
-private endpoints/tokens. The repository contains one already-tracked
-user-specific `WorkspaceSettings.xcsettings` file from the probe checkpoint;
-do not treat that as a reason to commit additional `xcuserdata`.
+private endpoints/tokens. The repository contains two already-tracked
+user-specific files from the probe checkpoint:
+`Crossbar.xcodeproj/project.xcworkspace/xcuserdata/azzaam.xcuserdatad/WorkspaceSettings.xcsettings`
+and
+`Crossbar.xcodeproj/xcuserdata/azzaam.xcuserdatad/xcschemes/xcschememanagement.plist`.
+Do not treat them as a reason to commit additional `xcuserdata`.

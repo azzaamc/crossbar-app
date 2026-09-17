@@ -161,13 +161,27 @@ diagnostic. In particular:
 
 ## Experiment results
 
+Only compilation (P1) and the automated suite (P7) have retained machine
+artifacts, and those artifacts live outside the repository under
+`~/Library/Developer/XcodeBuildMCP/workspaces/Crossbar-f414c2a00dec/`. The
+interactive simulator results (P2–P6) are recorded observations only: no
+screenshot, bridge-event capture, or result bundle for them exists anywhere
+readable, so they cannot be re-inspected or attached to a review. Treat P2–P6
+as first-hand notes rather than reproducible evidence, and capture artifacts
+for any experiment that replaces them.
+
 ### P1 — Project compilation
 
 - Environment: Xcode 27.0, iOS 27.0 simulator SDK.
 - Expected: Swift/HTML resource project compiles in Debug and Release.
-- Actual: both configurations built successfully on 2026-09-16 and were
-  re-verified successfully on 2026-09-17.
-- Evidence: XcodeBuildMCP build results; current source at checkpoint.
+- Actual: both configurations built successfully on 2026-09-16. On 2026-09-17
+  Debug rebuilt and succeeded, but the Release invocation was an up-to-date
+  no-op whose log contains no compile step. The most recent real Release
+  compilation is therefore 2026-09-16, not 2026-09-17.
+- Evidence: XcodeBuildMCP build logs under
+  `~/Library/Developer/XcodeBuildMCP/workspaces/Crossbar-f414c2a00dec/logs/`,
+  outside the repository and gitignored, so a fresh clone cannot reproduce
+  them; current source at checkpoint.
 - Conclusion: the project and conditional DEBUG structure compile.
 
 ### P2 — Local runtime and JavaScript-to-Swift bridge

@@ -189,9 +189,13 @@ phase and must not block the physical-device local probe.
    not for its value to become `Runtime ready`.
 2. The unit test is a generated no-op.
 3. The iOS 27.0 deployment target is not yet a product decision.
-4. A user-specific `WorkspaceSettings.xcsettings` was committed in the probe
-   checkpoint. `.gitignore` now blocks new `xcuserdata`, but the existing file
-   remains tracked and was not removed during handoff.
+4. Two user-specific files remain tracked from the probe checkpoint:
+   `Crossbar.xcodeproj/project.xcworkspace/xcuserdata/azzaam.xcuserdatad/WorkspaceSettings.xcsettings`
+   and
+   `Crossbar.xcodeproj/xcuserdata/azzaam.xcuserdatad/xcschemes/xcschememanagement.plist`.
+   `.gitignore` now blocks new `xcuserdata`, but gitignore cannot untrack
+   existing entries, and neither file was removed during handoff. Earlier
+   revisions of this document under-counted them as one.
 5. The outer user-designated root is not the Git root. Canonical docs/rules are
    tracked in the nested worktree; outer entry files are present but untracked
    by design of the existing layout.

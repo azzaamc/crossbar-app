@@ -29,7 +29,7 @@ worktree.
 | Item | Current value |
 | --- | --- |
 | Xcode | 27.0 (`27A266a`) |
-| Scheme | `Crossbar` (only shared/discoverable scheme) |
+| Scheme | `Crossbar` (only discoverable scheme; **no `.xcscheme` file is tracked** — Xcode auto-creates it, so `-scheme Crossbar` resolves on this machine but is absent from a clean checkout) |
 | App target | `Crossbar` |
 | Unit-test target | `CrossbarTests` (Swift Testing) |
 | UI-test target | `CrossbarUITests` (XCTest) |
