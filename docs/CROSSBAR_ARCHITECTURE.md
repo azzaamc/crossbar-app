@@ -251,6 +251,113 @@ ownership question is settled, because they all sit on the disabled capture
 path. No decision to replace Architecture A is recorded here; this note records
 the measurement that decision now rests on.
 
+### Architecture B scoping (2026-09-17)
+
+Undertaken after the media-first experiment (P8.14) closed the question of
+whether Architecture A's audio conflict was a probe defect. It is not. Apple
+documents the rule the experiment hit: activating a session with category
+`record` or `playAndRecord` "when another app is already hosting a call" fails
+with `AVAudioSessionErrorInsufficientPriority`, because "the session fails to
+activate if another audio session has higher priority than yours (such as a
+phone call) and neither audio session allows mixing". WebKit's capture runs in
+the WebContent process, so it competes with the CallKit-hosted call session as a
+separate client and loses. Under B the app's own session *is* the call session,
+so the rule does not apply.
+
+#### Dependencies (pinned, verified from primary sources)
+
+| Component | Version | Channel | License |
+| --- | --- | --- | --- |
+| `stasel/WebRTC` prebuilt xcframework | M153 (153.0.0), 2026-09-11, ~45 MB, SHA-256 `3e3a8946…b78f` | binary/SPM | WebRTC BSD-3-Clause |
+| `socketio/socket.io-client-swift` | 16.1.1 (2024-10-01) | SPM | MIT, plus Starscream Apache-2.0 |
+
+The Socket.IO client is in maintenance mode; its own release notes record
+reconnect-hang and 60-second socket-close fixes, so reconnect behaviour is the
+part of that dependency with the most defect history and needs its own test
+harness.
+
+#### Signaling surface
+
+Nine events are mandatory for a 2–4 person mesh: `connect`, `join`, `addPeer`,
+`relaySDP`/`sessionDescription`, `relayICE`/`iceCandidate`, `removePeer`, and
+`disconnect`, plus two error paths that must be handled even if never hit
+(`unauthorized`, `roomIsLocked`/`roomIsJoinLocked`). Everything else in the
+audit is optional for a family client. The MiroTalk server is reused unchanged.
+
+Transport must be forced WebSocket-only: production is configured
+`transports: ['websocket']` and the browser client forces it too, so a Swift
+client left on its default polling-then-upgrade path would exercise a code path
+the deployment never uses.
+
+#### What survives, what is rebuilt
+
+Survives: `CrossbarApp.swift`, the SwiftUI shell concept, `Assets.xcassets`,
+`Info.plist` (including `UIBackgroundModes = [voip]`, already required), and
+`CallKitManager.swift` with modification — its `CXProvider`/`CXProviderDelegate`
+surface is the single largest reusable asset. The test *targets* survive; their
+contents do not.
+
+Discarded entirely: `WebMediaEngine.swift` (the Swift↔JS bridge),
+`RuntimeProbe.html`, and `CallProbeModel.swift`. Under B there is no WebView, no
+`WKScriptMessageHandler`, and no JavaScript in the media path.
+
+Rebuilt from nothing, with no existing equivalent: mesh peer lifecycle and
+sender replacement (L); negotiation and ICE, including the server-selected
+offerer and per-peer pending candidate queues (L); capture and camera switching
+(M); remote rendering into SwiftUI (M); signaling transport (M);
+reconnect/rejoin (M); teardown (S); audio-session ownership (S–M); device
+selection (S).
+
+Largest risk: recreating MiroTalk's non-standard negotiation and mesh semantics
+precisely enough to interoperate with installed 1.9.64 peers and the existing
+PWA, with no native reference implementation. The audio-session problem that
+motivates B is *not* the top risk — native session ownership under CallKit is
+the supported path, and it is small code.
+
+#### Backend requirement (verified in the Family Call source)
+
+`callPublic()` returns `{id, callerId, status, createdAt, answeredAt,
+participants}` and **omits the room identifier**. The room *is* available
+server-side — `createCall` persists `room_id` and `store.call()` selects
+`room_id AS roomId` — and it reaches clients today only inside the `joinUrl`
+field returned by `POST /api/calls`, `/respond`, and `/join`
+(`src/server.js:183, 291, 325`).
+
+Architecture B therefore requires one small additive backend change: expose the
+room identifier, or a bootstrap object containing it plus the signaling origin,
+so Crossbar never has to parse an HTML join URL. The MiroTalk API secret must
+stay server-side and is correctly hidden today — it is read from the environment
+and used only inside `src/mirotalk.js:joinUrl()`.
+
+One unverified prerequisite: if the deployed MiroTalk has `hostCfg.protected` or
+`user_auth` enabled, a native first-joiner that bypasses the `/join` page cannot
+satisfy the Socket.IO auth gate without a `peer_token`. That is server
+configuration outside this repository and has not been checked.
+
+#### What is lost
+
+MiroTalk engine reuse and its audited in-device provenance; the probe bridge and
+its device-verified capture path; near-free PWA↔native parity (under A both
+clients would run the same browser engine); and single-engine maintenance. The
+one-to-one and 2–4 person requirements survive in intent but inherit nothing —
+they must be rebuilt and re-proven.
+
+#### Licensing
+
+Documented facts: MiroTalk P2P is AGPLv3; native WebRTC is BSD-3-Clause;
+`socket.io-client-swift` is MIT with an Apache-2.0 Starscream dependency.
+Crossbar currently contains no MiroTalk source. Under B no MiroTalk code is
+copied, so no AGPL-covered work enters the binary, and the modified production
+MiroTalk service remains a separate network-service question unaffected by the
+client's media architecture. Unresolved and not decided here: whether a native
+reimplementation of the protocol is a derivative work, and whether AGPLv3 terms
+are compatible with App Store distribution if MiroTalk code is ever included.
+
+#### Status
+
+Measured, not decided. The evidence points to B for the media layer; the
+decision is the owner's.
+
 ## Backend changes before a usable native release
 
 No backend change is required for the next local media/CallKit experiment.
