@@ -248,7 +248,7 @@ struct AudioSeamView: View {
             }
 
             RTCLocalPreview(track: probe.videoTrack)
-                .frame(height: 150)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
 
             Text(probe.status)
@@ -264,7 +264,7 @@ struct AudioSeamView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
-            .frame(maxHeight: 120)
+            .frame(height: 130)
         }
     }
 }
