@@ -535,10 +535,15 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         }
     }
 
-    /// `v=0…` -> `3 m-lines (audio,video,application)`, so the log shows what was
-    /// actually negotiated without printing an SDP.
+    /// `v=0…` -> `2 m-lines (audio,video)`, so the log shows what was actually
+    /// negotiated without printing an SDP.
+    ///
+    /// Splits on newlines by predicate, not on `"\n"`: in Swift `"\r\n"` is a single
+    /// `Character`, so an SDP's CRLF-terminated lines never match a `"\n"` separator
+    /// and the whole document appears to be one line. That made an earlier run report
+    /// `0 m-lines` for an offer that plainly had two.
     private static func mLines(_ sdp: String) -> String {
-        let kinds = sdp.split(separator: "\n")
+        let kinds = sdp.split(whereSeparator: \.isNewline)
             .filter { $0.hasPrefix("m=") }
             .map { String($0.dropFirst(2).split(separator: " ").first ?? "") }
         return "\(kinds.count) m-lines (\(kinds.joined(separator: ",")))"

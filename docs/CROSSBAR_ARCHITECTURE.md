@@ -609,6 +609,54 @@ and both exchanges completed. Signalling does not survive backgrounding without 
 background mode, which the product will need for a call that outlives the app
 being on screen.
 
+**A native call completed (2026-09-17).** With peer connections implemented, two
+native peers in one room negotiated and carried media with no browser involved:
+
+```
+B: addPeer … should_create_offer=true iceServers=1
+B: policy: offering … after appending tracks
+B: signaling state -> 1                 (have-local-offer)
+B: offer -> … (3912 chars)
+A: addPeer … should_create_offer=false iceServers=1
+A: policy: awaiting an offer
+A: offer <- … (3912 chars)
+A: signaling state -> 3                 (have-remote-offer)
+A: answer -> … (3771 chars)
+A: signaling state -> 0                 (stable)
+both: remote audio track, remote video track, remote stream (1a/1v)
+both: pc state -> 2, ice state -> 2 (B reached 3, completed, then settled at 2)
+A: media IN bytes=9591  delta=8145  energy=0.020
+B: media IN bytes=10236 delta=8169  energy=0.020   — climbing to ~85 KB each way
+```
+
+**The offer trigger is resolved.** The audit's stated one undetermined part was when
+the local side decides to offer, because MiroTalk delegates it to the browser's
+`negotiationneeded` event and Objective-C libwebrtc exposes no equivalent. The
+synthesised policy — append tracks, then offer exactly once because the server said
+`should_create_offer` — produced a usable offer with both media m-lines and
+completed against a peer built only from the written contract. Divergence risks A2
+(an offerer with no tracks never offering) and A11 (server-assigned offerer role
+against opportunistic renegotiation) did not materialise in this configuration.
+
+**Still not validated: interop with MiroTalk's own browser client.** The audit
+requires the policy be checked against a live 1.9.64 peer. A browser cannot share
+the foreground with Crossbar on one phone, because whichever app is backgrounded
+loses its socket — so this needs a second device on the tailnet.
+
+**The STUN finding is now concrete.** Both peers' candidate lists contained srflx
+candidates resolved through `stun:stun.l.google.com:19302`:
+
+```
+candidate:1923698751 1 udp 1686052607 119.154.255.67 64841 typ srflx …
+candidate:3649812590 1 udp 1685921535 154.80.38.134 60608 typ srflx …
+```
+
+A third-party STUN server is being consulted and is returning this device's public
+egress addresses. Tailscale host candidates (`100.88.61.34`, `fd7a:115c:a1e0::…`)
+were present alongside them and are what a tailnet-only deployment actually needs.
+This is the ICE decision flagged above, now with evidence for it rather than a
+reading of configuration.
+
 Sixteen specific divergence risks are catalogued in the audit, with the
 likelihood of silent divergence for each. The ones rated *likely* are all in the
 trigger rather than the payload: the missing `negotiationneeded`, an offerer with
