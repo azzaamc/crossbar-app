@@ -248,7 +248,7 @@ for any experiment that replaces them.
   a green suite is weak evidence. Manual predicate-based waiting confirmed the
   unchanged runtime later reached `Runtime ready`.
 
-### P8 — Physical iPhone device probe (PARTIAL; experiment still in progress)
+### P8 — Physical iPhone device probe (2026-09-17)
 
 - Environment: physical `iPhone 17 Pro` (iPhone18,1), iOS 27.0 (24A437),
   Developer Mode already enabled, paired over local network. Host Xcode 27.0
@@ -329,22 +329,110 @@ screenshots and console capture are fully automatable.
   `CXStartCallAction` and `CXAnswerCallAction` delegates, so the media-only path
   never sets a category, a mode, or an active state.
 - Implication: this is a negative result about the probe, not about WebKit.
-  WebKit may own a capture session outside the app process, so no routing
-  conclusion is available until the CallKit path is exercised. Do not read this
-  as evidence that audio routing works or fails.
+  WebKit may own a capture session outside the app process, so no conclusion was
+  available until the CallKit path was exercised. That path has since been
+  exercised: CallKit activation and deactivation are now recorded (P8.9) and the
+  resulting WebKit conflict is characterised (P8.10). Audio *routing* itself
+  remains untested.
+
+#### P8.7 — CallKit outgoing transaction
+
+- Result: **FAIL as shipped; PASS after two probe defects were fixed**
+- Actual: on the unmodified probe, tapping `Start probe` produced
+  `com.apple.CallKit.error.requesttransaction` **Code=1** at 16:59:16 and
+  16:59:57 on the device. Code 1 is
+  `CXErrorCodeRequestTransactionErrorUnentitled`, which Apple documents as most
+  commonly caused by a missing `voip` entry in `UIBackgroundModes`; the project
+  declared no `UIBackgroundModes` at all. After adding
+  `UIBackgroundModes = [voip]`, the same tap returned **Code=2**
+  (`CXErrorCodeRequestTransactionErrorUnknownCallProvider`) on a cold start.
+  The probe's `CXProvider` is a `lazy var` and nothing on the outgoing path
+  touches it, so the app was never registered as a call provider. After creating
+  the provider at launch, the transaction returned **error `(null)`** —
+  accepted — on a cold start at 17:15:35.106.
+- Evidence: device unified log, `Received reply from transaction request with
+  error: …` for PIDs 4484, 4555, 4568, 4572, 4577 and 4599.
+- Implication: both failures were **probe defects, not architectural ones**. A
+  native CallKit outgoing call is accepted on a physical iPhone.
+- Correction to P6: the simulator's recorded `error 1` is this same
+  `.unentitled` code. P6's conclusion that the simulator "cannot validate the
+  intended native call lifecycle" attributed to the simulator what was in fact
+  the missing background-mode declaration.
+
+#### P8.8 — CallKit incoming report, answer and decline
+
+- Result: **PASS**
+- Actual: `Simulate incoming` presented the native incoming-call interface with
+  Accept and Decline. The log records `Provider <CXXPCProvider: …> was asked to
+  report a new incoming call with … localizedCallerName=Family member
+  hasVideo=1` and `Received CSD reply for incoming call …: success`.
+  `CXAnswerCallAction` and `CXEndCallAction` were both delivered and fulfilled.
+- Evidence: device unified log; operator observation.
+
+#### P8.9 — Audio session activation under CallKit
+
+- Result: **PASS**
+- Actual: `Notified that audio session activation state changed to: 1` on call
+  start and `… to: 0` on call end, so `didActivate` and `didDeactivate` are
+  delivered on hardware.
+- Evidence: device unified log, e.g. 17:09:15.790 and 17:09:38.261.
+
+#### P8.10 — WebKit capture under an active CallKit call
+
+- Result: **FAIL** — the highest-value result of this experiment
+- Actual: with the call active, `getUserMedia` succeeds and WebKit creates and
+  starts both tracks (`Front Ultra Wide Camera`, `iPhone Microphone`), but then:
+  `MediaSessionManageriOS::maybeActivateAudioSession(0) failed to activate
+  AudioSession`; `sessionWillBeginPlayback(0) returning false, failed to
+  activate AudioSession`; `HTMLMediaElement::playInternal(...) returning because
+  of interruption`; then `RealtimeMediaSource::setMuted(...) true` and
+  `RealtimeMediaSource::stop(...)`. The page's `await video.play()` consequently
+  never settles, `acquire()` never emits, `joined` never reaches Swift, and the
+  probe hangs at `Requesting camera and microphone…` indefinitely instead of
+  reporting a failure.
+- Evidence: device unified log for PIDs 4572 (17:09:16), 4577 (17:09:43 and
+  17:10:03) and 4599 (17:15:35) — identical in all three.
+- Implication: **WebKit's media engine cannot activate its audio session while
+  CallKit holds the app's session, and WebKit responds by treating it as an
+  interruption — it stops the capture sources and aborts playback.** This is the
+  Architecture A risk the probe existed to test, and in this configuration the
+  answer is negative. It is not a probe bug; it is a WebKit/CallKit ownership
+  conflict.
+- Secondary observation from the same runs:
+  `HTMLMediaElement::mediaStreamCaptureStarted(...) autoplay blocked with reason:
+  PageConsentRequired: Not enough data`. Autoplay of the capture stream is
+  blocked independently of the session conflict, so a runtime must not `await`
+  `video.play()` unconditionally.
+
+#### P8.11 — Native in-call UI
+
+- Result: **FAIL / unexplained**
+- Actual: although the transaction was accepted and the system broadcast a new
+  call to other processes, no native in-call screen or banner was ever observed,
+  and the device screenshot at the hung state shows the probe in the foreground
+  with no call UI and no privacy indicator lit.
+- Not established: whether this is expected for a foreground app on this OS
+  version, or a consequence of the call never reaching a connected state.
+- Evidence: device screenshot `09`; operator observation.
+
+#### P8.12 — Teardown
+
+- Result: **PASS** for track release
+- Actual: ending a call produced `didDeactivate` plus WebKit
+  `WebPageProxy::deactivateMediaCapability` and
+  `UserMediaPermissionRequestManagerProxy::stopCapture`, and the probe returned
+  to `Call ended` with local media released.
+- Not established: capture-indicator observation and relaunch cleanliness were
+  not separately verified.
 
 #### P8 — device items still NOT TESTED
 
-- iOS permission sheet presentation (explicit observation).
 - Visible camera-off blanking and camera-on restore.
-- `End` teardown, capture-indicator release, and relaunch cleanliness.
-- CallKit outgoing start, native mute, and native end.
-- CallKit simulated incoming, answer, and decline.
-- `didActivate` / `didDeactivate` and any audio route behaviour.
-- Interruption, background/foreground, and lock/unlock survival.
-
-These require operator taps and observations on the physical device. The
-matrix below is updated only for what has actually been executed.
+- The visible front/rear change on camera switch.
+- Audio route behaviour (receiver, speaker, wired, Bluetooth).
+- Interruption by another audio source.
+- Lock/unlock survival, and background/foreground recovery of a live call.
+- Multiparty and remote media (absent by construction).
 
 ## What the probe proves
 
@@ -358,8 +446,14 @@ Only these conclusions are supported:
 5. Local track toggles, reacquisition, and explicit stop can work in the
    simulator; on device, reacquisition is confirmed by OSLog, while stop and
    toggles are not yet confirmed (P8.4, P8.5).
-6. The proposed native/WebKit ownership boundary is technically constructible
-   and survives contact with real iOS hardware for local capture.
+6. The native/WebKit ownership boundary is technically constructible: on real
+   hardware CallKit accepts outgoing calls, presents incoming calls, and
+   delivers `didActivate` / `didDeactivate` (P8.7–P8.9).
+7. WebKit capture and a CallKit-activated audio session conflict. With a call
+   active, WebKit fails to activate its own audio session, treats the result as
+   an interruption, and stops the capture sources, and the page's `play()`
+   never settles (P8.10). The boundary is constructible but, as configured, is
+   not functional.
 
 ## What the probe does not prove
 

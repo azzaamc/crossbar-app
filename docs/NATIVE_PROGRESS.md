@@ -202,20 +202,24 @@ marked as such there.
 | Local WKWebView load | Yes | Yes | Yes (P8.2) |
 | Swift ↔ JavaScript bridge | Yes | Yes | Yes (P8.2) |
 | Camera acquisition | Yes | Simulator synthetic feed | Yes — live preview (P8.3) |
-| Microphone track acquisition | Yes | Event/track path only | Acquired; no audible verification (P8.3) |
-| Native permission sheet | N/A | Not explicitly asserted | Inferred from successful capture; never observed (P8.3) |
-| Local MediaStream preview | Yes | Yes | Yes (P8.3) |
+| Microphone track acquisition | Yes | Event/track path only | Yes — track created on device (P8.3, P8.10) |
+| Native permission sheet | N/A | Not explicitly asserted | Not directly observed; inferred from successful capture (P8.3) |
+| Local MediaStream preview | Yes | Yes | Yes, media-only path (P8.3) |
 | Mute/camera track controls | Yes | Yes | Mute round trip only; camera off/on not observed (P8.5) |
 | Camera switching | Yes | Simulator event completed | Re-acquisition confirmed by OSLog; visible change unconfirmed (P8.4) |
-| Local teardown | Yes | Yes | Not tested |
-| CallKit actions | Yes | Transaction rejected in simulator | Not tested |
-| AVAudioSession routing | Yes | Not meaningfully tested | No session activity on the media-only path (P8.6) |
+| Local teardown | Yes | Yes | Yes — capture released on call end (P8.12) |
+| CallKit incoming | Yes | Not supported | **Yes** — native Accept/Decline; answer and decline delivered (P8.8) |
+| CallKit outgoing | Yes | Rejected (`.unentitled`) | **Yes after two probe fixes** — error `(null)` on a cold start (P8.7) |
+| `didActivate` / `didDeactivate` | Yes | Not tested | **Yes** — states 1 and 0 delivered (P8.9) |
+| WebKit capture during a CallKit call | Yes | Not tested | **FAIL** — WebKit cannot activate its audio session; capture muted and stopped, `play()` never settles (P8.10) |
+| Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
+| Audio route behaviour | Yes | Not meaningfully tested | Not tested |
 | Remote media | No | No | No |
 | MiroTalk signaling | No | No | No |
 | RTCPeerConnection/SDP/ICE | No | No | No |
 | Two-device call | No | No | No |
 | Three-/four-person mesh | No | No | No |
-| Background/lock/resume | No | No | No |
+| Background/lock/resume | No | No | Background observed only; lock/relaunch not tested |
 | PushKit/APNs | No | No | No |
 
 ## Immediate maintenance issue
