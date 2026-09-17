@@ -170,22 +170,46 @@ A physical iPhone named `Azzaam’s iPhone` running iOS 27.0 was visible to Xcod
 during the 2026-09-17 audit. The handoff did **not** install, launch, or test the
 probe on it. Availability is not a test result.
 
+The subsequent OMP takeover session did install, launch, and partially test the
+unchanged probe on that device; see P8 in `ARCHITECTURE_A_PROBE.md` and the
+matrix below. The probe UI remains a DEBUG diagnostic, not a product surface.
+
+### Physical device probe (2026-09-17)
+
+Device: `iPhone 17 Pro` (iPhone18,1), iOS 27.0 (24A437), Developer Mode enabled,
+paired over local network. Host: Xcode 27.0 (`27A266a`). Debug build of the
+unchanged probe at `d769412`.
+
+Facts established on the installed device bundle rather than inferred:
+
+- both privacy usage strings are present in the installed `Info.plist`;
+- `UIBackgroundModes` is absent, so the probe has no background execution mode;
+- the signed app's entitlements are limited to `application-identifier`, the
+  team-identifier key, and `get-task-allow` — no capabilities, confirming there
+  is no background audio and no VoIP background mode;
+- `MinimumOSVersion` is 27.0 and `RuntimeProbe.html` is present in the device
+  build.
+
+Results obtained so far are recorded as P8 in `ARCHITECTURE_A_PROBE.md`. The
+CallKit, audio-session, teardown, and lifecycle items remain untested and are
+marked as such there.
+
 ## Evidence classification
 
 | Capability | Compiled | Simulator tested | Physical iPhone tested |
 | --- | --- | --- | --- |
-| SwiftUI DEBUG harness | Yes | Yes | No |
-| Local WKWebView load | Yes | Yes | No |
-| Swift ↔ JavaScript bridge | Yes | Yes | No |
-| Camera acquisition | Yes | Simulator synthetic feed | No |
-| Microphone track acquisition | Yes | Event/track path only | No audible/physical test |
-| Native permission sheet | N/A | Not explicitly asserted | No |
-| Local MediaStream preview | Yes | Yes | No |
-| Mute/camera track controls | Yes | Yes | No |
-| Camera switching | Yes | Simulator event completed | No front/rear hardware test |
-| Local teardown | Yes | Yes | No capture-indicator test |
-| CallKit actions | Yes | Transaction rejected in simulator | No |
-| AVAudioSession routing | Yes | Not meaningfully tested | No |
+| SwiftUI DEBUG harness | Yes | Yes | Yes (P8.1) |
+| Local WKWebView load | Yes | Yes | Yes (P8.2) |
+| Swift ↔ JavaScript bridge | Yes | Yes | Yes (P8.2) |
+| Camera acquisition | Yes | Simulator synthetic feed | Yes — live preview (P8.3) |
+| Microphone track acquisition | Yes | Event/track path only | Acquired; no audible verification (P8.3) |
+| Native permission sheet | N/A | Not explicitly asserted | Inferred from successful capture; never observed (P8.3) |
+| Local MediaStream preview | Yes | Yes | Yes (P8.3) |
+| Mute/camera track controls | Yes | Yes | Mute round trip only; camera off/on not observed (P8.5) |
+| Camera switching | Yes | Simulator event completed | Re-acquisition confirmed by OSLog; visible change unconfirmed (P8.4) |
+| Local teardown | Yes | Yes | Not tested |
+| CallKit actions | Yes | Transaction rejected in simulator | Not tested |
+| AVAudioSession routing | Yes | Not meaningfully tested | No session activity on the media-only path (P8.6) |
 | Remote media | No | No | No |
 | MiroTalk signaling | No | No | No |
 | RTCPeerConnection/SDP/ICE | No | No | No |

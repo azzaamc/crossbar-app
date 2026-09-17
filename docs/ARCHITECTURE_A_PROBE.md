@@ -248,17 +248,118 @@ for any experiment that replaces them.
   a green suite is weak evidence. Manual predicate-based waiting confirmed the
   unchanged runtime later reached `Runtime ready`.
 
+### P8 — Physical iPhone device probe (PARTIAL; experiment still in progress)
+
+- Environment: physical `iPhone 17 Pro` (iPhone18,1), iOS 27.0 (24A437),
+  Developer Mode already enabled, paired over local network. Host Xcode 27.0
+  (`27A266a`). Debug configuration, scheme `Crossbar`, automatic signing with a
+  Personal Team. Probe source unchanged at commit `d769412`.
+- Evidence channels: `xcrun devicectl device capture screenshot`; the Xcode MCP
+  launch-session console (`GetConsoleOutput`) for device OSLog; and the probe's
+  own on-screen event log.
+
+Tooling limit recorded for future device work: Xcode's device-interaction MCP
+tools (`DeviceInteractionStartWorkspaceSession`, `DeviceInteractionSynthesize`)
+refuse a physical device and list only simulators, and `devicectl` exposes no
+input injection. Every on-device tap therefore requires a human operator;
+screenshots and console capture are fully automatable.
+
+#### P8.1 — Signing, install, launch
+
+- Result: **PASS**
+- Actual: the device build succeeded through the Xcode MCP project build
+  (12.5 s, zero errors); the app installed and launched as PID 4484 with the
+  WebKit content process as PID 4491.
+- Evidence: Xcode MCP build result and launch session; device OSLog; screenshots
+  `01`/`02`.
+
+#### P8.2 — Runtime init and JavaScript-to-Swift bridge on hardware
+
+- Result: **PASS**
+- Actual: status reached `Runtime ready` and the event log showed
+  `web → native: runtimeReady` on the physical device.
+- Evidence: device screenshot; device OSLog.
+- Implication: the bundled local-file `WKWebView` and the script-message bridge
+  are not simulator-specific.
+
+#### P8.3 — Camera and microphone acquisition on hardware
+
+- Result: **PASS** for acquisition; permission-prompt presentation **NOT
+  TESTED**
+- Actual: the event log showed `permissionStateChanged`, `localMediaReady`, and
+  `joined`. `joined` is emitted only after
+  `getUserMedia({audio: true, video: …})` resolves, and the preview rendered a
+  live camera image of the operator on the device.
+- Evidence: device screenshots `03`/`04`; event log.
+- Not established: that the iOS permission sheet was presented as such. The
+  grant is inferred, because the app had never been installed on this device
+  before and capture nevertheless succeeded. Subjective microphone audio quality
+  is untestable here: the probe has no remote peer and no playback path.
+
+#### P8.4 — Camera switch command delivery
+
+- Result: **PASS** for command delivery and re-acquisition; the visible
+  front/rear change is **NOT YET CONFIRMED**
+- Actual: `native → web: switchCamera` appeared in the event log, and device
+  OSLog recorded WebKit `[WebRTC]` messages naming sources 164 and 253 as
+  `Unable to find source … for videoFrameAvailable` at 16:54:16 and 16:54:18,
+  i.e. real video-source teardown during re-acquisition.
+- Implication: `switchCamera` in this runtime is a `facingMode` flip plus a full
+  `getUserMedia` re-acquire, which also stops and re-requests the audio track.
+  It is not `applyConstraints`. That mid-call audio-track interruption is a real
+  product risk and is invisible in the simulator, where switching is cheap.
+
+#### P8.5 — Mute/unmute round trip
+
+- Result: **PARTIAL**
+- Actual: the status read `Microphone state changed`, the only string set by the
+  `mutedChanged` event, and the control returned to its `Mute` label, implying a
+  completed toggle round trip.
+- Not established: any audible effect. With no remote peer, mute is observable
+  only as track state, and the probe never reports a track's live `enabled`
+  value back to Swift.
+
+#### P8.6 — AVAudioSession during local media (negative result)
+
+- Result: **INCONCLUSIVE BY DESIGN**
+- Actual: a session console query for
+  `audio|callkit|avaudio|tcc|clock|interrupt` returned zero matches across the
+  entire device session, while camera and microphone capture were live.
+- Source corroboration: `prepareAudioSession()` is called only from the
+  `CXStartCallAction` and `CXAnswerCallAction` delegates, so the media-only path
+  never sets a category, a mode, or an active state.
+- Implication: this is a negative result about the probe, not about WebKit.
+  WebKit may own a capture session outside the app process, so no routing
+  conclusion is available until the CallKit path is exercised. Do not read this
+  as evidence that audio routing works or fails.
+
+#### P8 — device items still NOT TESTED
+
+- iOS permission sheet presentation (explicit observation).
+- Visible camera-off blanking and camera-on restore.
+- `End` teardown, capture-indicator release, and relaunch cleanliness.
+- CallKit outgoing start, native mute, and native end.
+- CallKit simulated incoming, answer, and decline.
+- `didActivate` / `didDeactivate` and any audio route behaviour.
+- Interruption, background/foreground, and lock/unlock survival.
+
+These require operator taps and observations on the physical device. The
+matrix below is updated only for what has actually been executed.
+
 ## What the probe proves
 
 Only these conclusions are supported:
 
 1. The existing iOS project can host a local media-only `WKWebView`.
-2. An original JavaScript runtime can request and preview simulator media.
+2. An original JavaScript runtime can request and preview media, verified in the
+   simulator and now on a physical iPhone (P8.3).
 3. Swift can send the implemented commands to that runtime.
 4. JavaScript can return status/error events to Swift.
 5. Local track toggles, reacquisition, and explicit stop can work in the
-   simulator.
-6. The proposed native/WebKit ownership boundary is technically constructible.
+   simulator; on device, reacquisition is confirmed by OSLog, while stop and
+   toggles are not yet confirmed (P8.4, P8.5).
+6. The proposed native/WebKit ownership boundary is technically constructible
+   and survives contact with real iOS hardware for local capture.
 
 ## What the probe does not prove
 
