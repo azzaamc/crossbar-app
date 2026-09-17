@@ -425,6 +425,37 @@ screenshots and console capture are fully automatable.
 - Not established: capture-indicator observation and relaunch cleanliness were
   not separately verified.
 
+#### P8.13 — Single-owner audio-session experiment
+
+- Hypothesis: if the app stopped configuring `AVAudioSession` on the CallKit
+  path, WebKit would be the sole owner, activate its session successfully, and
+  capture and play during a native call.
+- Change: `prepareAudioSession()` was removed along with its two call sites, so
+  the probe no longer sets a category, mode, or options on the CallKit path.
+  Separately, `RuntimeProbe.html` no longer awaits `video.play()`; a refusal or
+  interruption is emitted as `playbackBlocked` and surfaced as
+  `Local playback blocked: …` instead of hanging the command.
+- Result: **HYPOTHESIS REJECTED — the conflict is structural, not two-owner.**
+- Actual: CallKit still accepted the transaction (`error: (null)` at
+  17:24:57.422) and still delivered `didActivate` (state 1 at 17:24:57.539).
+  WebKit then recorded
+  `MediaSessionManageriOS::maybeActivateAudioSession(0) failed to activate
+  AudioSession` at 17:24:57.850 — **the identical failure as before** — and
+  muted and stopped the capture source. Playback was permitted this time
+  (`sessionWillBeginPlayback(0) … returning true`, where the earlier runs
+  returned false) and the element reached `setState(…) Playing`, so the runtime
+  completed its acquisition and emitted `joined`. The player nonetheless settled
+  at `updatePlayState(…) shouldBePlaying = 0, playerPaused = 1`, so no frames
+  rendered and the preview stayed black.
+- Evidence: device unified log, PID 4651, 17:24:57.
+- Implication: **WebKit cannot activate its audio session while CallKit holds the
+  app's session active, and it responds by muting and stopping capture.** This
+  holds whether or not the app also configures the session, so it is not a
+  competing-owner problem that a runtime can resolve by yielding ownership — the
+  boundary itself is the defect. Consequently `Local media active` must not be
+  read as "media works": with the non-blocking `play()`, that status now means
+  only that capture was acquired.
+
 #### P8 — device items still NOT TESTED
 
 - Visible camera-off blanking and camera-on restore.

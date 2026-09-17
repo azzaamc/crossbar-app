@@ -229,6 +229,25 @@ If public WebKit APIs cannot meet CallKit audio/background requirements, choose
 Architecture B. Do not accumulate private WebKit workarounds or a native frame
 bridge until Architecture A has effectively become a second engine.
 
+### Measured status (physical iPhone, 2026-09-17)
+
+Criterion 3 is now measured and passes at the CallKit layer. After two DEBUG
+probe defects were fixed — a missing `UIBackgroundModes = [voip]` declaration
+and a `CXProvider` that was never instantiated before the first transaction —
+CallKit accepts outgoing calls, presents incoming calls, and delivers
+`didActivate` / `didDeactivate` on real hardware (P8.7–P8.9).
+
+The separating seam fails. With a call active, WebKit reports
+`MediaSessionManageriOS::maybeActivateAudioSession(0) failed to activate
+AudioSession`, then mutes and stops its capture sources and leaves the media
+player paused, so no preview renders (P8.10). This was reproduced in two
+different ownership arrangements — app-configured `AVAudioSession` and
+WebKit-only (P8.13) — so it is not a competing-owner defect the runtime can fix
+by yielding ownership.
+
+Criteria 4, 5, and 9 remain unmeasured. No decision to replace Architecture A is
+recorded here; this note records the measurement that decision now rests on.
+
 ## Backend changes before a usable native release
 
 No backend change is required for the next local media/CallKit experiment.
