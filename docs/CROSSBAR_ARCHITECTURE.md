@@ -556,9 +556,43 @@ Device log, verbatim: `didActivate #1: rtc.isActive before = false` →
   Audio playout and record under CallKit are therefore unmeasured, as are routes,
   interruption and background behaviour.
 
-The next increment is to give the spike a local loopback peer connection so the ADM
-is actually exercised — the smallest change that turns "capture survives" into
-"audio runs".
+**Update — loopback increment (2026-09-17).** Two defects in the first attempt made
+that result unreadable rather than negative, and both are worth recording because
+each would mislead a future reader:
+
+1. Every method on `RTCAudioSessionDelegate` takes `RTCAudioSession`, not
+   `AVAudioSession`. The delegate was written with the wrong type; the methods are
+   `@optional`, so the compiler accepted it and **none of them were ever called** —
+   no `canPlayOrRecord`, no audio-unit events at all.
+2. With `useManualAudio = true`, WebRTC gates audio behind `isAudioEnabled`, which
+   was only set inside CallKit's `didActivate`. A loopback with no call could
+   therefore never start the audio unit.
+
+After fixing both, with two peer connections negotiated in-app and audio flowing:
+
+| Step | Observed |
+| --- | --- |
+| Capture + loopback, no call | `audio unit STARTED (play/record) #1`, `canPlayOrRecord = true`, `rtcActive=1 audioEnabled=1 audioUnit=1` |
+| Then CallKit call started | `didActivate #1: rtc.isActive before = true`, `adopted by RTCAudioSession`, **metrics still `1 1 1`** — the audio unit kept running |
+
+`WebRTC willSetActive true` / `didSetActive true` appear **in the loopback phase,
+before the call**, which is correct: nothing else held the session, so WebRTC
+activated it itself. After CallKit took over, no further activation was observed in
+the captured log window and the audio unit did not stop. The route moved to
+`Receiver` (route-change reason 3, category change).
+
+- **Proven:** native audio runs, and it survives CallKit taking the session when
+  media was already running. This is the WebKit failure case inverted.
+- **Not yet tested:** the **CallKit-first ordering** — a call already active, with
+  media starting afterwards. That is the real-world sequence (a call arrives, then
+  media begins) and the one WebKit failed at; it must be measured before this is
+  called settled. Also still unmeasured: audio routes beyond the default, wired and
+  Bluetooth, interruption, and background/lock.
+
+The next increment is to run the **CallKit-first ordering**: a call already active,
+with media starting afterwards. That is the real-world sequence — a call arrives,
+then media begins — and it is the one WebKit failed at, so it must be measured
+before the audio seam is called settled.
 
 #### Status
 
