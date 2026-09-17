@@ -213,7 +213,7 @@ marked as such there.
 | CallKit outgoing | Yes | Rejected (`.unentitled`) | **Yes after two probe fixes** — error `(null)` on a cold start (P8.7) |
 | `didActivate` / `didDeactivate` | Yes | Not tested | **Yes** — states 1 and 0 delivered (P8.9) |
 | WebKit capture during a CallKit call | Yes | Not tested | **FAIL** — WebKit loses its audio session the instant CallKit takes it; capture muted/stopped and preview dies. Fails in all three arrangements tested: app-configured session, WebKit-only, and media-first ordering (P8.10, P8.13, P8.14) |
-| Native WebRTC under CallKit (Architecture B spike) | Yes | — | **Audio runs and survives CallKit** — with a local loopback running, the audio unit started and stayed started when CallKit took the session; metrics held at `rtcActive=1 audioEnabled=1 audioUnit=1` through the handover, where WebKit's capture died. The reverse ordering (call first, media second) is not yet tested |
+| Native WebRTC under CallKit (Architecture B spike) | Yes | — | **Passes in both orderings** — media-first: the audio unit started and kept running when CallKit took the session; CallKit-first: capture survived and audio still started, ending at `rtcActive=1 audioEnabled=1 audioUnit=1`. WebRTC made no `setActive:` of its own while CallKit owned the session. WebKit's capture died in the same situation |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
 | Audio route behaviour | Yes | Not meaningfully tested | Not tested |
 | Remote media | No | No | No |

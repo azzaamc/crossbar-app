@@ -108,9 +108,14 @@ final class AudioSeamProbe: NSObject, ObservableObject {
 
         let rtc = RTCAudioSession.sharedInstance()
         rtc.useManualAudio = true
-        rtc.isAudioEnabled = false
         rtc.add(self)
-        append("configured playAndRecord/voiceChat; useManualAudio=1 isAudioEnabled=0")
+        // Deliberately does NOT write isAudioEnabled. In the CallKit-first ordering
+        // this setup runs AFTER didActivate has already granted audio, so clearing it
+        // here silently undoes CallKit's grant - which is exactly what happened: the
+        // first CallKit-first run showed isAudioEnabled falling back to 0 when capture
+        // started, and only the loopback raised it again. Teardown in `stop()` is
+        // still what disables it.
+        append("configured playAndRecord/voiceChat; useManualAudio=1 isAudioEnabled=\(rtc.isAudioEnabled ? 1 : 0) left alone")
     }
 
     private func startCapture() {

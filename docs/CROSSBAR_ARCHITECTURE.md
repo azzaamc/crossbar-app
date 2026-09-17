@@ -583,16 +583,32 @@ the captured log window and the audio unit did not stop. The route moved to
 
 - **Proven:** native audio runs, and it survives CallKit taking the session when
   media was already running. This is the WebKit failure case inverted.
-- **Not yet tested:** the **CallKit-first ordering** — a call already active, with
-  media starting afterwards. That is the real-world sequence (a call arrives, then
-  media begins) and the one WebKit failed at; it must be measured before this is
-  called settled. Also still unmeasured: audio routes beyond the default, wired and
-  Bluetooth, interruption, and background/lock.
 
-The next increment is to run the **CallKit-first ordering**: a call already active,
-with media starting afterwards. That is the real-world sequence — a call arrives,
-then media begins — and it is the one WebKit failed at, so it must be measured
-before the audio seam is called settled.
+**CallKit-first ordering (2026-09-17).** The real-world sequence — a call already
+active, with media starting afterwards — and the one WebKit failed at:
+
+| Step | Observed |
+| --- | --- |
+| Call started with nothing else running | `didActivate #1: rtc.isActive before = false` — CallKit activated the session itself |
+| Capture started during the call | preview survived; this is where WebKit's capture was destroyed |
+| Loopback started | `canPlayOrRecord = true`, `audio unit STARTED (play/record) #1` |
+| End state | `rtcActive=1 audioEnabled=1 audioUnit=1` |
+
+**No `WebRTC willSetActive` appeared at all.** Compare the loopback-first run, where
+WebRTC owned activation and did call `setActive:`. When CallKit owns the session,
+WebRTC makes no activation attempt of its own and simply adopts it — the suppression
+its header describes, confirmed in the ordering that matters.
+
+**Defect found by this run.** `configureAudioSession()` wrote `isAudioEnabled = false`
+and `start()` calls it, so in this ordering starting capture silently cleared the
+audio grant CallKit had just made — the log showed `isAudioEnabled` falling back to
+0 mid-call, with only the loopback raising it again. The measurement still passed,
+but the gate was dropped and re-raised rather than held. Setup must never write
+`isAudioEnabled`; teardown owns that. Fixed in the same commit.
+
+- **Still unmeasured:** audio routes beyond the default (speaker, wired, Bluetooth),
+  interruption, background/lock, and audio quality — there is no remote peer, so
+  nothing in this probe demonstrates audible fidelity.
 
 #### Status
 
