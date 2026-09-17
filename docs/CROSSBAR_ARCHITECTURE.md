@@ -649,9 +649,25 @@ Product implication: a backgrounded call keeps audio but loses video, so a remot
 peer would see a frozen frame unless the app signals camera-off explicitly. That is
 an application-level decision this probe deliberately does not make.
 
-- **Still unmeasured:** audio routes beyond the default (speaker, wired, Bluetooth),
-  interruption, and audio quality — there is no remote peer, so nothing in this probe
-  demonstrates audible fidelity.
+**Interruption (2026-09-17, partial).** With capture and the loopback running but
+**no CallKit call**, a Clock alarm produced `AVAudioSession` interruption
+notifications, which the probe's raw observer logged — so an alarm does interrupt a
+`playAndRecord`/`voiceChat` session, and RTCAudioSession forwards it.
+
+With a **CallKit call active**, the same alarm produced none: once CallKit owns the
+session, iOS deconflicts audio above the app and never posts the interruption.
+
+Recovery was not captured. The log view anchored to the oldest lines, so the lines
+the interruption produced were pushed out of view — `audioUnit=2` was observed
+afterwards, indicating the unit started twice, but that is suggestive rather than
+measured. Re-measured separately below.
+
+Test C — a real incoming call, the interruption case the product will actually meet
+— is **NOT TESTED**: FaceTime from the Mac to the iPhone is not possible because
+both use the same Apple ID.
+
+- **Still unmeasured:** audio quality — there is no remote peer, so nothing in this
+  probe demonstrates audible fidelity.
 
 #### Status
 

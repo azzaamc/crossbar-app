@@ -216,7 +216,7 @@ marked as such there.
 | Native WebRTC under CallKit (Architecture B spike) | Yes | — | **Passes in both orderings** — media-first: the audio unit started and kept running when CallKit took the session; CallKit-first: capture survived and audio still started, ending at `rtcActive=1 audioEnabled=1 audioUnit=1`. WebRTC made no `setActive:` of its own while CallKit owned the session. WebKit's capture died in the same situation |
 | Native capture teardown (Architecture B spike) | Yes | — | **Yes** — after Stop, `capture stopped` is logged and the status-bar camera/mic privacy indicators are absent, which is the objective evidence capture was released. The preview keeps its last rendered frame, so the preview alone proves nothing |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
-| Audio route behaviour | Yes | Not meaningfully tested | Not tested |
+| Audio route behaviour | Yes | Not meaningfully tested | **Spike (B) partial** — AirPods connect/disconnect produced route reasons 1 and 2 and WebRTC followed the route rather than fighting it; speaker override and wired not tested |
 | Remote media | No | No | No |
 | MiroTalk signaling | No | No | No |
 | RTCPeerConnection/SDP/ICE | No | No | No |
