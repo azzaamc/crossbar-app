@@ -591,6 +591,9 @@ struct AudioSeamView: View {
                     .textSelection(.enabled)
             }
             .frame(height: 130)
+            // Defaulting to the oldest lines hides the ones just produced - which is how
+            // an interruption result was lost once already. Always show the tail.
+            .defaultScrollAnchor(.bottom)
         }
     }
 }
