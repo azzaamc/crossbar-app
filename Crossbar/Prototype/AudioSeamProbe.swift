@@ -418,6 +418,14 @@ struct AudioSeamView: View {
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("seam.call")
 
+                Button("End CallKit call") {
+                    model.endCall()
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("seam.end")
+            }
+
+            HStack {
                 Button("Start loopback") {
                     probe.startLoopback()
                 }
