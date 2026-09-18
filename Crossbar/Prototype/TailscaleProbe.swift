@@ -21,11 +21,14 @@ struct NodeSession {
 /// The one way this probe can refuse: no node, and the reason it is not up.
 enum TailscaleProbeError: LocalizedError {
     case nodeUnavailable(String)
+    case loopbackUnavailable(String)
 
     var errorDescription: String? {
         switch self {
         case .nodeUnavailable(let status):
             return "no node to carry this — \(status)"
+        case .loopbackUnavailable(let address):
+            return "the node is up but \(address) never answered, so nothing was dialled"
         }
     }
 }
@@ -78,6 +81,17 @@ final class TailscaleProbe: NSObject, ObservableObject {
 
     /// Last peer totals read from the node, so a dump can report a delta.
     private var nodeTraffic: [String: (rx: Int64, tx: Int64)] = [:]
+
+    /// Whether a stale loopback may be rebuilt on foreground, and whether to rebuild
+    /// regardless: `1` rebuilds only what fails a check, `force` rebuilds every time.
+    ///
+    /// A gate rather than an unconditional behaviour because this is still an instrument
+    /// and a rebuild is a decision — but the product's answer is not in doubt: a phone
+    /// whose screen locked must not come back deaf, and the failure it guards against
+    /// cannot be predicted from how long the app was away.
+    private var rebuildMode: String? {
+        ProcessInfo.processInfo.environment["CROSSBAR_TAILSCALE_REBUILD"]
+    }
 
     /// The IPN bus subscription. Retained for the node's life: dropping it would end
     /// the long-poll and with it the only source of the login URL.
@@ -152,6 +166,27 @@ final class TailscaleProbe: NSObject, ObservableObject {
                 // backend while the request below fails, the node is alive and only
                 // the cached loopback address has gone stale.
                 Task {
+                    await self.refreshStatus()
+                    let reachable = await self.check()
+                    // A suspended node can come back Running with a loopback that no longer
+                    // answers — measured once at 600 s and *not* reproduced in an identical
+                    // 600 s run, so the failure is intermittent and the clock predicts
+                    // nothing. The product therefore cannot trust the cached address after a
+                    // suspension at all; it verifies, and rebuilds when the verify fails.
+                    // `force` exists so the rebuild itself can be tested without first
+                    // provoking a failure that may not come:
+                    //   … -e '{"CROSSBAR_TAILSCALE_REBUILD":"1"}'   (or "force")
+                    switch self.rebuildMode {
+                    case nil:
+                        return
+                    case "force":
+                        guard await self.rebuildNode("forced, to test the recovery itself")
+                        else { return }
+                    default:
+                        guard !reachable else { return }
+                        guard await self.rebuildNode("Running, but its loopback stopped answering")
+                        else { return }
+                    }
                     await self.refreshStatus()
                     await self.check()
                 }
@@ -281,10 +316,52 @@ final class TailscaleProbe: NSObject, ObservableObject {
     }
 
     /// A session configuration that leaves through the node, and the loopback it dials.
+    ///
+    /// The wait matters as much as the configuration. `up()` returning is not the same as
+    /// the loopback accepting: the macOS spike recorded the first request after bring-up
+    /// failing with `NSURLErrorBadURL` on `lo0` and the next one in the same run
+    /// succeeding, and that race cost a call here — two signalling sockets died with
+    /// `receive failed: bad URL` immediately after bring-up, nothing retried them, and the
+    /// run then measured a node carrying nothing while claiming to test one. Nothing is
+    /// dialled until the listener answers.
     func proxiedSession() async throws -> NodeSession {
-        let node = try await runningNode()
+        try await sessionThrough(try await runningNode())
+    }
+
+    /// The carrier for a node that is already up, once its loopback answers.
+    private func sessionThrough(_ node: TailscaleNode) async throws -> NodeSession {
         let (configuration, loopback) = try await URLSessionConfiguration.tailscaleSession(node)
+        try await waitForLoopback(loopback.address)
         return NodeSession(configuration: configuration, loopbackAddress: loopback.address)
+    }
+
+    /// Waits for the loopback listener to answer, then hands back nothing but that fact.
+    ///
+    /// The probe answers on the same port the proxied session needs — the node serves
+    /// LocalAPI at `http://<loopback>/localapi/…`, and `watchIPNBus` already reaches it
+    /// there — so an HTTP response of any kind means the listener is up. The credential is
+    /// not the question, which is why a 401 counts.
+    private func waitForLoopback(_ address: String) async throws {
+        for attempt in 1...10 {
+            if await loopbackAnswers(address) {
+                if attempt > 1 { append("loopback \(address) answered on attempt \(attempt)") }
+                return
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        append("loopback \(address) never answered — refusing to dial it")
+        throw TailscaleProbeError.loopbackUnavailable(address)
+    }
+
+    private func loopbackAnswers(_ address: String) async -> Bool {
+        guard let url = URL(string: "http://\(address)/localapi/v0/status") else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 3
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let response = try? await session.data(for: request)
+        return response?.1 is HTTPURLResponse
     }
 
     /// What the node itself has carried, from its own peer statistics.
@@ -441,7 +518,13 @@ final class TailscaleProbe: NSObject, ObservableObject {
     /// `tailscaleSession` re-reads the node's loopback each time, so the address
     /// printed here is the *cached* one. If the cached address goes stale after a
     /// suspend, that is exactly where it will show.
-    func check() async {
+    ///
+    /// Returns whether the loopback carried anything at all — which is the question a
+    /// suspend asks, and a different one from whether the wire contract is intact. The
+    /// session is built fresh on every call, so a failure here is the address, not
+    /// connection state.
+    @discardableResult
+    func check() async -> Bool {
         // A node can exist for many seconds before it is Running — `node != nil` is not
         // readiness (see `runningNode`) — so this waits for a bring-up already in flight
         // rather than dialling into one. It deliberately does not *start* a node: "check"
@@ -451,17 +534,17 @@ final class TailscaleProbe: NSObject, ObservableObject {
         if let bringUp { await bringUp.value }
         guard let node = self.node else {
             append("no node — start it first")
-            return
+            return false
         }
 
         append("— check —")
 
         var loopbackAddress = "?"
         do {
-            let (config, loopback) = try await URLSessionConfiguration.tailscaleSession(node)
-            loopbackAddress = loopback.address
-            append("loopback=\(loopback.address)")
-            let session = URLSession(configuration: config)
+            let carrier = try await sessionThrough(node)
+            loopbackAddress = carrier.loopbackAddress
+            append("loopback=\(carrier.loopbackAddress)")
+            let session = URLSession(configuration: carrier.configuration)
 
             // 1. The control plane, which is how identity is established at all.
             var request = URLRequest(url: backendBase.appendingPathComponent("api/session"))
@@ -511,9 +594,66 @@ final class TailscaleProbe: NSObject, ObservableObject {
             append(frame.hasPrefix("0")
                 ? "signalling handshake OK"
                 : "connected, but frame is not the handshake")
+            // A frame of any kind means the loopback carried it, which is the question
+            // this return value answers; whether it is the *right* frame is the wire
+            // contract's business, and is reported on the line above.
+            return true
         } catch {
             append("check failed at loopback=\(loopbackAddress): \(error.localizedDescription)")
             status = "Failed — \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// The node's `BackendState`, through the LocalAPI path that never touches the
+    /// loopback — which is the only reason it is readable when the loopback is the thing
+    /// that broke.
+    private func backendState() async -> String? {
+        guard let node = self.node,
+              let data = try? await node.statusJSON(),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        return object["BackendState"] as? String
+    }
+
+    /// Rebuilds the node, which is the only way to reach a live loopback again.
+    ///
+    /// Measured on 2026-09-18, and this is the failure the branch flagged as the one that
+    /// decides whether any of it is usable: a ten-minute suspension left the node
+    /// `Running`, its own status unchanged, and yet a **fresh** `URLSession` against the
+    /// cached loopback timed out. An identical ten-minute suspension in the next run left
+    /// the same cached address working. **So the failure is real and intermittent, and no
+    /// amount of clock-watching predicts it** — which is the finding that matters, because
+    /// it means the cached address cannot be trusted after any suspension and the device
+    /// has to verify rather than assume.
+    ///
+    /// `loopback()` caches for the node's life with no invalidation and no API to clear it,
+    /// and nothing exposes the listener, so the only recovery is a new node — cheap,
+    /// because the machine key is on disk: the replacement authorises without a login and
+    /// brings a new loopback with it.
+    ///
+    /// Rebuilt only when the backend still reports `Running`. A backend that is not running
+    /// means the network went away rather than the listener, and rebuilding on every failed
+    /// request would turn an outage into a bring-up loop.
+    func rebuildNode(_ reason: String) async -> Bool {
+        guard let state = await backendState() else {
+            append("not rebuilding: the node could not be asked")
+            return false
+        }
+        guard state == "Running" else {
+            append("not rebuilding: the node is \(state), so the network is the problem")
+            return false
+        }
+
+        append("— rebuilding the node: \(reason) —")
+        await stop()
+        do {
+            _ = try await runningNode()
+            append("node rebuilt")
+            return true
+        } catch {
+            append("rebuild failed: \(error.localizedDescription)")
+            return false
         }
     }
 
