@@ -98,6 +98,22 @@ no external peer — two peers in one room each receive the other's video. Use `
 an external peer is what is under test, because a second native peer competes for the
 same remote-track slot and makes the tile ambiguous.
 
+Two further gates, added on branch `tailscale-kit`, and the first is the one that
+matters when a run produces nothing:
+
+```
+-e '{"CROSSBAR_PROBE_AUTOSHOW":"1","CROSSBAR_SIGNAL_VIANODE":"1"}'
+```
+
+`PROBE_AUTOSHOW` presents the probe screen over whatever the product is showing, because
+the screen is otherwise reached by a toolbar tap in the contacts list and none of the
+gates above can fire from a screen that was never mounted — the instrument then leaves
+the *previous* run's log files in place, which is very hard to distinguish from a run that
+did nothing. `VIANODE` routes the signalling sockets through the embedded Tailscale node's
+SOCKS loopback instead of the system's route, and logs which carrier each socket took plus
+the node's own peer counters; leave it off for the control run whose flat counters are
+what make a routed run's growth mean anything. See `TAILSCALE_KIT_PROBE.md`.
+
 Two operational facts that caused wasted runs:
 
 - The Mac reaches the phone over the **network, not USB**. Turning the phone's Wi-Fi

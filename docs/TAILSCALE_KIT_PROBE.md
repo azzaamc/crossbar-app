@@ -525,12 +525,20 @@ and it is the dependency this branch exists to remove.
 The signalling path is proven and the system app is not needed for it, so what is left is
 narrower than it was.
 
-1. **Wire the product through the same `NodeSession`.** `FamilyCallClient` still dials
-   `/api/session`, `/api/bootstrap` and the event stream with `URLSession.shared`, which
-   is why the product screen says it cannot reach the service while the probe beside it
-   is talking to the same host through the node. The node's carrier exists and is
-   measured; pointing the control plane at it is the next commit, and the honest
-   statement until then is that the *instrument* runs over the node, not the app.
+1. **Wire the product through the same `NodeSession`.** `FamilyCallClient` reaches the
+   network at four places, all `URLSession.shared`, and every one of them is a decision
+   about which tailnet carries the app: `send()` (which every JSON call funnels through),
+   `session()`, `pushConfig()`, and `events()` — the SSE stream opened with
+   `bytes(for:)`. The first three are the same shape as the signalling client's
+   `Transport` and should be mechanical. **The stream is the one to watch**: it is
+   long-lived, it is the only path an incoming call can take, and this project has already
+   lost a measurement to an SSE client that connected, reported HTTP 200, and delivered
+   nothing for twenty seconds. Whether the node's loopback proxy streams promptly or
+   buffers is unmeasured, and it is the first thing that wiring should log.
+
+   Until it is done, the honest statement is that the *instrument* runs over the node —
+   not the app, which is why the product screen reports that it cannot reach the service
+   while the probe screen beside it is talking to the same host through the node.
 2. **Decide the media question on its own terms.** The node cannot carry media, so the
    overlay is not what makes a two-household call work — the public STUN path is, exactly
    as before. The next measurement that would change anything is a call between two
