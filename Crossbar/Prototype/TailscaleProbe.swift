@@ -328,40 +328,51 @@ final class TailscaleProbe: NSObject, ObservableObject {
         try await sessionThrough(try await runningNode())
     }
 
-    /// The carrier for a node that is already up, once its loopback answers.
+    /// The carrier for a node that is already up, once it has carried a request.
     private func sessionThrough(_ node: TailscaleNode) async throws -> NodeSession {
         let (configuration, loopback) = try await URLSessionConfiguration.tailscaleSession(node)
-        try await waitForLoopback(loopback.address)
+        try await waitForCarrier(configuration, at: loopback.address)
         return NodeSession(configuration: configuration, loopbackAddress: loopback.address)
     }
 
-    /// Waits for the loopback listener to answer, then hands back nothing but that fact.
+    /// Waits until the carrier has carried a real request, and says how many attempts that
+    /// took.
     ///
-    /// The probe answers on the same port the proxied session needs — the node serves
-    /// LocalAPI at `http://<loopback>/localapi/…`, and `watchIPNBus` already reaches it
-    /// there — so an HTTP response of any kind means the listener is up. The credential is
-    /// not the question, which is why a 401 counts.
-    private func waitForLoopback(_ address: String) async throws {
+    /// A knock on the listener is not enough, and this is measured rather than assumed: on
+    /// 2026-09-18 a carrier whose LocalAPI probe on the same loopback had just answered
+    /// failed the very next request with `bad URL`, so what "ready" means is a request that
+    /// went through the SOCKS path and came back, not a listener that exists. The endpoint
+    /// is the one the control plane uses anyway, and any HTTP status counts — the question
+    /// is whether the path carried it, not whether it was authorised.
+    ///
+    /// Retried rather than trusted because the failure it guards against arrives without
+    /// warning: the same build failed this way on one launch and not the next.
+    private func waitForCarrier(_ configuration: URLSessionConfiguration,
+                                at address: String) async throws {
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        var last = "nothing was attempted"
         for attempt in 1...10 {
-            if await loopbackAnswers(address) {
-                if attempt > 1 { append("loopback \(address) answered on attempt \(attempt)") }
-                return
+            var request = URLRequest(url: backendBase.appendingPathComponent("api/session"))
+            request.setValue("application/json", forHTTPHeaderField: "accept")
+            request.timeoutInterval = 5
+            do {
+                let (_, response) = try await session.data(for: request)
+                if let code = (response as? HTTPURLResponse)?.statusCode {
+                    if attempt > 1 {
+                        append("carrier \(address) answered on attempt \(attempt) (HTTP \(code))")
+                    }
+                    return
+                }
+                last = "a response that was not HTTP"
+            } catch {
+                last = error.localizedDescription
             }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
-        append("loopback \(address) never answered — refusing to dial it")
+        append("carrier \(address) carried nothing in 10 attempts — last: \(last)")
         throw TailscaleProbeError.loopbackUnavailable(address)
-    }
-
-    private func loopbackAnswers(_ address: String) async -> Bool {
-        guard let url = URL(string: "http://\(address)/localapi/v0/status") else { return false }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 3
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: .ephemeral)
-        defer { session.invalidateAndCancel() }
-        let response = try? await session.data(for: request)
-        return response?.1 is HTTPURLResponse
     }
 
     /// What the node itself has carried, from its own peer statistics.

@@ -286,7 +286,10 @@ done for it. And the node's counters stayed at that housekeeping level (~600 byt
 own peer handshake traffic to `qatar-vpn`) for the whole run instead of jumping by ~47 KB,
 so the growth in a routed run is the call and nothing else. It also corrects the sentence
 above: the baseline is not always zero — the node's own peer traffic appears there once it
-has a path — so the tell is the magnitude at connect, not zero-versus-nonzero.
+has a path — so the tell is the magnitude at connect, not zero-versus-nonzero. Later runs
+show a few KB more at baseline for a second reason: the carrier is now proved ready with a
+real request before it is handed out (constraint 9), and that request travels through the
+node like any other.
 
 **The node carries signalling, not media (2026-09-18).** This is the part that had to be
 measured rather than assumed, and the answer is structural. The node has no interface —
@@ -577,9 +580,9 @@ and it is the dependency this branch exists to remove.
    in the probe now goes through `runningNode()`, which waits for whatever bring-up is in
    flight rather than trusting the object's existence; the first attempt at this only
    tested `node == nil`, which is exactly the bug it was written to prevent.
-9. **`up()` returning is not the listener accepting, so the first request needs a wait —
-   and without one the failure is silent.** The macOS spike recorded this and the iOS
-   runs reproduce it: a socket dialled immediately after bring-up died with
+9. **`up()` returning is not the carrier working, and neither is a listener that answers
+   — readiness is a request that went through.** The macOS spike recorded this first and
+   the iOS runs reproduce it: a socket dialled immediately after bring-up died with
 
    ```
    connecting wss://qatar-vpn.tailea67b0.ts.net/socket.io/… via embedded node 127.0.0.1:57887
@@ -588,9 +591,13 @@ and it is the dependency this branch exists to remove.
 
    Nothing retried it, so that run went on to measure a node carrying nothing while
    presenting as a test of one — the same shape of wrong answer as a stale log file. The
-   probe now waits for the listener itself before handing out a carrier, by asking the
-   node's LocalAPI for status on the same loopback port the proxied session needs: any
-   HTTP response counts, including 401, because the credential is not the question.
+   first fix was too weak to catch all of it, which is its own small lesson: a knock on the
+   listener's LocalAPI endpoint, on the same port the proxied session uses, **answered** —
+   and the very next request through the SOCKS path failed with `bad URL` anyway. So the
+   readiness condition is now a real request over the carrier, to the endpoint the control
+   plane uses, with any HTTP status counting and ten attempts before it refuses, because
+   the failure arrives without warning and the same build fails it on one launch and not
+   the next.
 10. **The cached loopback cannot be trusted after a suspension, and the duration does not
    tell you which suspensions are safe.** 150 s survived; 600 s failed once and then
    succeeded on an identical repeat. Since `loopback()` offers no invalidation, the only
