@@ -187,6 +187,29 @@ these were found only because a result was suspicious rather than negative.
     that take plain data; and **Family Call's identity is a person, not a device**, so
     "am I in a call?" answers identically for every client authenticating as that
     person, which is why resuming is now scoped to a call the device actually joined.
+14. **The audio session was never configured, so there was no echo cancellation.** The
+    session sat in `AVAudioSessionCategorySoloAmbient` with `AVAudioSessionModeDefault`
+    — what an app is left with when it configures nothing. SoloAmbient is playback-only
+    and `Default` mode engages no voice processing, so the voice-processing audio unit
+    that cancels echo never ran; the result was echo loud enough that the microphone had
+    to be muted to hold a conversation. **Every metric was healthy**: RTP byte counts,
+    audio energy, CallKit's own state, all fine. It was found only by logging the
+    session's category and mode after a report of echo, having already chased and
+    dismissed a byte-count theory.
+15. **A route override that needed a lock, whose failure was inaudible as an error.**
+    The speaker toggle was written, compiled and shipped, and did nothing: audio stayed
+    on the receiver. `RTCAudioSession.overrideOutputAudioPort` requires
+    `lockForConfiguration` first — the same requirement `setConfiguration` was given and
+    this was not — and the resulting error is invisible to anyone listening. The log
+    line added for the previous defect named it verbatim on the first call. Also worth
+    keeping: **CallKit owns the route once it activates the session and defaults a call
+    to the receiver**, so the category's `defaultToSpeaker` option is not honoured and
+    the route has to be overridden explicitly.
+16. **An event stream that was never reconnected.** An incoming call never arrived: the
+    PWA rang, the app stayed silent with its screen open on the contacts list. The
+    stream had dropped — as it does every time iOS suspends the app — and nothing ever
+    brought it back, so the phone was deaf until someone reloaded by hand. With no push,
+    that stream is the *only* path an incoming call can take.
 
 ## What the spike does not show
 
