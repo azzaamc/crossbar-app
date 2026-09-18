@@ -50,6 +50,15 @@ final class CallSession: ObservableObject {
     private let callKit = CallKitController()
     private var eventsTask: Task<Void, Never>?
     private var callKitCallID: UUID?
+
+    /// Whether the call in progress was placed from here.
+    ///
+    /// Needed because CallKit's two directions are told apart by which API reports the
+    /// connection: an answered incoming call is marked connected when its answer action
+    /// is fulfilled, while an outgoing one has to be told. Reporting the wrong
+    /// direction is not merely redundant — `reportOutgoingCall` on an incoming call is
+    /// the wrong API for it.
+    private var isOutgoingCall = false
     private var logHandle: FileHandle?
 
     /// The call **this device** is in, if any.
@@ -86,6 +95,7 @@ final class CallSession: ObservableObject {
     private func wireCallKit() {
         callKit.onStart = { [weak self] callID, handle in
             guard let self else { return }
+            self.isOutgoingCall = true
             self.callKitCallID = callID
             Task { await self.createCall(toContactID: handle) }
         }
@@ -94,6 +104,7 @@ final class CallSession: ObservableObject {
             Task { await self?.accept() }
         }
         callKit.onEnd = { [weak self] _ in
+            self?.log("CallKit ended the call")
             Task { await self?.endFromCallKit() }
         }
         callKit.onMute = { [weak self] _, muted in
@@ -101,7 +112,9 @@ final class CallSession: ObservableObject {
         }
         callKit.onReset = { [weak self] in
             guard let self else { return }
+            self.log("CallKit reset the provider — every call is gone")
             self.notice = "The call was reset by the system."
+            self.callKitCallID = nil
             Task { await self.tearDown() }
         }
         callKit.onAudioActivated = { [weak self] session in
@@ -210,12 +223,15 @@ final class CallSession: ObservableObject {
     // MARK: - Answering
 
     private func accept() async {
-        guard let call = phase.call, let callID = callKitCallID else { return }
+        guard let call = phase.call else { return }
         do {
             let envelope = try await client.respond(callId: call.id, accepted: true)
             phase = .inCall(envelope.call)
             deviceCallID = envelope.call.id
-            callKit.reportConnected(callID: callID)
+            // Deliberately no `reportConnected` here. CallKit marks an answered incoming
+            // call connected when its answer action is fulfilled, and the API used to
+            // report a connection is `reportOutgoingCall` — the wrong direction for a
+            // call this side did not place.
             connect(using: envelope.joinUrl)
         } catch {
             // A 409 here is ordinary — answered elsewhere, declined, or expired.
@@ -258,6 +274,7 @@ final class CallSession: ObservableObject {
         media.stopCapture()
         callKitCallID = nil
         deviceCallID = nil
+        isOutgoingCall = false
         isMuted = false
         isCameraEnabled = true
         if case .failed = phase { return }
@@ -353,6 +370,7 @@ final class CallSession: ObservableObject {
             }
             log("incoming call \(call.id) from \(displayName(for: call.callerId)) status=\(call.status)")
             phase = .ringing(call)
+            isOutgoingCall = false
             if let callID = UUID(uuidString: call.id) {
                 callKitCallID = callID
                 callKit.reportIncoming(callID: callID, callerName: displayName(for: call.callerId))
@@ -365,10 +383,21 @@ final class CallSession: ObservableObject {
             guard let current = phase.call, current.id == call.id else { return }
             log("call status -> \(call.status)")
             if Self.isTerminal(call.status) {
+                // Tell CallKit as well, or the system keeps showing a call the service
+                // has already finished — a call that is over on one side and ringing on
+                // the other is the worst of both. Our own state is cleared first so the
+                // resulting end action does not try to end a call that is already gone.
+                log("call is over (\(call.status)) — clearing")
+                let stale = callKitCallID
                 Task { await tearDown() }
+                if let stale { callKit.end(callID: stale) }
             } else if call.isActive, !Self.isInCall(phase) {
                 phase = .inCall(call)
-                if let callID = callKitCallID { callKit.reportConnected(callID: callID) }
+                // Only an outgoing call has to be told it connected; an incoming one is
+                // marked connected by CallKit itself. See `isOutgoingCall`.
+                if isOutgoingCall, let callID = callKitCallID {
+                    callKit.reportConnected(callID: callID)
+                }
             }
 
         case .ongoingCall(let call):

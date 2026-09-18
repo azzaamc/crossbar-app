@@ -176,6 +176,17 @@ these were found only because a result was suspicious rather than negative.
     screen disagreed with the log, and the screen was right to be trusted over it.
     On the next call the same line immediately answered the question it previously
     could not: 4.1 MB of inbound video, about 890 KB per three-second poll.
+13. **An Xcode preview joined a real call.** A third participant appeared in a family
+    call with a black camera, and the member on the other end saw someone "whose video
+    keeps loading". It was this project's own `#Preview` of `ContentView`: rendering
+    that view runs the whole session, so the preview authenticated through the Mac's
+    Tailscale identity — the same person — concluded it was a participant in an active
+    call, and joined it. A black camera follows naturally, because a preview has no
+    real capture. Two lessons, both kept in the code: a preview of the root view is not
+    a harmless mock when the root does network I/O, so previews belong on leaf views
+    that take plain data; and **Family Call's identity is a person, not a device**, so
+    "am I in a call?" answers identically for every client authenticating as that
+    person, which is why resuming is now scoped to a call the device actually joined.
 
 ## What the spike does not show
 
