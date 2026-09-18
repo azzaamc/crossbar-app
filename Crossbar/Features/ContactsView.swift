@@ -20,6 +20,19 @@ struct ContactsView: View {
                     }
                 }
 
+                if session.eventsDown {
+                    // The stream is the only way a call can arrive, so this is not a
+                    // detail: with it down, the phone will not ring.
+                    Section {
+                        Label(
+                            "Reconnecting to Family Call — calls may not reach you until this clears.",
+                            systemImage: "wifi.exclamationmark"
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    }
+                }
+
                 if let notice = session.notice {
                     Section {
                         Text(notice)

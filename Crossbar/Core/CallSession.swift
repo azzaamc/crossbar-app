@@ -342,13 +342,78 @@ final class CallSession: ObservableObject {
 
     // MARK: - Events
 
+    /// Keeps the event stream up, and re-reads state whenever it comes back.
+    ///
+    /// The server sends no event ids and keeps no replay (`src/server.js:236-255`), so
+    /// whatever happens while the stream is down is simply lost — the only way to learn
+    /// of it is to ask again. Without this the app goes permanently deaf the first time
+    /// the connection drops, which on a phone is routine: the stream is the *only* way
+    /// an incoming call can arrive, since there is no push yet.
     private func startEvents() {
+        eventsTask?.cancel()
         eventsTask = Task { [weak self] in
             guard let self else { return }
-            for await event in self.client.events() {
+            var failures = 0
+            while !Task.isCancelled {
+                for await event in self.client.events() {
+                    if Task.isCancelled { return }
+                    failures = 0
+                    self.handle(event)
+                }
                 if Task.isCancelled { return }
-                self.handle(event)
+
+                failures += 1
+                let delay = min(30, Int(pow(2, Double(failures))))
+                self.eventsDown = true
+                self.log("event stream down — reconnecting in \(delay)s")
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                await self.refreshState()
             }
+        }
+    }
+
+    /// Re-reads what the stream could not replay.
+    ///
+    /// An invitation that arrived while the stream was down is still ringing
+    /// server-side, and `/api/bootstrap` is the only thing that can say so — the call's
+    /// own event was delivered once, to nobody.
+    private func refreshState() async {
+        guard phase.call == nil else { return }
+        do {
+            let bootstrap = try await client.bootstrap()
+            contacts = bootstrap.contacts
+            log("re-read state: \(bootstrap.calls.count) open call(s)")
+
+            if let pending = bootstrap.calls.first(where: { $0.myStatus == "invited" }) {
+                log("an invitation was waiting while the stream was down")
+                ring(pending)
+            } else if let ongoing = bootstrap.ongoingCalls.first(where: { $0.id == deviceCallID && $0.isActive }) {
+                await resume(ongoing)
+            }
+        } catch {
+            log("could not re-read state: \(error.localizedDescription)")
+        }
+    }
+
+    /// Puts an incoming call on screen and hands it to CallKit.
+    ///
+    /// Shared by the live event and the re-read, because a call that arrived while the
+    /// stream was down has to ring exactly like one that did not.
+    private func ring(_ call: FamilyCall) {
+        guard case .ready = phase else {
+            log("invitation \(call.id) arrived while busy — ignored")
+            return
+        }
+        log("incoming call \(call.id) from \(displayName(for: call.callerId)) status=\(call.status)")
+        phase = .ringing(call)
+        isOutgoingCall = false
+        if let callID = UUID(uuidString: call.id) {
+            callKitCallID = callID
+            callKit.reportIncoming(callID: callID, callerName: displayName(for: call.callerId))
+            log("reported to CallKit")
+        } else {
+            log("call id is not a UUID — CallKit cannot be told about it")
         }
     }
 
@@ -358,26 +423,11 @@ final class CallSession: ObservableObject {
             eventsDown = false
 
         case .incomingCall(let call):
-            // Every branch logs. This path had none, and an incoming call that rings
-            // briefly and then behaves oddly leaves nothing behind to explain it.
             guard call.participants?.contains(where: { $0.userId == me?.id }) ?? false else {
                 log("invitation \(call.id) ignored — not a participant")
                 return
             }
-            guard case .ready = phase else {
-                log("invitation \(call.id) arrived while busy — ignored")
-                return
-            }
-            log("incoming call \(call.id) from \(displayName(for: call.callerId)) status=\(call.status)")
-            phase = .ringing(call)
-            isOutgoingCall = false
-            if let callID = UUID(uuidString: call.id) {
-                callKitCallID = callID
-                callKit.reportIncoming(callID: callID, callerName: displayName(for: call.callerId))
-                log("reported to CallKit")
-            } else {
-                log("call id is not a UUID — CallKit cannot be told about it")
-            }
+            ring(call)
 
         case .callStatus(let call):
             guard let current = phase.call, current.id == call.id else { return }

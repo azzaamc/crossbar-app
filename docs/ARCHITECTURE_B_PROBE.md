@@ -202,6 +202,12 @@ Stated so the next session does not inherit an overclaim:
 - **The room-id parse is verified.** Production `joinUrl`s from two real calls each
   yielded their room and signalling origin, and the client joined those rooms. It is
   proven for the shape the service produces now, not for every shape it could produce.
+- **The event stream is the only way a call can arrive, and it is one connection.**
+  With no push, the moment it drops the phone is deaf — and that already happened
+  once, costing an incoming call that rang only on the PWA while Crossbar sat open on
+  the contacts screen. The client now reconnects with capped backoff and re-reads
+  `/api/bootstrap` on every reconnect, because the stream carries no event ids and no
+  replay. That is a repair, not a fix: the durable answer is push, not a better socket.
 - **No product code.** Everything here is a measurement instrument. There is no call
   UI, no contacts, no CallKit-in-product-flow, no persistence.
 - **The signalling socket does not survive backgrounding** — no background mode is
