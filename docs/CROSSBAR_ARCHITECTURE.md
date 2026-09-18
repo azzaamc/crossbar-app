@@ -782,6 +782,18 @@ So the overlay has connectivity but has never been observed carrying a call, whi
 public STUN path demonstrably has. Filtering would remove a path proven to work in
 exchange for one that is not.
 
+**The embedded node makes that categorical (2026-09-18, branch `tailscale-kit`).** Where
+the system Tailscale app at least *offered* tailnet candidates, a userspace tsnet node
+offers none — it has no interface (`"TUN":false`, `using fake (no-op) tun device`), so
+libwebrtc has nothing to gather on. Across two calls whose signalling the node carried,
+the node's own address never appeared in the candidate lists, and with the system app
+disconnected the lists contained no `100.` address at all while the call still completed
+over the phone's Wi-Fi host pair. Media over the overlay is therefore not a matter of
+configuration under this architecture; it would need a relay. The decision above — consume
+the server-supplied `iceServers` unchanged — is unaffected, and is now load-bearing for a
+second reason: on a device whose only tailnet presence is an embedded node, the public
+path is not a fallback, it is the only path. See `TAILSCALE_KIT_PROBE.md`.
+
 **Decision:** Crossbar consumes server-supplied `iceServers` unchanged, as the audit
 advised. The consequence is recorded rather than glossed: a third-party STUN server
 observes each peer's reflexive address. That is accepted for now and should be

@@ -38,7 +38,7 @@ All are `#if DEBUG` and live in `Crossbar/Prototype/`. None is product code.
 | File | What it is | What it measures |
 | --- | --- | --- |
 | `AudioSeamProbe.swift` | the original Architecture B seam spike, plus its SwiftUI screen | CallKit audio-session adoption, a local loopback peer connection so the ADM is genuinely exercised, produced video frames, app lifecycle |
-| `MiroTalkSignalClient.swift` | a reduced native Engine.IO v4 / Socket.IO v5 client, peer connections, and the shared media source | admission into a MiroTalk room, the mesh fan-out, SDP/ICE exchange, the offer policy, inbound RTP |
+| `MiroTalkSignalClient.swift` | a reduced native Engine.IO v4 / Socket.IO v5 client, peer connections, and the shared media source | admission into a MiroTalk room, the mesh fan-out, SDP/ICE exchange, the offer policy, inbound RTP, and — on branch `tailscale-kit` — which carrier the socket took, since its `Transport` is a session configuration *and* the label naming it |
 | `BackendReachabilityProbe.swift` | a bare `URLSession` GET | whether tailnet Serve injects the identity header for a non-browser client |
 | `FamilyCallClient.swift` | the Family Call control plane: session, bootstrap, create, respond, join, end, and the `/api/events` stream | whether a native client can drive the real call lifecycle, and whether the room id can be recovered from the `joinUrl` |
 | `FamilyCallFlow.swift` | the flow over that client, plus one `MiroTalkSignalClient` and a shared capture | whether the product call path works end to end — identity, contacts, ringing, answering, media |
@@ -211,6 +211,15 @@ these were found only because a result was suspicious rather than negative.
     stream had dropped — as it does every time iOS suspends the app — and nothing ever
     brought it back, so the phone was deaf until someone reloaded by hand. With no push,
     that stream is the *only* path an incoming call can take.
+17. **A gate that could never fire, because its screen was never mounted.** The
+    signalling instrument's launch gates were correct and complete, and an unattended run
+    still joined nothing: the probe screen sits behind a toolbar tap in the contacts
+    list, so nothing presented it, and the log files still held the *previous* run's
+    contents — which is very hard to tell from a run that produced nothing. The only tell
+    was a timestamp. Fixed at the root rather than in the instrument, with
+    `CROSSBAR_PROBE_AUTOSHOW=1` presenting the probe screen over whatever the product is
+    showing. Same lesson as the rest of this list: a gate is only as good as the path that
+    reaches it, and a stale file reads exactly like a silent failure.
 
 ## What the spike does not show
 
