@@ -260,10 +260,25 @@ node traffic [during call] — qatar-vpn rx=48044(+416) tx=39980(+520)
 ```
 
 Zero before the socket connects; ~86 KB to `qatar-vpn` (100.77.42.16) the moment it
-does; then +416/+520 every 20 s, which is Engine.IO's 25 s ping and its pong. The
-baseline line is emitted by the same code path, so it doubles as the control: the field
-names to read are printed when nothing has been carried, rather than a silent zero that
-would read as a negative result.
+does; then +416/+520 every 20 s, which is Engine.IO's 25 s ping and its pong.
+
+**The control run (2026-09-18).** The same app and the same room with the sockets
+dialled directly, system Tailscale app still disconnected:
+
+```
+connecting wss://qatar-vpn.tailea67b0.ts.net/socket.io/?EIO=4&transport=websocket via direct
+receive failed: A server with the specified hostname could not be found.
+node traffic [during call] — qatar-vpn rx=628(+628) tx=452(+452)
+```
+
+It settles two things. The direct path could not even **resolve** the name without the
+system client — `NSURLErrorCannotFindHost`, not a timeout — which is what makes the
+node-carried run's resolution a finding rather than something the OS resolver had already
+done for it. And the node's counters stayed at that housekeeping level (~600 bytes, its
+own peer handshake traffic to `qatar-vpn`) for the whole run instead of jumping by ~47 KB,
+so the growth in a routed run is the call and nothing else. It also corrects the sentence
+above: the baseline is not always zero — the node's own peer traffic appears there once it
+has a path — so the tell is the magnitude at connect, not zero-versus-nonzero.
 
 **The node carries signalling, not media (2026-09-18).** This is the part that had to be
 measured rather than assumed, and the answer is structural. The node has no interface —
@@ -318,10 +333,10 @@ ICE path [T01] local=host 192.168.1.120:52900/udp remote=host 192.168.1.120:4915
 Both peers carried ~22 MB of video, and the node's counters moved by the same ~79 KB as
 before (`qatar-vpn rx=43852(+43852) tx=35396(+35396)`). Two things follow that the
 system-app-on runs could not show. **The name was resolved and the Serve certificate
-validated with no MagicDNS anywhere on the phone** — so the proxied session reaches the
-node with the hostname, not with an address the OS resolver had to produce first, and
-`qatar-vpn.tailea67b0.ts.net` is reachable from a device whose only tailnet presence is
-this node. And the gathered candidates contained **no tailnet address of any kind**:
+validated with no MagicDNS anywhere on the phone** — the control run above settles that
+this is the node's doing rather than the OS resolver's, because with the same configuration
+the direct path fails to resolve the name at all while this one completes a call. And the
+gathered candidates contained **no tailnet address of any kind**:
 
 ```
 10.187.100.156   169.254.210.170   192.0.0.6   192.168.1.120
