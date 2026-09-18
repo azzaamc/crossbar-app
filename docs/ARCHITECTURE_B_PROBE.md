@@ -208,8 +208,11 @@ Stated so the next session does not inherit an overclaim:
   the contacts screen. The client now reconnects with capped backoff and re-reads
   `/api/bootstrap` on every reconnect, because the stream carries no event ids and no
   replay. That is a repair, not a fix: the durable answer is push, not a better socket.
-- **No product code.** Everything here is a measurement instrument. There is no call
-  UI, no contacts, no CallKit-in-product-flow, no persistence.
+- **The product shell is thin.** Contacts, placing, answering, an in-call screen and
+  CallKit now exist and have carried a real call, but there is no persistence, no call
+  history, no settings, no audio-route selection and no call duration — and the
+  multiparty path is unbuilt. The instruments remain where most of the measurement
+  happened; the shell is what those measurements now support.
 - **The signalling socket does not survive backgrounding** — no background mode is
   configured. A call that outlives the screen needs one.
 - **Video renders, but nothing about its quality is measured.** A remote track from
