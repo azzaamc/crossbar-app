@@ -11,8 +11,9 @@ either.
 **Status: the node is authorised and running on the physical iPhone as `crossbar-ios`,
 and it carries both halves of the wire contract — the Family Call control plane
 including Serve's injected identity, and the MiroTalk signalling WebSocket. A first run
-presents a Tailscale login page and needs no auth key anywhere. What remains unmeasured
-is whether any of it survives suspension.**
+presents a Tailscale login page and needs no auth key anywhere. It also survived a
+genuine suspension: backgrounded for 150 s, frozen by iOS, then resumed as the same
+process, and the cached loopback still carried both checks.**
 
 ## What TailscaleKit is, and why it is not committed
 
@@ -185,6 +186,47 @@ signalling handshake OK
 
 Both halves of the wire contract therefore survive being carried by the embedded node.
 
+**It also survives suspension.** This was the measurement that decides whether the
+approach is usable for a call app, and it is the one upstream gave reason to fear: the
+node's own comment on `statusJSON` says the OS reclaims the loopback TCP listener from
+a suspended process on iOS, "where the cached loopback address goes permanently stale",
+and `loopback()` caches the address with no way to invalidate it.
+
+Backgrounding the app by launching another one, leaving it **150 seconds** so iOS
+genuinely froze the process, then resuming it (`devicectl device process launch` without
+`--terminate-existing`, so the same process came back — the pid did not change):
+
+```
+— didEnterBackground —
+— willEnterForeground —
+— didBecomeActive, re-checking through the node —
+— check —
+loopback=127.0.0.1:57421
+HTTP 200
+authenticated=true identity=Azzaam Chaudhry
+ws first frame: 0{"sid":"ubQgn7rv3usguRP2AACo","upgrades":[],"pingInterval":25000,…}
+signalling handshake OK
+```
+
+Three things follow, and the distinction between them matters:
+
+- **The cached loopback address still worked.** It is the same `127.0.0.1:57421` as
+  before the suspend — `loopback()` handed back its cached value, and that value was
+  still live. So the listener was not reclaimed in this instance.
+- **The node never re-registered.** No new `Switching ipn state` lines appear after the
+  resume, and the status poll reported no change, so the node stayed `Running`: its
+  control connection and DERP relay came back with the process.
+- **The signalling socket was re-established and got a new session id**
+  (`ubQgn7rv3usguRP2AACo`, against `vKRzlDNlFm31LnrPAACn` earlier). The old socket did
+  not survive the freeze — consistent with what the signalling instrument already showed
+  about suspended WebSockets — but a fresh one worked immediately through the same
+  node. A call that resumes must therefore re-establish its socket, which it would have
+  to do anyway.
+
+**This does not disprove upstream's warning, and should not be read as doing so.** What
+it shows is that the stale-loopback failure did not occur across a 150-second suspend.
+Whether it needs a longer one, memory pressure, or a reinstall to appear is not known.
+
 **Getting a login URL requires the IPN bus, not the status document.** `statusJSON()`
 has an `AuthURL` field and it read `""` on every poll while the node sat at
 `NeedsLogin` — including a raw dump of the whole document, which showed the field
@@ -246,24 +288,43 @@ and it is the dependency this branch exists to remove.
 
 ## What is not measured
 
-- **Whether any of this survives suspension**, which is the question that decides
-  whether the approach is usable for a call app at all. Both halves of the wire
-  contract are proven **in the foreground only**. The existing signalling instrument
-  already showed that a suspended app's WebSocket dies silently, with no close frame
-  and no error, and upstream documents that iOS reclaims the node's loopback listener
-  on suspend while `loopback()` keeps handing back the stale cached address.
-- Whether a call actually completes over the embedded node. What is proven is the
-  control plane and the Engine.IO handshake; no call has been placed through it.
+- Whether a call actually **completes** over the embedded node. What is proven is the
+  control plane and the Engine.IO handshake; no call has been placed through it, so the
+  media path over an embedded node is untested.
+- Whether the stale-loopback failure appears under a **longer** suspend, under memory
+  pressure, or after a reinstall. 150 seconds did not trigger it; nothing here rules it
+  out, and upstream observed it on iOS.
+- Behaviour when the node is **not** available at launch — no network, control plane
+  unreachable, or the machine revoked. The instrument has only ever been run in the
+  happy path.
 - Four-peer behaviour, and app size on the App Store — the framework adds ~25 MB to the
   device binary.
+- The product question underneath all of this: whether every family member's device
+  should join the tailnet as its own node. This branch proves the transport works; it
+  does not argue that it is the right product.
 
 ## Next step
 
-The suspension measurement. Background the app, leave it long enough for iOS to suspend
-it, then foreground it and read the log. The probe re-checks automatically on
-`didBecomeActive`, and it runs `refreshStatus()` *before* the request, so a status that
-still reports `Running` alongside a failing request proves the node is alive and only
-the cached loopback address has gone stale.
+Place a real call over the embedded node — the same two-peer test the signalling
+instrument already performs, but with signalling and media routed through the node
+rather than the system Tailscale app, so the whole path is proven end to end.
+
+The suspension measurement can be extended at almost no cost, now that the mechanism is
+automated — background the app by launching another one, wait, then resume:
+
+```bash
+# background it
+xcrun devicectl device process launch --device <id> com.apple.mobilesafari
+# … wait …
+# resume the same process: without --terminate-existing it must not be restarted
+xcrun devicectl device process launch --device <id> com.abdullahchaudhry.Crossbar
+xcrun devicectl device copy from --device <id> --domain-type appDataContainer \
+  --domain-identifier com.abdullahchaudhry.Crossbar \
+  --source Documents/tailscale.log --destination /tmp/tailscale.log
+```
+
+If the app is restarted rather than resumed, the pid changes and `didEnterBackground`
+with no matching `willEnterForeground` in the same run is the tell.
 
 Do not reinstall between the two halves of that test: a fresh install wipes the node
 state, which forces a new login URL and destroys the continuity the test depends on.
