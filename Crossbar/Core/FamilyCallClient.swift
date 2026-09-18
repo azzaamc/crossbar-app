@@ -19,8 +19,9 @@ struct FamilyContact: Decodable, Identifiable, Equatable {
     let lastSeen: String?
     /// Added by the route rather than the query: whether the contact currently holds
     /// an open SSE stream (`src/server.js:202-207`). A contact is reachable while
-    /// this is true; it says nothing about whether they will answer.
-    let online: Bool
+    /// this is true; it says nothing about whether they will answer. Mutable because
+    /// presence arrives on the event stream after the list is drawn.
+    var online: Bool
 }
 
 /// The `callPublic` projection (`src/server.js:145-154`), with the fields the other
