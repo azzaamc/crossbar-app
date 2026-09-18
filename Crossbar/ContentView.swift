@@ -45,6 +45,15 @@ struct ContentView: View {
             if ProcessInfo.processInfo.environment["CROSSBAR_CALLKIT_SELFTEST"] == "1" {
                 session.runCallKitSelfTest()
             }
+            // Same reasoning, and the same shape. The embedded node is what lets this
+            // app reach the tailnet without the Tailscale app, so measuring it has to
+            // be possible on a device nobody can tap:
+            //   xcrun devicectl device process launch … -e '{"CROSSBAR_TAILSCALE_AUTOSTART":"1"}'
+            // Started in its own task so bring-up does not wait on the session load
+            // above, which reaches the network and can take seconds.
+            if ProcessInfo.processInfo.environment["CROSSBAR_TAILSCALE_AUTOSTART"] == "1" {
+                Task { await TailscaleProbe.shared.start() }
+            }
             #endif
         }
     }

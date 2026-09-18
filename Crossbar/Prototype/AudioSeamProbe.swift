@@ -631,6 +631,8 @@ struct AudioSeamView: View {
 
             FamilyCallSection()
 
+            TailscaleProbeSection()
+
             ScrollView {
                 Text(probe.lines.joined(separator: "\n"))
                     .font(.caption2.monospaced())

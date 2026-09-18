@@ -4,3 +4,8 @@ DerivedData/
 *.xcresult
 *.xcuserstate
 xcuserdata/
+
+# TailscaleKit.xcframework is ~70 MB of binaries produced by
+# Scripts/build-tailscale-kit.sh. Binaries do not belong in history; the script
+# rebuilds it from a pinned upstream checkout.
+Vendor/

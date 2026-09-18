@@ -10,6 +10,7 @@ reproduction guide, not a second copy of the findings:
 | `NATIVE_PROGRESS.md` | the capability matrix |
 | `MIROTALK_CORE_AUDIT.md` | the MiroTalk wire contract, and the divergence risks |
 | `ARCHITECTURE_A_PROBE.md` | the WebKit probe that failed and justified B |
+| `TAILSCALE_KIT_PROBE.md` | the embedded Tailscale node, on its own branch: why it exists, what is built, and what is still unmeasured |
 | this file | what the spike is made of, how to run it, and what it does **not** show |
 
 ## Why B, and what this spike had to answer

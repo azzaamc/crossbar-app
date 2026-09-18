@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		7C4D5E6F708192A3B4C5D6E3 /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = 7C4D5E6F708192A3B4C5D6E2 /* WebRTC */; };
+		7C4D5E6F708192A3B4C5D7A3 /* TailscaleKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C4D5E6F708192A3B4C5D7A2 /* TailscaleKit.xcframework */; };
+		7C4D5E6F708192A3B4C5D7A4 /* TailscaleKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7C4D5E6F708192A3B4C5D7A2 /* TailscaleKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -27,10 +29,23 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		7C4D5E6F708192A3B4C5D7A5 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = Frameworks;
+			files = (
+				7C4D5E6F708192A3B4C5D7A4 /* TailscaleKit.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		5F8EA67A305AAF08005261F6 /* Crossbar.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Crossbar.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F8EA687305AAF09005261F6 /* CrossbarTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CrossbarTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		5F8EA691305AAF09005261F6 /* CrossbarUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CrossbarUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		7C4D5E6F708192A3B4C5D7A2 /* TailscaleKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = TailscaleKit.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -69,6 +84,7 @@
 			isa = PBXFrameworksBuildPhase;
 			files = (
 				7C4D5E6F708192A3B4C5D6E3 /* WebRTC in Frameworks */,
+				7C4D5E6F708192A3B4C5D7A3 /* TailscaleKit.xcframework in Frameworks */,
 			);
 		};
 		5F8EA684305AAF09005261F6 /* Frameworks */ = {
@@ -90,6 +106,7 @@
 				5F8EA67C305AAF08005261F6 /* Crossbar */,
 				5F8EA68A305AAF09005261F6 /* CrossbarTests */,
 				5F8EA694305AAF09005261F6 /* CrossbarUITests */,
+				7C4D5E6F708192A3B4C5D7A1 /* Vendor */,
 				5F8EA67B305AAF08005261F6 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -104,6 +121,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		7C4D5E6F708192A3B4C5D7A1 /* Vendor */ = {
+			isa = PBXGroup;
+			children = (
+				7C4D5E6F708192A3B4C5D7A2 /* TailscaleKit.xcframework */,
+			);
+			path = Vendor;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -114,6 +139,7 @@
 				5F8EA676305AAF08005261F6 /* Sources */,
 				5F8EA677305AAF08005261F6 /* Frameworks */,
 				5F8EA678305AAF08005261F6 /* Resources */,
+				7C4D5E6F708192A3B4C5D7A5 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
