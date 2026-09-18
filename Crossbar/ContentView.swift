@@ -8,6 +8,18 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var session = CallSession()
 
+    #if DEBUG
+    /// Set by `CROSSBAR_PROBE_AUTOSHOW=1`.
+    ///
+    /// The instruments' own launch gates cannot fire until their screen is on screen,
+    /// and that screen sits behind a tap in the contacts toolbar — which is exactly
+    /// what a run nobody can stand next to the phone cannot do. This is how the
+    /// signalling instrument gets driven without a hand.
+    ///
+    ///   … -e '{"CROSSBAR_PROBE_AUTOSHOW":"1"}'
+    @State private var showProbe = false
+    #endif
+
     var body: some View {
         Group {
             switch session.phase {
@@ -54,8 +66,18 @@ struct ContentView: View {
             if ProcessInfo.processInfo.environment["CROSSBAR_TAILSCALE_AUTOSTART"] == "1" {
                 Task { await TailscaleProbe.shared.start() }
             }
+            // Same reasoning again: a gated instrument is only gated if it is on screen.
+            if ProcessInfo.processInfo.environment["CROSSBAR_PROBE_AUTOSHOW"] == "1" {
+                showProbe = true
+            }
             #endif
         }
+        #if DEBUG
+        // The instruments, presented over whatever the product is showing. A debug
+        // screen reachable only by tapping a toolbar item cannot be reached at all
+        // when the phone is on a desk.
+        .fullScreenCover(isPresented: $showProbe) { ProbeView() }
+        #endif
     }
 }
 
