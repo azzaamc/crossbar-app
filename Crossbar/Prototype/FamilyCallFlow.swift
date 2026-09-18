@@ -62,6 +62,8 @@ final class FamilyCallFlow: ObservableObject {
         eventsDown = false
         eventsTask?.cancel()
         append("loading identity and contacts")
+        // Not fatal if it fails — it answers a product question, not a precondition.
+        _ = try? await client.pushConfig()
 
         do {
             let session = try await client.checkSession()
@@ -235,8 +237,11 @@ final class FamilyCallFlow: ObservableObject {
             if Self.isTerminal(call.status) {
                 disconnectMedia()
                 phase = .ready
-            } else if call.isActive, case .ringing = phase {
-                // Someone else answered first; the room is open.
+            } else if call.isActive, !Self.isInCall(phase) {
+                // Fires both when the other side accepts and when this side placed a
+                // call that has since gone active. The room is open to both in either
+                // case, so the screen should stop saying "Calling".
+                append("call is active — both sides can be in the room")
                 phase = .inCall(call)
             }
 
@@ -283,6 +288,11 @@ final class FamilyCallFlow: ObservableObject {
 
     private static func isTerminal(_ status: String) -> Bool {
         ["ended", "cancelled", "declined", "missed"].contains(status)
+    }
+
+    private static func isInCall(_ phase: Phase) -> Bool {
+        if case .inCall = phase { return true }
+        return false
     }
 
     // MARK: - Logging

@@ -249,6 +249,26 @@ final class FamilyCallClient {
         return (shape["authenticated"] as? Bool ?? false, shape["configured"] as? Bool ?? false, name)
     }
 
+    /// `GET /api/push/config` — whether the service can ring a phone whose app is
+    /// closed at all.
+    ///
+    /// Worth asking explicitly: ringing is delivered two different ways, and only one
+    /// of them survives the app being backgrounded. An open client gets `incoming-call`
+    /// over the event stream; a closed one needs W3C Web Push, which needs a VAPID key
+    /// on the server (`src/config.js:83-86`) and a subscription per device. If this
+    /// reports disabled, a call only ever reaches someone who happens to have the app
+    /// open, and that is a product-level fact rather than a detail.
+    @discardableResult
+    func pushConfig() async throws -> (enabled: Bool, publicKeyLength: Int) {
+        let (data, response) = try await URLSession.shared.data(for: request("GET", "api/push/config"))
+        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let enabled = shape["enabled"] as? Bool ?? false
+        let key = shape["publicKey"] as? String ?? ""
+        log("GET api/push/config -> HTTP \(code) pushEnabled=\(enabled) publicKeyLength=\(key.count)")
+        return (enabled, key.count)
+    }
+
     /// `GET /api/bootstrap` — identity, contacts and any call already in progress.
     ///
     /// Everything the app needs to draw its first screen, and it rings nobody, which
