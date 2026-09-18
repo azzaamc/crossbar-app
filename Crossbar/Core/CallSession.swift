@@ -118,13 +118,13 @@ final class CallSession: ObservableObject {
             Task { await self.tearDown() }
         }
         callKit.onAudioActivated = { [weak self] session in
-            self?.media.adoptAudioSession(session)
-            // Category and mode are logged because echo cancellation on iOS depends on
-            // them: the voice-processing audio unit that provides it is only engaged for
-            // `.voiceChat`, and a wrong mode is invisible in every metric while being
-            // audible to everyone on the call. Metrics cannot catch this one.
-            self?.log(
-                "audio session adopted — category=\(session.category.rawValue) "
+            guard let self else { return }
+            let applied = self.media.adoptAudioSession(session)
+            // Logged because echo is invisible in every other signal we collect: the
+            // session once sat in SoloAmbient/Default, which engages no voice processing
+            // and so cancels no echo, and every metric stayed healthy throughout.
+            self.log(
+                "\(applied) — live category=\(session.category.rawValue) "
                     + "mode=\(session.mode.rawValue) sampleRate=\(Int(session.sampleRate))"
             )
         }

@@ -87,13 +87,50 @@ final class CallMediaSource: ObservableObject {
     /// loopback raised it again.
     func prepareAudioSession() {
         RTCAudioSession.sharedInstance().useManualAudio = true
+        _ = applyCallAudioConfiguration()
     }
 
-    /// Hands WebRTC the session CallKit just activated.
-    func adoptAudioSession(_ session: AVAudioSession) {
+    /// Puts the session into the configuration a call actually needs.
+    ///
+    /// Not optional, and not a default. Without it the session stayed
+    /// `AVAudioSessionCategorySoloAmbient` in `AVAudioSessionModeDefault` — the state an
+    /// app is left in when it never configures anything. SoloAmbient is playback-only,
+    /// and `Default` mode engages no voice processing, so there was **no echo
+    /// cancellation at all**; the audible result was echo loud enough that the
+    /// microphone had to be muted to hold the conversation.
+    ///
+    /// Every metric we collect was healthy throughout. Echo is not visible in RTP byte
+    /// counts, audio energy, or CallKit's own state — the only way to catch it is to
+    /// look at what the session is configured as, which is why the values are logged.
+    @discardableResult
+    func applyCallAudioConfiguration() -> String {
+        let rtc = RTCAudioSession.sharedInstance()
+        let configuration = RTCAudioSessionConfiguration.webRTC()
+        // WebRTC's own preference: playAndRecord, voiceChat, speaker by default and
+        // Bluetooth allowed. Setting it as the WebRTC default as well as applying it
+        // means the audio device module configures the same way when it starts.
+        RTCAudioSessionConfiguration.setWebRTC(configuration)
+
+        rtc.lockForConfiguration()
+        defer { rtc.unlockForConfiguration() }
+        do {
+            try rtc.setConfiguration(configuration)
+            return "audio session → \(configuration.category) / \(configuration.mode)"
+        } catch {
+            return "could not configure the audio session: \(error.localizedDescription)"
+        }
+    }
+
+    /// Hands WebRTC the session CallKit just activated, and says what it applied.
+    @discardableResult
+    func adoptAudioSession(_ session: AVAudioSession) -> String {
+        // Asserted before handing over, because the whole problem is that nobody else
+        // did: the session arrived as SoloAmbient.
+        let applied = applyCallAudioConfiguration()
         let rtc = RTCAudioSession.sharedInstance()
         rtc.audioSessionDidActivate(session)
         rearmAudio()
+        return applied
     }
 
     func releaseAudioSession(_ session: AVAudioSession) {
