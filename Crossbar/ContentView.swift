@@ -37,7 +37,16 @@ struct ContentView: View {
         // Loaded once per launch. A call that arrives while this is in flight is not
         // lost: the stream carries it, and `/api/bootstrap` re-reports anything already
         // ringing.
-        .task { await session.load() }
+        .task {
+            await session.load()
+            #if DEBUG
+            // Buttons on a device cannot be pressed from here, so the CallKit path gets
+            // a gated way in that rings nobody. See `runCallKitSelfTest`.
+            if ProcessInfo.processInfo.environment["CROSSBAR_CALLKIT_SELFTEST"] == "1" {
+                session.runCallKitSelfTest()
+            }
+            #endif
+        }
     }
 }
 

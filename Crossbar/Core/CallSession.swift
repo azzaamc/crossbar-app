@@ -140,6 +140,22 @@ final class CallSession: ObservableObject {
         _ = callKit.startOutgoing(handle: contact.id)
     }
 
+    #if DEBUG
+    /// Asks CallKit to place a call to an invitee who is not a contact, so the provider
+    /// registration, the start-call transaction and the callback are all exercised
+    /// without any phone ringing: the service refuses the invite before it notifies
+    /// anybody (`403 CONTACT_NOT_ALLOWED`).
+    ///
+    /// This is the one genuinely new failure surface the product shell introduced. The
+    /// debug flow called the API directly, so a rejected CallKit transaction would have
+    /// gone unnoticed; here it is the first step of every outgoing call.
+    func runCallKitSelfTest() {
+        guard phase.call == nil else { return }
+        log("self-test: asking CallKit to place a call")
+        _ = callKit.startOutgoing(handle: "crossbar-selftest")
+    }
+    #endif
+
     private func createCall(toContactID contactID: String) async {
         do {
             log("placing a call to \(displayName(for: contactID))")
@@ -148,9 +164,20 @@ final class CallSession: ObservableObject {
             connect(using: envelope.joinUrl)
         } catch {
             log("could not place the call: \(error.localizedDescription)")
-            notice = error.localizedDescription
-            await tearDown()
+            await abandonCall(reason: error.localizedDescription)
         }
+    }
+
+    /// Gives up on a call that never connected, **including on CallKit's side**.
+    ///
+    /// Tearing down only our own state is not enough: CallKit is already showing an
+    /// outgoing call, and leaving it there means the system says a call is happening
+    /// while the app knows it is not. The self-test caught exactly that on the device —
+    /// a refused create left an outgoing call on screen that would never connect.
+    private func abandonCall(reason: String) async {
+        notice = reason
+        if let callID = callKitCallID { callKit.end(callID: callID) }
+        await tearDown()
     }
 
     // MARK: - Answering
@@ -165,8 +192,7 @@ final class CallSession: ObservableObject {
         } catch {
             // A 409 here is ordinary — answered elsewhere, declined, or expired.
             log("could not accept: \(error.localizedDescription)")
-            notice = error.localizedDescription
-            await tearDown()
+            await abandonCall(reason: error.localizedDescription)
         }
     }
 
