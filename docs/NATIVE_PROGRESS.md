@@ -5,12 +5,16 @@ Last audited: 2026-09-17 (Asia/Karachi)
 ## Status in one sentence
 
 Crossbar is an Xcode-generated SwiftUI application containing a DEBUG-only,
-original-code Architecture B spike. As of 2026-09-17 that spike authenticates
+original-code Architecture B spike. As of 2026-09-18 that spike authenticates
 against the real Family Call API, speaks MiroTalk's signalling protocol natively,
-and has completed a real device-to-device call with MiroTalk's own browser client
-carrying media both ways. It contains **no product code**: no call UI, no contacts,
-no CallKit-in-product-flow, no persistence. Instruments, reproduction commands and
-the list of what is *not* measured are in `ARCHITECTURE_B_PROBE.md`.
+has completed a real device-to-device call with MiroTalk's own browser client
+carrying media both ways, and drives the real call lifecycle natively — verified
+against production on its **read paths** (identity, contacts, event stream) and
+written but **not yet exercised** for placing, answering, joining or ending a call,
+because each of those rings a real family member's phone. It contains **no product
+code**: no call UI, no contacts UI, no CallKit-in-product-flow, no persistence.
+Instruments, reproduction commands and the list of what is *not* measured are in
+`ARCHITECTURE_B_PROBE.md`.
 
 ## Repository and checkpoint
 
@@ -106,9 +110,15 @@ The Architecture B instruments live beside them and are also `#if DEBUG`:
   media source, and per-transport ICE path reporting.
 - `Crossbar/Prototype/BackendReachabilityProbe.swift`: a bare `URLSession` GET used to
   establish that tailnet Serve injects the identity header for a non-browser client.
+- `Crossbar/Prototype/FamilyCallClient.swift`: the real control plane — identity,
+  contacts, create, respond, join, end, and the `/api/events` stream — plus the
+  `JoinTarget` that recovers the room id and signalling origin from the `joinUrl`.
+- `Crossbar/Prototype/FamilyCallFlow.swift`: the flow over that client and its debug
+  screen, composing one `MiroTalkSignalClient` with a shared `ProbeMediaSource`.
 
 Each writes to a file in the app's Documents directory (`seam.log`, `signal-*.log`,
-`backend.log`) so results can be pulled rather than read off a screenshot.
+`backend.log`, `familycall.log`) so results can be pulled rather than read off a
+screenshot.
 
 ### Tests
 
@@ -146,13 +156,19 @@ Architecture B (DEBUG instruments, measured on the physical iPhone):
 - A shared local capture feeding every peer connection.
 - One authenticated call to the Family Call API (`GET /api/session`) through tailnet
   Serve, with no backend change.
+- A native Family Call control-plane client: identity, contacts, call create/respond/
+  join/end, and the `/api/events` stream, with the room id and signalling origin taken
+  from the `joinUrl` the backend returns.
 
 ## What does not exist
 
-- Family Call call lifecycle — the spike only calls `GET /api/session`. No contacts,
-  groups, presence, SSE (`/api/events`), or call create/respond/invite/join/end.
-- Product call UI, contacts list, ringing, navigation, or CallKit in the product flow
-  (CallKit is exercised only by the DEBUG probe).
+- Verified call placement, answering, joining or ending. The client implements all
+  four against the audited contract and none has been run against the live service;
+  only `GET /api/session`, `GET /api/bootstrap` and `GET /api/events` are measured.
+- A confirmed `joinUrl` shape. The room-id parse is written and reasoned from
+  `src/mirotalk.js:34-42` but has never seen a production response.
+- Product call UI, contacts UI, ringing UI, navigation, or CallKit in the product flow
+  (CallKit is exercised only by the DEBUG Architecture A probe).
 - PushKit, APNs, VoIP token registration, notification extension, or backend
   native-device registration routes.
 - Background-audio capability or VoIP background mode. None is configured, so the
@@ -248,6 +264,9 @@ marked as such there.
 | WebKit capture during a CallKit call | Yes | Not tested | **FAIL** — WebKit loses its audio session the instant CallKit takes it; capture muted/stopped and preview dies. Fails in all three arrangements tested: app-configured session, WebKit-only, and media-first ordering (P8.10, P8.13, P8.14) |
 | Family Call API from native code | Yes | — | **Yes** — `URLSession` GET to `/api/session` through tailnet Serve returned `HTTP 200 authenticated=true identity.source=tailscale` with the enrolled display name, and no `Origin` header. No backend change needed for identity |
 | Native WebRTC under CallKit (Architecture B spike) | Yes | — | **Passes in both orderings, audio measured flowing** — with a loopback running, inbound-RTP bytes continue through CallKit taking the session (after the re-arm fix) and through a full activate → deactivate → activate cycle. WebRTC makes no `setActive:` of its own while CallKit owns the session. WebKit's capture died in the same situation |
+| Family Call control plane, read paths (native) | Yes | — | **Yes, on the device against production** — `GET /api/session` returned `authenticated=true` with the enrolled display name, `GET /api/bootstrap` returned 982 bytes and decoded into the client's models, and `GET /api/events` delivered its `ready` event through Serve. Establishes that Serve does not buffer SSE |
+| Family Call control plane, call lifecycle (native) | Yes | — | **Not exercised** — create, respond, join and end are implemented against the audited contract and have never been run, because each rings a real family member's phone |
+| Room id parsed from the `joinUrl` | Yes | — | **Not verified** — the parse is written and reasoned from `src/mirotalk.js:34-42`, but no production `joinUrl` has been seen |
 | Native capture teardown (Architecture B spike) | Yes | — | **Yes** — after Stop, `capture stopped` is logged and the status-bar camera/mic privacy indicators are absent, which is the objective evidence capture was released. The preview keeps its last rendered frame, so the preview alone proves nothing |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
 | Audio route behaviour | Yes | Not meaningfully tested | **Spike (B) partial** — AirPods connect/disconnect produced route reasons 1 and 2 and WebRTC followed the route rather than fighting it; speaker override and wired not tested |

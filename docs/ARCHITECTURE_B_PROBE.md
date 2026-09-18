@@ -39,6 +39,8 @@ All are `#if DEBUG` and live in `Crossbar/Prototype/`. None is product code.
 | `AudioSeamProbe.swift` | the original Architecture B seam spike, plus its SwiftUI screen | CallKit audio-session adoption, a local loopback peer connection so the ADM is genuinely exercised, produced video frames, app lifecycle |
 | `MiroTalkSignalClient.swift` | a reduced native Engine.IO v4 / Socket.IO v5 client, peer connections, and the shared media source | admission into a MiroTalk room, the mesh fan-out, SDP/ICE exchange, the offer policy, inbound RTP |
 | `BackendReachabilityProbe.swift` | a bare `URLSession` GET | whether tailnet Serve injects the identity header for a non-browser client |
+| `FamilyCallClient.swift` | the Family Call control plane: session, bootstrap, create, respond, join, end, and the `/api/events` stream | whether a native client can drive the real call lifecycle, and whether the room id can be recovered from the `joinUrl` |
+| `FamilyCallFlow.swift` | the flow over that client, plus one `MiroTalkSignalClient` and a shared capture | whether the product call path works end to end — identity, contacts, ringing, answering, media |
 
 Each writes its output to a file in the app's Documents directory — `seam.log`,
 `signal-A.log`, `signal-B.log`, `signal-C.log`, `backend.log` — truncated on the first
@@ -50,14 +52,18 @@ before the files were added.
 Substitute the connected device's identifier, from `xcrun devicectl list devices`.
 
 ```bash
-# build
+# build — a generic destination needs no device connection at all, which matters
+# because xcodebuild's build-destination connection to the phone fails far more
+# readily than devicectl's does ("A connection to this device could not be
+# established" while devicectl installs to the same phone without complaint).
 xcodebuild -project Crossbar.xcodeproj -scheme Crossbar \
-  -destination 'platform=iOS,id=<device-id>' -configuration Debug build
+  -destination 'generic/platform=iOS' -configuration Debug -quiet build
 
 # install and launch (the Debug product path is under DerivedData)
 xcrun devicectl device install app --device <device-id> "<path>/Crossbar.app"
 xcrun devicectl device process launch --device <device-id> \
-  --terminate-existing com.abdullahchaudhry.Crossbar
+  --terminate-existing -e '{"CROSSBAR_AUTOLOAD":"1"}' \
+  com.abdullahchaudhry.Crossbar
 
 # pull a log
 xcrun devicectl device copy from --device <device-id> \
@@ -68,6 +74,16 @@ xcrun devicectl device copy from --device <device-id> \
 # screenshot, if a visual check is needed
 xcrun devicectl device capture screenshot --device <device-id> --destination /tmp/s.png
 ```
+
+The Family Call section does not load on appear — it would otherwise open an SSE
+stream and call the API on every launch, including the ones made for the seam and
+signalling measurements. `CROSSBAR_AUTOLOAD=1` makes it load. This is an environment
+variable rather than a launch argument because `devicectl` passes those cleanly and
+parses a leading-dash argument as one of its own options.
+
+Launch arguments cannot be used to drive the UI otherwise: the `xcode` MCP server's
+device-interaction tools only offer simulators here, so buttons on the phone have to
+be pressed by hand or replaced by a gated automatic path like this one.
 
 Two operational facts that caused wasted runs:
 
@@ -113,11 +129,38 @@ these were found only because a result was suspicious rather than negative.
    how the product must work.
 8. **A log view anchored to its oldest lines**, and logs that existed only on screen.
    Both were fixed with `defaultScrollAnchor(.bottom)` and the per-launch files.
+9. **`AsyncBytes.lines` omits empty lines, and the empty line is the SSE dispatch
+   signal.** The event stream connected, reported `HTTP 200`, received bytes
+   promptly, and yielded **no event at all** — the parser waited for a blank line
+   that this sequence never produces, so every event accumulated in a buffer that
+   was thrown away when the connection ended. A local mirror of the service isolated
+   it: the same server delivered the ready event at `0.00s` at the socket while the
+   Swift client saw nothing until the 20-second heartbeat, and then only the
+   heartbeat comment. Reading the stream byte by byte and splitting on `\n` — keeping
+   empty lines — dispatches the same event at `0.02s`. Two corollaries worth keeping:
+   the failure was invisible in every respect except the one that mattered, and
+   **Tailscale Serve does not buffer SSE**, which was the other candidate explanation
+   and is now ruled out.
+10. **Failure paths that set state without logging it.** `load()` reported a failure
+    by assigning to the published `phase` and writing nothing to the log, so a thrown
+    error and a hung request were indistinguishable from outside — and three runs
+    produced a log containing only `section appeared`. The reason
+    (`NSURLErrorCannotFindHost`) became visible only after the catch was logged and
+    the request line was written *before* the request rather than after it.
 
 ## What the spike does not show
 
 Stated so the next session does not inherit an overclaim:
 
+- **The control plane is verified on its read paths only.** `GET /api/session`,
+  `GET /api/bootstrap` and `GET /api/events` are measured on the device against
+  production, including the identity Serve injects and the contact list that comes
+  back. Creating, answering, joining and ending a call are written but **have not been
+  exercised against the live service**, because every one of them rings a real family
+  member's phone. Nothing that calls those routes should be described as working.
+- **The room-id parse is untested against a real `joinUrl`.** The parsing logic is
+  written and reasoned from `src/mirotalk.js:34-42`, but no live response has been run
+  through it, so the exact shape of a production `joinUrl` remains unconfirmed.
 - **No product code.** Everything here is a measurement instrument. There is no call
   UI, no contacts, no CallKit-in-product-flow, no persistence.
 - **The signalling socket does not survive backgrounding** — no background mode is
@@ -142,7 +185,9 @@ Stated so the next session does not inherit an overclaim:
 
 1. **How the native client obtains the room id.** `callPublic` never exposes `roomId`;
    the only media coordinates are inside the `joinUrl`, and the `room` parameter is
-   parseable from it. Decided: parse it. Not yet implemented.
+   parseable from it. Decided and now implemented in `FamilyCallClient.JoinTarget`,
+   which also takes the signalling origin from the same URL rather than from a second
+   constant. Unverified against a live `joinUrl` — see above.
 2. **APNs/PushKit and a device-token model.** Background ringing is W3C Web Push with
    `{endpoint, p256dh, auth}` credentials; APNs tokens are a different class and no
    table, route or client exists.

@@ -61,10 +61,25 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private var reportedPath: [String: String] = [:]
     private var reportedTailnetPairs: Set<String> = []
 
-    /// The private MiroTalk origin. Overridable so no deployment detail is baked in.
+    /// The MiroTalk origin.
+    ///
+    /// The product flow supplies this from the `joinUrl` the backend returns, so the
+    /// host is never a second constant that could drift from the one the backend
+    /// actually used. The environment override remains for the standalone instrument,
+    /// which has no `joinUrl` to read.
+    var originOverride: URL?
+
+    /// Who this peer appears as to the rest of the room.
+    ///
+    /// The standalone instrument labels itself `Crossbar A/B/C` because it is not an
+    /// authenticated client. The product flow sets the enrolled family display name,
+    /// which is what everyone else in the call actually sees.
+    var peerName: String?
+
     private var origin: URL {
-        ProcessInfo.processInfo.environment["CROSSBAR_MIROTALK_ORIGIN"]
-            .flatMap(URL.init(string:))
+        originOverride
+            ?? ProcessInfo.processInfo.environment["CROSSBAR_MIROTALK_ORIGIN"]
+                .flatMap(URL.init(string:))
             ?? URL(string: "https://qatar-vpn.tailea67b0.ts.net")!
     }
 
@@ -245,9 +260,9 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     // MARK: - Join
 
     /// The payload shape is taken from the audited contract
-    /// (`docs/MIROTALK_CORE_AUDIT.md`, "join payload"). `peer_name` is a probe
-    /// label rather than the family display name because this instrument is not
-    /// yet an authenticated product client.
+    /// (`docs/MIROTALK_CORE_AUDIT.md`, "join payload"). `peer_name` is the enrolled
+    /// family display name in the product flow; the instrument falls back to its own
+    /// label because it is not an authenticated client.
     private func emitJoin() {
         let version = ProcessInfo.processInfo.operatingSystemVersionString
         let payload: [String: Any] = [
@@ -262,7 +277,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
                 "extras": [:],
             ],
             "peer_uuid": peerUUID,
-            "peer_name": "Crossbar \(label)",
+            "peer_name": peerName ?? "Crossbar \(label)",
             "peer_avatar": "",
             "peer_token": NSNull(),
             "peer_video": true,

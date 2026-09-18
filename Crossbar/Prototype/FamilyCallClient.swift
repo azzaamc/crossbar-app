@@ -1,0 +1,424 @@
+#if DEBUG
+import Foundation
+
+// MARK: - Wire models
+
+/// `GET /api/bootstrap` → `user`, mirroring `store.userById` (`src/db.js:165-171`).
+struct FamilyUser: Decodable {
+    let id: String
+    let displayName: String
+    let relationship: String?
+    let avatar: String?
+}
+
+/// `GET /api/bootstrap` → `contacts[]` (`src/db.js:216-226`).
+struct FamilyContact: Decodable, Identifiable, Equatable {
+    let id: String
+    let displayName: String
+    let relationship: String?
+    let avatar: String?
+    let lastSeen: String?
+    /// Added by the route rather than the query: whether the contact currently holds
+    /// an open SSE stream (`src/server.js:202-207`). A contact is reachable while
+    /// this is true; it says nothing about whether they will answer.
+    let online: Bool
+}
+
+/// The `callPublic` projection (`src/server.js:145-154`), with the fields the other
+/// call shapes add.
+///
+/// `participants` is present on a `callPublic` call but **absent** from the `calls[]`
+/// entries of `/api/bootstrap`, which come from `store.callsForUser` and are a
+/// different shape for the same idea (`src/db.js:295-305`). Optional fields here are
+/// ones some route omits rather than ones that may be null in principle.
+struct FamilyCall: Decodable, Identifiable, Equatable {
+    struct Participant: Decodable, Equatable {
+        let userId: String
+        let displayName: String?
+        let status: String
+    }
+
+    let id: String
+    let callerId: String
+    let callerName: String?
+    let status: String
+    /// The reader's own participation status, from `callsForUser` only.
+    let myStatus: String?
+    let createdAt: String
+    let answeredAt: String?
+    let participants: [Participant]?
+
+    var isActive: Bool { status == "active" }
+}
+
+struct FamilyBootstrap: Decodable {
+    let user: FamilyUser
+    let contacts: [FamilyContact]
+    let calls: [FamilyCall]
+    let ongoingCalls: [FamilyCall]
+}
+
+/// `POST /api/calls`, `/respond` and `/join` all answer `{call, joinUrl}`; `joinUrl`
+/// is absent when a call was declined (`src/server.js:289-291`).
+struct JoinEnvelope: Decodable {
+    let call: FamilyCall
+    let joinUrl: String?
+}
+
+/// The service's error shape: `{error: {code, message}}` (`src/server.js:32-34`).
+struct FamilyAPIError: Error, LocalizedError {
+    let status: Int
+    let code: String
+    let message: String
+
+    var errorDescription: String? { "HTTP \(status) \(code) — \(message)" }
+}
+
+// MARK: - The room, recovered from the join URL
+
+/// Where to point the media engine, recovered from the `joinUrl`.
+///
+/// This is the decided route to the room. `callPublic` deliberately omits `roomId`
+/// while all three routes that return media coordinates return a `joinUrl`
+/// (`src/server.js:184`, `290`, `324`), and the backend validates that the URL it
+/// builds carries `room === roomId` before handing it over
+/// (`src/mirotalk.js:34-42`). Widening `callPublic` instead would expose the room id
+/// on every call object the app ever sees, including ones it is not in.
+///
+/// The origin comes from the same URL rather than a second constant: the backend
+/// rebuilds the join URL against `MIROTALK_EMBED_ORIGIN` (`src/config.js:65-68`,
+/// `src/mirotalk.js:38-40`), so the host in the URL is the MiroTalk host and the
+/// socket needs no separately configured origin.
+struct JoinTarget: Equatable {
+    let room: String
+    let origin: URL
+}
+
+extension JoinTarget {
+    init?(joinUrl: String) {
+        guard
+            let url = URL(string: joinUrl),
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let scheme = components.scheme,
+            let host = components.host,
+            let room = components.queryItems?.first(where: { $0.name == "room" })?.value,
+            !room.isEmpty
+        else { return nil }
+
+        var origin = URLComponents()
+        origin.scheme = scheme
+        origin.host = host
+        origin.port = components.port
+        guard let built = origin.url else { return nil }
+
+        self.init(room: room, origin: built)
+    }
+}
+
+// MARK: - Events
+
+/// One server-sent event. The names are the ones the service actually emits
+/// (`src/server.js:180`, `286-287`, `304-306`, `333-334`).
+enum FamilyEvent: Equatable {
+    case ready(userId: String)
+    case incomingCall(FamilyCall)
+    case callStatus(FamilyCall)
+    case ongoingCall(FamilyCall)
+    case presence(userId: String, online: Bool)
+    case unrecognised(name: String)
+    /// The stream ended or could not be established. Carried as an event rather than
+    /// thrown because a dropped stream is a normal state to recover from.
+    case failed(String)
+}
+
+// MARK: - Client
+
+/// The Family Call control plane, as a native client.
+///
+/// Identity is not a parameter. The service accepts `tailscale-user-login` only when
+/// the request arrives from loopback (`src/identity.js`) and its listener refuses to
+/// bind anywhere else (`src/config.js:59-62`), so a native client has no identity to
+/// present and must traverse Serve, which injects the header. That was measured
+/// before this was written; see `BackendReachabilityProbe`.
+///
+/// This client sends **no `Origin` header**, deliberately. `checkOrigin`
+/// (`src/server.js:97-105`) rejects only a header that is both present and
+/// mismatched, so omitting it is what makes the POST routes reachable rather than
+/// only the reads. Adding one would be self-inflicted: the app is not the public
+/// origin and never will be.
+@MainActor
+final class FamilyCallClient {
+    /// Set by the owner after construction, because the owner cannot capture itself
+    /// before it exists.
+    var log: (String) -> Void = { _ in }
+
+    /// The private tailnet endpoint. The same override the reachability probe uses,
+    /// so no deployment detail is baked into the source.
+    private var baseURL: URL {
+        let override = ProcessInfo.processInfo.environment["CROSSBAR_BACKEND_URL"]
+        return override.flatMap(URL.init(string:))
+            ?? URL(string: "https://qatar-vpn.tailea67b0.ts.net:8443")!
+    }
+
+    /// Built through `URLComponents` rather than `appendingPathComponent` so that a
+    /// caller-supplied override with a path cannot silently change where a request
+    /// lands.
+    private func url(_ path: String) -> URL {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        components.path = "/" + path
+        return components.url!
+    }
+
+    private func request(_ method: String, _ path: String, body: [String: Any]? = nil) -> URLRequest {
+        var request = URLRequest(url: url(path))
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "accept")
+        request.timeoutInterval = 20
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+        return request
+    }
+
+    @discardableResult
+    private func send<T: Decodable>(_ request: URLRequest, as type: T.Type) async throws -> T {
+        log("\(request.httpMethod ?? "?") \(request.url?.absoluteString ?? "?")")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+
+        guard (200..<300).contains(code) else {
+            // Parse the service's own error so a refusal reads as the reason the
+            // product would show, not as a status code.
+            if let shape = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = shape["error"] as? [String: Any] {
+                let apiError = FamilyAPIError(
+                    status: code,
+                    code: error["code"] as? String ?? "UNKNOWN",
+                    message: error["message"] as? String ?? "No message"
+                )
+                log("  -> \(apiError.localizedDescription)")
+                throw apiError
+            }
+            log("  -> HTTP \(code)")
+            throw FamilyAPIError(status: code, code: "UNKNOWN", message: "\(data.count) bytes")
+        }
+
+        do {
+            let decoded = try JSONDecoder().decode(T.self, from: data)
+            log("  -> HTTP \(code), \(data.count) bytes")
+            return decoded
+        } catch {
+            log("  -> HTTP \(code) but the body did not decode: \(error)")
+            throw error
+        }
+    }
+
+    // MARK: Reads
+
+    /// `GET /api/session` — the one route reachable without an enrolled identity.
+    @discardableResult
+    func checkSession() async throws -> (authenticated: Bool, configured: Bool, name: String?) {
+        // Logged before the request as well as after. A request that never completes
+        // otherwise leaves no trace at all, which is indistinguishable from one that
+        // was never attempted — and that ambiguity already cost a run here.
+        log("GET api/session (requesting)")
+        let (data, response) = try await URLSession.shared.data(for: request("GET", "api/session"))
+        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let identity = shape["identity"] as? [String: Any]
+        let name = identity?["name"] as? String
+        log("GET api/session -> HTTP \(code) authenticated=\(shape["authenticated"] as? Bool ?? false) name=\(name ?? "none")")
+        return (shape["authenticated"] as? Bool ?? false, shape["configured"] as? Bool ?? false, name)
+    }
+
+    /// `GET /api/bootstrap` — identity, contacts and any call already in progress.
+    ///
+    /// Everything the app needs to draw its first screen, and it rings nobody, which
+    /// is why it is the read this instrument verifies against production.
+    func bootstrap() async throws -> FamilyBootstrap {
+        let result = try await send(request("GET", "api/bootstrap"), as: FamilyBootstrap.self)
+        log("  bootstrap: \(result.contacts.count) contacts, \(result.ongoingCalls.count) ongoing, \(result.calls.count) open")
+        return result
+    }
+
+    /// `GET /api/calls/:id` — used to re-read state after an event stream drops,
+    /// since the stream has no replay.
+    func call(id: String) async throws -> FamilyCall {
+        let envelope = try await send(request("GET", "api/calls/\(id)"), as: CallOnlyEnvelope.self)
+        return envelope.call
+    }
+
+    // MARK: Writes
+
+    /// `POST /api/calls` — **this rings real phones.** Rate-limited to 6 per minute
+    /// per user (`src/server.js:170`).
+    func createCall(inviteeIds: [String]) async throws -> JoinEnvelope {
+        let envelope = try await send(
+            request("POST", "api/calls", body: ["inviteeIds": inviteeIds]),
+            as: JoinEnvelope.self
+        )
+        log("  created call \(envelope.call.id) status=\(envelope.call.status)")
+        return envelope
+    }
+
+    /// `POST /api/calls/:id/respond`. Only `invited` participants can answer, once.
+    func respond(callId: String, accepted: Bool) async throws -> JoinEnvelope {
+        let envelope = try await send(
+            request("POST", "api/calls/\(callId)/respond", body: ["response": accepted ? "accepted" : "declined"]),
+            as: JoinEnvelope.self
+        )
+        log("  responded \(accepted ? "accepted" : "declined") to \(callId), status=\(envelope.call.status)")
+        return envelope
+    }
+
+    /// `POST /api/calls/:id/join` — valid while the call is active, and while ringing
+    /// for a participant who has already accepted (`src/server.js:317-320`).
+    func join(callId: String) async throws -> JoinEnvelope {
+        let envelope = try await send(request("POST", "api/calls/\(callId)/join"), as: JoinEnvelope.self)
+        log("  joined \(callId), status=\(envelope.call.status)")
+        return envelope
+    }
+
+    /// `POST /api/calls/:id/end`. Call-wide: the backend has no per-participant
+    /// leave, so this ends it for everyone, which matters for four-person calls.
+    func end(callId: String) async throws {
+        let envelope = try await send(request("POST", "api/calls/\(callId)/end"), as: CallOnlyEnvelope.self)
+        log("  ended \(callId), status=\(envelope.call.status)")
+    }
+
+    // MARK: The event stream
+
+    /// `GET /api/events`.
+    ///
+    /// The stream carries no event ids and no replay (`src/server.js:236-255`), and
+    /// the server offsets that with a 20-second heartbeat comment. Two consequences
+    /// are load-bearing rather than incidental: a reconnect cannot recover what was
+    /// missed, so state must be re-read from `/api/bootstrap` or `/api/calls/:id`
+    /// after any drop; and the heartbeat is what keeps an idle connection inside
+    /// URLSession's own idle timeout.
+    nonisolated func events() -> AsyncStream<FamilyEvent> {
+        AsyncStream { continuation in
+            let task = Task { @MainActor in
+                do {
+                    var request = self.request("GET", "api/events")
+                    request.setValue("text/event-stream", forHTTPHeaderField: "accept")
+                    // Above the server's 20s heartbeat, so an idle stream is not
+                    // mistaken for a dead one.
+                    request.timeoutInterval = 120
+
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                    self.log("GET api/events -> HTTP \(code)")
+                    guard code == 200 else {
+                        continuation.yield(.failed("HTTP \(code)"))
+                        continuation.finish()
+                        return
+                    }
+
+                    // Deliberately not `bytes.lines`: that sequence omits empty lines,
+                    // and the empty line is what *dispatches* an event in SSE. Using it
+                    // produced a stream that connected, reported HTTP 200, received
+                    // bytes promptly, and yielded no event at all — the failure mode
+                    // this project has now hit repeatedly, where a healthy-looking
+                    // connection is indistinguishable from a working one.
+                    var lineBytes: [UInt8] = []
+                    var eventName = ""
+                    var dataLines: [String] = []
+
+                    for try await byte in bytes {
+                        guard byte == 0x0A else {
+                            lineBytes.append(byte)
+                            continue
+                        }
+
+                        var line = String(decoding: lineBytes, as: UTF8.self)
+                        lineBytes.removeAll(keepingCapacity: true)
+                        if line.hasSuffix("\r") { line.removeLast() }
+
+                        if line.isEmpty {
+                            // The dispatch point.
+                            if !dataLines.isEmpty,
+                               let event = FamilyEvent(name: eventName, data: dataLines.joined(separator: "\n")) {
+                                continuation.yield(event)
+                            }
+                            eventName = ""
+                            dataLines = []
+                            continue
+                        }
+
+                        if line.hasPrefix(":") { continue } // heartbeat comment
+                        if let value = line.removingPrefix("event:") {
+                            eventName = value.trimmed
+                        } else if let value = line.removingPrefix("data:") {
+                            // Multi-line data joins with newlines, per the SSE spec.
+                            dataLines.append(value.trimmed)
+                        }
+                        // `id:` and `retry:` are not emitted by this service; the stream
+                        // has neither event ids nor replay, so there is nothing to use.
+                    }
+                    if !dataLines.isEmpty,
+                       let event = FamilyEvent(name: eventName, data: dataLines.joined(separator: "\n")) {
+                        continuation.yield(event)
+                    }
+                    continuation.yield(.failed("stream ended"))
+                    continuation.finish()
+                } catch {
+                    // Cancellation is how this stream is meant to end; reporting it
+                    // as a failure would make a deliberate stop look like a fault.
+                    if !Task.isCancelled {
+                        continuation.yield(.failed(error.localizedDescription))
+                    }
+                    continuation.finish()
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+/// `GET /api/calls/:id` and `/end` answer `{call}` with no `joinUrl`.
+private struct CallOnlyEnvelope: Decodable {
+    let call: FamilyCall
+}
+
+// MARK: - Decoding the event stream
+
+private extension FamilyEvent {
+    init?(name: String, data: String) {
+        guard let payload = data.data(using: .utf8) else { return nil }
+        let decoder = JSONDecoder()
+
+        switch name {
+        case "ready":
+            guard let shape = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+                  let userId = shape["userId"] as? String
+            else { return nil }
+            self = .ready(userId: userId)
+        case "incoming-call", "call-status", "ongoing-call":
+            // These three carry `callPublic` directly, not wrapped in an envelope.
+            guard let call = try? decoder.decode(FamilyCall.self, from: payload) else { return nil }
+            switch name {
+            case "incoming-call": self = .incomingCall(call)
+            case "call-status": self = .callStatus(call)
+            default: self = .ongoingCall(call)
+            }
+        case "presence":
+            guard let shape = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+                  let userId = shape["userId"] as? String
+            else { return nil }
+            self = .presence(userId: userId, online: shape["online"] as? Bool ?? false)
+        default:
+            self = .unrecognised(name: name)
+        }
+    }
+}
+
+private extension String {
+    func removingPrefix(_ prefix: String) -> String? {
+        hasPrefix(prefix) ? String(dropFirst(prefix.count)) : nil
+    }
+
+    var trimmed: String { trimmingCharacters(in: .whitespaces) }
+}
+#endif
