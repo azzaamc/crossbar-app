@@ -74,6 +74,24 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private var reportedPath: [String: String] = [:]
     private var reportedTailnetPairs: Set<String> = []
 
+    /// Where the signalling socket is created, which is where a transport is chosen.
+    ///
+    /// `.default` dials the origin over whatever the system already provides, which is
+    /// how every measurement before this one ran — through the Tailscale app's tunnel.
+    /// A configuration from `URLSessionConfiguration.tailscaleSession` sends it down
+    /// the embedded node's loopback instead, so the app can carry its own tailnet.
+    ///
+    /// The label travels with the configuration rather than beside it, because a
+    /// proxied session and a direct one are otherwise indistinguishable in a log: a
+    /// run that silently took the system's route while the screen said otherwise is
+    /// exactly the wrong answer this project keeps finding.
+    struct Transport {
+        var configuration: URLSessionConfiguration = .default
+        var label = "direct"
+    }
+
+    var transport = Transport()
+
     /// The MiroTalk origin.
     ///
     /// The product flow supplies this from the `joinUrl` the backend returns, so the
@@ -123,15 +141,23 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
 
         state = "connecting"
         append("peer \(label) room=\(room) uuid=\(peerUUID.prefix(8))")
-        append("connecting \(url.absoluteString)")
+        append("connecting \(url.absoluteString) via \(transport.label)")
 
-        let session = URLSession(configuration: .default)
+        let session = URLSession(configuration: transport.configuration)
         self.session = session
         let task = session.webSocketTask(with: url)
         self.task = task
         task.resume()
 
         receiveLoop(task)
+    }
+
+    /// A line the caller wants in this client's evidence log.
+    ///
+    /// The transport decision is made by the caller, so the reason a connection was
+    /// not made belongs in the same file as the negotiation it did not have.
+    func record(_ line: String) {
+        append(line)
     }
 
     func disconnect() {

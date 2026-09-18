@@ -15,6 +15,7 @@ struct SignalProbeSection: View {
     @State private var expanded = false
     @State private var room = "crosstest"
     @State private var ignoreStun = false
+    @State private var viaNode = false
 
     var body: some View {
         DisclosureGroup("MiroTalk signalling (native Socket.IO)", isExpanded: $expanded) {
@@ -32,6 +33,10 @@ struct SignalProbeSection: View {
                 Toggle("Ignore server iceServers (STUN off)", isOn: $ignoreStun)
                     .font(.caption2)
                     .accessibilityIdentifier("signal.ignorestun")
+
+                Toggle("Route signalling through the embedded node", isOn: $viaNode)
+                    .font(.caption2)
+                    .accessibilityIdentifier("signal.vianode")
 
                 HStack {
                     Button("A join") { join(peerA) }
@@ -78,6 +83,26 @@ struct SignalProbeSection: View {
             // remote-track slot and make the tile ambiguous.
             let count = Int(ProcessInfo.processInfo.environment["CROSSBAR_SIGNAL_AUTOPEERS"] ?? "1") ?? 1
             expanded = true
+            // The carrier is gated the same way as the room, and for the same reason:
+            // the run that matters is the one nobody can start by hand.
+            //   … -e '{"CROSSBAR_SIGNAL_AUTOROOM":"room","CROSSBAR_SIGNAL_VIANODE":"1"}'
+            if ProcessInfo.processInfo.environment["CROSSBAR_SIGNAL_VIANODE"] == "1" {
+                viaNode = true
+            }
+            // The node's own counters, read while the call is up.
+            //
+            // The system Tailscale app is also installed on this phone, so a working
+            // socket says a route worked, not which one — and the node's counters only
+            // move for what the node carried itself. Sampled here rather than in the
+            // node-routed branch alone because a run with the socket dialled directly
+            // is the control: these stay flat there, which is what makes their growth
+            // in a routed run attributable to the node.
+            Task {
+                for _ in 0..<6 {
+                    try? await Task.sleep(nanoseconds: 20_000_000_000)
+                    await TailscaleProbe.shared.logNodeTraffic("during call")
+                }
+            }
             // The field is updated so it does not name a room other than the one
             // joined; the override is still passed explicitly because that is what
             // the connect actually uses.
@@ -110,10 +135,31 @@ struct SignalProbeSection: View {
     }
 
     private func join(_ client: MiroTalkSignalClient, roomOverride: String? = nil) {
+        let room = roomOverride ?? self.room
         client.media = media
         client.ignoreServerIceServers = ignoreStun
         media.startCapture()
-        client.connect(room: roomOverride ?? room)
+        guard viaNode else {
+            client.connect(room: room)
+            return
+        }
+        Task {
+            do {
+                let session = try await TailscaleProbe.shared.proxiedSession()
+                // Read the node's counters before anything is dialled, so the growth
+                // during the call is attributable to the call.
+                await TailscaleProbe.shared.logNodeTraffic("before connecting")
+                client.transport = .init(configuration: session.configuration,
+                                         label: "embedded node \(session.loopbackAddress)")
+                client.connect(room: room)
+            } catch {
+                // Deliberately not falling back to the direct route. A call that took
+                // the system's path while the screen says "via node" would look like
+                // the measurement succeeded, which is the failure mode this project
+                // has already paid for twice.
+                client.record("not joining — no node-carried transport: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func disconnectAll() {

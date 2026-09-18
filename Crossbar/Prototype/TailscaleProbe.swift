@@ -5,6 +5,31 @@ import SwiftUI
 import TailscaleKit
 import UIKit
 
+/// A connection carrier that leaves through the embedded node.
+///
+/// The address travels with the configuration because it is the only part of this a
+/// log can show: `proxyVia` writes it into the configuration and nothing reads it back
+/// out, so a node-carried session and a direct one are otherwise indistinguishable.
+struct NodeSession {
+    let configuration: URLSessionConfiguration
+
+    /// The loopback the configuration dials. The node caches it on first use and
+    /// never invalidates it, which is what makes it worth naming in every log line.
+    let loopbackAddress: String
+}
+
+/// The one way this probe can refuse: no node, and the reason it is not up.
+enum TailscaleProbeError: LocalizedError {
+    case nodeUnavailable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .nodeUnavailable(let status):
+            return "no node to carry this — \(status)"
+        }
+    }
+}
+
 /// Can Crossbar carry its own tailnet, so a family member never has to install and
 /// sign in to the Tailscale app?
 ///
@@ -46,6 +71,13 @@ final class TailscaleProbe: NSObject, ObservableObject {
     private var node: TailscaleNode?
     private var logHandle: FileHandle?
     private var nodeLogFD: Int32?
+
+    /// The bring-up currently in flight, so concurrent callers wait for one node
+    /// rather than racing a second into the same state directory.
+    private var bringUp: Task<Void, Never>?
+
+    /// Last peer totals read from the node, so a dump can report a delta.
+    private var nodeTraffic: [String: (rx: Int64, tx: Int64)] = [:]
 
     /// The IPN bus subscription. Retained for the node's life: dropping it would end
     /// the long-poll and with it the only source of the login URL.
@@ -129,7 +161,26 @@ final class TailscaleProbe: NSObject, ObservableObject {
 
     // MARK: - Node lifecycle
 
+    /// Starts the node — the only way it starts, so every caller waits for the same
+    /// bring-up.
+    ///
+    /// `up()` returns only once the node is authorised, and `loopback()` is only worth
+    /// having after that. A second `start()` that returned early would therefore hand
+    /// back a node that is not running yet, which is precisely what a caller about to
+    /// dial the loopback must not be given — so concurrent callers wait on the one
+    /// bring-up rather than starting a second into the same state directory.
     func start() async {
+        if let bringUp {
+            await bringUp.value
+            return
+        }
+        let task = Task { await self.bringUpNode() }
+        bringUp = task
+        await task.value
+        bringUp = nil
+    }
+
+    private func bringUpNode() async {
         guard node == nil else {
             append("node already running")
             return
@@ -201,6 +252,87 @@ final class TailscaleProbe: NSObject, ObservableObject {
         }
         self.node = nil
         self.authURL = nil
+    }
+
+    // MARK: - Carrying someone else's traffic
+
+    /// The node, once it is up.
+    ///
+    /// A node object exists from the first moment of bring-up, well before `up()` has
+    /// returned, so `node != nil` is *not* the readiness condition — and a dial through
+    /// a node that is not Running yet fails, because the loopback listener accepts
+    /// connections from the moment the node exists while nothing can be carried over it.
+    /// Measured on 2026-09-18: a call launched while the system Tailscale app was
+    /// disconnected dialled the loopback ~11 s before `node is up` appeared, and both the
+    /// probe's check and the signalling socket came back with
+    /// `A TLS error caused the secure connection failed` — against a status document
+    /// that still said `no peers`. So this waits for whatever bring-up is in flight,
+    /// whoever started it, rather than trusting the object's existence.
+    func runningNode() async throws -> TailscaleNode {
+        if let bringUp {
+            await bringUp.value
+        } else if node == nil {
+            await start()
+        }
+        guard let node = self.node else {
+            throw TailscaleProbeError.nodeUnavailable(status)
+        }
+        return node
+    }
+
+    /// A session configuration that leaves through the node, and the loopback it dials.
+    func proxiedSession() async throws -> NodeSession {
+        let node = try await runningNode()
+        let (configuration, loopback) = try await URLSessionConfiguration.tailscaleSession(node)
+        return NodeSession(configuration: configuration, loopbackAddress: loopback.address)
+    }
+
+    /// What the node itself has carried, from its own peer statistics.
+    ///
+    /// This is the measurement that separates "the socket was configured to use the
+    /// node" from "the node carried it". The system Tailscale app is also installed on
+    /// this phone, so a working socket proves a working route, not which one — and the
+    /// candidate lists show the system tunnel's address while the node has no interface
+    /// to offer at all. These counters only move for traffic the node itself put on the
+    /// wire.
+    ///
+    /// The typed status document drops the byte counters, so this reads the raw JSON,
+    /// which carries them. Totals are cumulative for the node's life and are reported
+    /// as a delta against the previous reading — a single reading cannot say whether
+    /// the call in front of it added anything.
+    func logNodeTraffic(_ note: String) async {
+        guard let node else {
+            append("node traffic [\(note)] — no node")
+            return
+        }
+        do {
+            let data = try await node.statusJSON()
+            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+            let peers = object["Peer"] as? [String: [String: Any]] ?? [:]
+
+            var carried: [String] = []
+            for peer in peers.values {
+                let rx = (peer["RxBytes"] as? NSNumber)?.int64Value ?? 0
+                let tx = (peer["TxBytes"] as? NSNumber)?.int64Value ?? 0
+                guard rx + tx > 0 else { continue }
+                let name = peer["HostName"] as? String ?? "?"
+                let previous = nodeTraffic[name] ?? (0, 0)
+                nodeTraffic[name] = (rx, tx)
+                carried.append("\(name) rx=\(rx)(+\(rx - previous.0)) tx=\(tx)(+\(tx - previous.1))")
+            }
+
+            if carried.isEmpty {
+                // The field names are the thing that could be wrong here, and a silent
+                // zero would look like a negative result rather than a missing one.
+                let fields = peers.values.first.map { $0.keys.sorted().joined(separator: ",") }
+                    ?? "no peers in the status document"
+                append("node traffic [\(note)] — nothing carried; peer fields: \(fields)")
+            } else {
+                append("node traffic [\(note)] — \(carried.sorted().joined(separator: "; "))")
+            }
+        } catch {
+            append("node traffic [\(note)] — read failed: \(error.localizedDescription)")
+        }
     }
 
     func saveAuthKey() {
@@ -310,6 +442,13 @@ final class TailscaleProbe: NSObject, ObservableObject {
     /// printed here is the *cached* one. If the cached address goes stale after a
     /// suspend, that is exactly where it will show.
     func check() async {
+        // A node can exist for many seconds before it is Running — `node != nil` is not
+        // readiness (see `runningNode`) — so this waits for a bring-up already in flight
+        // rather than dialling into one. It deliberately does not *start* a node: "check"
+        // with no node is a missing node, not an instruction to bring one up. Observed
+        // without this wait: a TLS failure that says nothing about the wire contract,
+        // against a status document still reporting `no peers`.
+        if let bringUp { await bringUp.value }
         guard let node = self.node else {
             append("no node — start it first")
             return
@@ -479,6 +618,8 @@ struct TailscaleProbeSection: View {
                         .accessibilityIdentifier("tailscale.check")
                     Button("Status") { Task { await probe.refreshStatus() } }
                         .accessibilityIdentifier("tailscale.status")
+                    Button("Traffic") { Task { await probe.logNodeTraffic("manual") } }
+                        .accessibilityIdentifier("tailscale.traffic")
                     Button("Stop") { Task { await probe.stop() } }
                         .accessibilityIdentifier("tailscale.stop")
                 }
