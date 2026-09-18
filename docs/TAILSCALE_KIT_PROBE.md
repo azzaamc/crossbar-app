@@ -15,6 +15,14 @@ presents a Tailscale login page and needs no auth key anywhere. It also survived
 genuine suspension: backgrounded for 150 s, frozen by iOS, then resumed as the same
 process, and the cached loopback still carried both checks.**
 
+**Suspension also breaks it, and cannot be predicted (2026-09-18).** An identical run held
+for 600 s came back with the node still `Running` and its cached loopback dead — a fresh
+`URLSession` timed out against an address that had worked minutes earlier — and a repeat
+of the same 600 s run did not. So the failure is real and intermittent, there is no safe
+suspension length, and the cached carrier cannot be trusted after one. The repair is to
+build a new node: seconds, the same tailnet identity, no login, a new loopback — measured,
+and followed in the product by re-establishing whatever was riding on the old one.
+
 **It now carries a real call.** Two native peers joined one MiroTalk room with both
 sockets dialled through the node's loopback, negotiated, and carried ~33 MB of video
 each way; the node's own peer counters — the only evidence that says *which* carrier
@@ -385,8 +393,87 @@ Three things follow, and the distinction between them matters:
   to do anyway.
 
 **This does not disprove upstream's warning, and should not be read as doing so.** What
-it shows is that the stale-loopback failure did not occur across a 150-second suspend.
-Whether it needs a longer one, memory pressure, or a reinstall to appear is not known.
+it shows is that the stale-loopback failure did not occur across a 150-second suspend —
+the run below, at 600 seconds, found it.
+
+**The warning is real, and it is intermittent (2026-09-18).** Holding the app for **600
+seconds** instead of 150 — on a call whose sockets were carrying media through the node
+when it was suspended — produced the failure the shorter run did not:
+
+```
+— didEnterBackground —
+— willEnterForeground —
+— didBecomeActive, re-checking through the node —
+— check —
+loopback=127.0.0.1:57816
+check failed at loopback=127.0.0.1:57816: The request timed out.
+```
+
+Three facts separate that from "the network went away", and all three are present:
+
+- **The node was still up.** `starting node in …` appears exactly once in the whole log,
+  so no new node was built, and `refreshStatus()` — which only writes on *change* — wrote
+  nothing across the resume, so the status was still `Running` with the same addresses.
+  Its control connection and DERP relay came back with the process; only the loopback did
+  not.
+- **The address was the casualty, not the session.** `check()` builds a fresh
+  `URLSession` on every call, and that fresh session timed out against the cached address.
+- **The call did not survive, and said so only on resume.** `ice state -> 4`,
+  `pc state -> 4`, media frozen at a fixed byte count, then
+  `receive failed: … Socket is not connected` on the first receive after the freeze.
+
+**Then an identical 600-second run did not reproduce it.** Same procedure, same build
+family, same room size, same cached-address shape — and the cached loopback answered:
+
+```
+— didBecomeActive, re-checking through the node —
+— check —
+loopback=127.0.0.1:57915
+HTTP 200
+authenticated=true identity=Azzaam Chaudhry
+ws first frame: 0{"sid":"SRzZfLOPAz5qPkEmAADA",…}
+signalling handshake OK
+```
+
+So the failure is real, and **the clock does not predict it**. That is the finding that
+matters, and it is worse than a threshold would have been: there is no duration the
+product may treat as safe, so the cached address cannot be trusted after *any*
+suspension and the app has to verify rather than assume. The natural suspicion is that
+the OS reclaims the listener under memory pressure rather than on a timer — upstream's
+comment says the OS reclaims it — but nothing here separates the mechanism from the
+clock, and the run that failed is not distinguishable from the run that did not by
+anything in the logs.
+
+**And it recovers, in seconds and without a login (2026-09-18).** `loopback()` cannot be
+invalidated and nothing exposes the listener, so the only way back to a live carrier is a
+new node. Forced on foreground — `CROSSBAR_TAILSCALE_REBUILD=force`, which exists precisely
+because the failure it answers cannot be provoked on demand:
+
+```
+— rebuilding the node: forced, to test the recovery itself —
+node closed
+starting node in …/Documents/tailscale
+no auth key — expecting interactive login
+BackendState=NoState → bus state: NoState → bus state: Starting
+node is up
+BackendState=Running
+IPs=100.121.218.110, fd7a:115c:a1e0::d12d:da6f      ← the same identity
+node rebuilt
+— check —
+loopback=127.0.0.1:58056                             ← a new listener
+HTTP 200
+authenticated=true identity=Azzaam Chaudhry
+ws first frame: 0{"sid":"ekQuVj1YU24oE8XrAADG",…}
+signalling handshake OK
+```
+
+The whole repair took seconds, kept the same tailnet address, and **never asked for a
+login or an auth key** — the machine key on disk is the authorisation, which is the same
+fact that makes an upgrade install free. What it does *not* repair is anything built on
+the old node: the signalling socket died with it (`receive failed: … Socket is not
+connected`) and the call's peer connections went with it. A product rebuilds the carrier
+**and** re-establishes what was riding on it, which a call has to do anyway after a
+screen lock.
 
 **Getting a login URL requires the IPN bus, not the status document.** `statusJSON()`
 has an `AuthURL` field and it read `""` on every poll while the node sat at
@@ -490,6 +577,29 @@ and it is the dependency this branch exists to remove.
    in the probe now goes through `runningNode()`, which waits for whatever bring-up is in
    flight rather than trusting the object's existence; the first attempt at this only
    tested `node == nil`, which is exactly the bug it was written to prevent.
+9. **`up()` returning is not the listener accepting, so the first request needs a wait —
+   and without one the failure is silent.** The macOS spike recorded this and the iOS
+   runs reproduce it: a socket dialled immediately after bring-up died with
+
+   ```
+   connecting wss://qatar-vpn.tailea67b0.ts.net/socket.io/… via embedded node 127.0.0.1:57887
+   receive failed: bad URL
+   ```
+
+   Nothing retried it, so that run went on to measure a node carrying nothing while
+   presenting as a test of one — the same shape of wrong answer as a stale log file. The
+   probe now waits for the listener itself before handing out a carrier, by asking the
+   node's LocalAPI for status on the same loopback port the proxied session needs: any
+   HTTP response counts, including 401, because the credential is not the question.
+10. **The cached loopback cannot be trusted after a suspension, and the duration does not
+   tell you which suspensions are safe.** 150 s survived; 600 s failed once and then
+   succeeded on an identical repeat. Since `loopback()` offers no invalidation, the only
+   carrier that can be relied on is one that has just answered, and the only repair for
+   one that has not is a new node — which costs seconds, keeps the identity, and needs no
+   login, because the machine key is the authorisation. Two consequences follow for
+   anything built on top: a new node gets a **new port**, so every carrier and socket
+   created against the old one is dead the moment a rebuild happens, and a rebuild
+   therefore has to be followed by re-establishing whatever was riding on it.
 
 ## What is not measured
 
@@ -508,9 +618,12 @@ and it is the dependency this branch exists to remove.
   the node as built, and the audit's STUN/TURN decision is unmoved by it: media still
   takes whatever ICE finds. Nothing here says which of a relay, TURN, or accepting the
   public path is right for two households behind CGNAT.
-- Whether the stale-loopback failure appears under a **longer** suspend, under memory
-  pressure, or after a reinstall. 150 seconds did not trigger it; nothing here rules it
-  out, and upstream observed it on iOS.
+- **Where the stale-loopback boundary sits.** 150 s did not reach it and 600 s did, with
+  the node still `Running` and its cached loopback dead. Nothing here separates the
+  mechanism from the clock: memory pressure, a longer freeze, or a backgrounded app being
+  killed and relaunched all plausibly produce the same result sooner, and the useful
+  number for the product is the shortest suspension that breaks it, not the longest that
+  does not.
 - Behaviour when the node is **not** available at launch — no network, control plane
   unreachable, or the machine revoked. The instrument has only ever been run in the
   happy path.
@@ -549,6 +662,13 @@ narrower than it was.
    One process, one host. The product's socket cannot resolve the name; the node-carried
    one resolves it and completes a call on it, and the only difference between them is
    which carrier the socket was built on.
+
+   Two behaviours belong with that wiring rather than after it, both now measured in the
+   probe: **verify before dialling** (a socket dialled during bring-up dies with
+   `bad URL`, and nothing retries it), and **rebuild on foreground when the verify
+   fails**, then re-establish the sockets, because the stale-loopback failure is
+   intermittent and arrives without warning. The probe's gated path is the shape; the
+   product's version of it is not optional.
 2. **Decide the media question on its own terms.** The node cannot carry media, so the
    overlay is not what makes a two-household call work — the public STUN path is, exactly
    as before. The next measurement that would change anything is a call between two
@@ -564,13 +684,16 @@ The two gates that make an unattended run possible:
 xcrun devicectl device process launch --device <id> --terminate-existing \
   -e '{"CROSSBAR_TAILSCALE_AUTOSTART":"1","CROSSBAR_PROBE_AUTOSHOW":"1",
        "CROSSBAR_SIGNAL_AUTOROOM":"room","CROSSBAR_SIGNAL_AUTOPEERS":"2",
-       "CROSSBAR_SIGNAL_VIANODE":"1"}' \
+       "CROSSBAR_SIGNAL_VIANODE":"1","CROSSBAR_TAILSCALE_REBUILD":"1"}' \
   com.abdullahchaudhry.Crossbar
 ```
 
 `AUTOPEERS=2` gives the two-peer call; leave `VIANODE` off for the control run whose flat
 node counters are what make the routed run's growth meaningful. Pull `Documents/tailscale.log`
 for the counters and `Documents/signal-A.log`/`signal-B.log` for the negotiation.
+`REBUILD=1` repairs a node whose loopback failed a foreground check, and `REBUILD=force`
+repairs one unconditionally — the latter exists because the stale-loopback failure is
+intermittent, so the recovery cannot be tested by waiting for the failure to show up.
 
 The suspension measurement can be extended at almost no cost, now that the mechanism is
 automated — background the app by launching another one, wait, then resume:

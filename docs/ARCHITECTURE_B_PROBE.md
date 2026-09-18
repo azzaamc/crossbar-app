@@ -102,7 +102,7 @@ Two further gates, added on branch `tailscale-kit`, and the first is the one tha
 matters when a run produces nothing:
 
 ```
--e '{"CROSSBAR_PROBE_AUTOSHOW":"1","CROSSBAR_SIGNAL_VIANODE":"1"}'
+-e '{"CROSSBAR_PROBE_AUTOSHOW":"1","CROSSBAR_SIGNAL_VIANODE":"1","CROSSBAR_TAILSCALE_REBUILD":"1"}'
 ```
 
 `PROBE_AUTOSHOW` presents the probe screen over whatever the product is showing, because
@@ -112,16 +112,24 @@ the *previous* run's log files in place, which is very hard to distinguish from 
 did nothing. `VIANODE` routes the signalling sockets through the embedded Tailscale node's
 SOCKS loopback instead of the system's route, and logs which carrier each socket took plus
 the node's own peer counters; leave it off for the control run whose flat counters are
-what make a routed run's growth mean anything. See `TAILSCALE_KIT_PROBE.md`.
+what make a routed run's growth mean anything. `CROSSBAR_TAILSCALE_REBUILD=1` rebuilds the
+node when a foreground check finds its loopback dead, and `force` rebuilds on every
+foreground — which is how the rebuild gets tested, since the failure it answers is
+intermittent and cannot be provoked on demand. See `TAILSCALE_KIT_PROBE.md`.
 
 Two operational facts that caused wasted runs:
 
 - The Mac reaches the phone over the **network, not USB**. Turning the phone's Wi-Fi
   off also cuts `devicectl`, so a log cannot be pulled until it is back on. The log
   persists regardless.
-- A suspended app's WebSocket **dies silently** — no close frame, no error. Leaving
-  the app during a signalling test loses the call, and leaves nothing in the log to
-  say so.
+- A suspended app's WebSocket **dies silently while the app is frozen** — no close frame,
+  no error is delivered during the freeze. Leaving the app during a signalling test
+  therefore loses the call with nothing in the log to say so. What arrives afterwards
+  depends on the client: on the next receive after a 600 s freeze the node-carried
+  instrument reported `receive failed: … Socket is not connected`, alongside
+  `ice state -> 4` and `pc state -> 4`, so the loss becomes visible on resume rather than
+  at the moment it happens. Either way the socket does not come back by itself, and
+  nothing reconnects it.
 
 `CROSSBAR_BACKEND_URL` and `CROSSBAR_MIROTALK_ORIGIN` override the endpoints used by
 the backend and signal probes, so no deployment detail is baked into the source.
