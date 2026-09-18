@@ -166,12 +166,16 @@ these were found only because a result was suspicious rather than negative.
     view. The signalling screen had the same code and worked, because it holds the
     clients itself and therefore observes them directly — which is what made the
     comparison misleading. Fixed by giving the video area its own view that observes
-    the signal client.
+    the signal client. **Verified on the next real call**: the second tile drew a
+    different person, in a different room, from a different camera angle, while the
+    log showed 4.1 MB of inbound video.
 12. **A stats line that only counted audio.** `media IN` reported the first inbound
     stat whose kind was `audio`, so a live video call logged a steady audio byte count
     and no video at all — indistinguishable from one that was receiving no picture.
     Every inbound kind is now reported. This one was caught only because the rendered
     screen disagreed with the log, and the screen was right to be trusted over it.
+    On the next call the same line immediately answered the question it previously
+    could not: 4.1 MB of inbound video, about 890 KB per three-second poll.
 
 ## What the spike does not show
 
