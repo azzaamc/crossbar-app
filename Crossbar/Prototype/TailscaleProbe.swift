@@ -47,6 +47,10 @@ final class TailscaleProbe: NSObject, ObservableObject {
     private var logHandle: FileHandle?
     private var nodeLogFD: Int32?
 
+    /// The IPN bus subscription. Retained for the node's life: dropping it would end
+    /// the long-poll and with it the only source of the login URL.
+    private var busProcessor: MessageProcessor?
+
     /// Last status reported to the log, so the timed poll only writes on change.
     private var lastStatusSummary: String?
 
@@ -155,6 +159,11 @@ final class TailscaleProbe: NSObject, ObservableObject {
             self.node = node
             status = "Bringing up…"
 
+            // The bus is watched *before* `up()`, because `up()` is the thing that
+            // blocks waiting for the login this bus delivers. Starting it afterwards
+            // would be starting it after the only event it exists to catch.
+            await startIPNBus(for: node)
+
             // `up()` does not return until the node is authorised — it blocks on login.
             // So the status poll runs *alongside* it rather than after: without that, a
             // node with no auth key parks forever and never reveals the URL that would
@@ -181,6 +190,8 @@ final class TailscaleProbe: NSObject, ObservableObject {
 
     func stop() async {
         guard let node else { return }
+        busProcessor?.cancel()
+        busProcessor = nil
         do {
             try await node.close()
             append("node closed")
@@ -208,6 +219,42 @@ final class TailscaleProbe: NSObject, ObservableObject {
     func openAuthURL() {
         guard let authURL, let url = URL(string: authURL) else { return }
         UIApplication.shared.open(url)
+    }
+
+    // MARK: - Authorisation
+
+    /// Subscribes to the IPN bus, which is where the login URL lives.
+    ///
+    /// `statusJSON()` carries an `AuthURL` field and it was empty on every poll while
+    /// the node sat at NeedsLogin, so the status document is not the source. Upstream's
+    /// README names the bus — "watch the ipn bus … for the browseToURL field for
+    /// interactive web-based auth" — and this is the same mechanism the bundled
+    /// example uses.
+    ///
+    /// This is the shape the product wants: a first run that sends someone to a
+    /// Tailscale login page, rather than an auth key someone has to keep and hand out.
+    private func startIPNBus(for node: TailscaleNode) async {
+        let watcher = IPNBusWatcher(
+            report: { [weak self] line in
+                Task { @MainActor in self?.append(line) }
+            },
+            onLoginURL: { [weak self] url in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.authURL = url
+                    self.append("login URL ready — open it to authorise this device")
+                    self.append(url)
+                }
+            })
+
+        do {
+            let client = LocalAPIClient(localNode: node, logger: nil)
+            busProcessor = try await client.watchIPNBus(mask: [.initialState, .prefs],
+                                                        consumer: watcher)
+            append("watching the IPN bus for a login URL")
+        } catch {
+            append("could not watch the IPN bus: \(error)")
+        }
     }
 
     // MARK: - Status
@@ -366,6 +413,41 @@ final class TailscaleProbe: NSObject, ObservableObject {
         }
         guard let data = (line + "\n").data(using: .utf8) else { return }
         logHandle?.write(data)
+    }
+}
+
+/// Taps the IPN bus for the one thing the status document does not carry: the login URL.
+///
+/// An actor because `MessageConsumer` requires one, and because the bus delivers from
+/// the network stack rather than the main actor. Only changes are reported upward — the
+/// bus re-sends the current state with every notification, and forwarding each one
+/// would bury the log.
+private actor IPNBusWatcher: MessageConsumer {
+    private let report: @Sendable (String) -> Void
+    private let onLoginURL: @Sendable (String) -> Void
+
+    private var lastState: Ipn.State?
+    private var lastURL: String?
+
+    init(report: @escaping @Sendable (String) -> Void,
+         onLoginURL: @escaping @Sendable (String) -> Void) {
+        self.report = report
+        self.onLoginURL = onLoginURL
+    }
+
+    func notify(_ notify: Ipn.Notify) {
+        if let state = notify.State, state != lastState {
+            lastState = state
+            report("bus state: \(state)")
+        }
+        if let url = notify.BrowseToURL, !url.isEmpty, url != lastURL {
+            lastURL = url
+            onLoginURL(url)
+        }
+    }
+
+    func error(_ error: any Error) {
+        report("bus error: \(error)")
     }
 }
 
