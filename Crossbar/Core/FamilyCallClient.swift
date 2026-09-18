@@ -1,4 +1,3 @@
-#if DEBUG
 import Foundation
 
 // MARK: - Wire models
@@ -468,4 +467,3 @@ private extension String {
 
     var trimmed: String { trimmingCharacters(in: .whitespaces) }
 }
-#endif

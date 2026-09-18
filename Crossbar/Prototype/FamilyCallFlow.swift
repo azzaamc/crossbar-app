@@ -43,7 +43,7 @@ final class FamilyCallFlow: ObservableObject {
     @Published private(set) var eventsDown = false
     @Published private(set) var lines: [String] = []
 
-    let media = ProbeMediaSource()
+    let media = CallMediaSource()
     let signal = MiroTalkSignalClient(label: "call")
 
     private let client: FamilyCallClient

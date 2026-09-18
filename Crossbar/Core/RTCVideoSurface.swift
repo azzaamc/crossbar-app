@@ -1,4 +1,3 @@
-#if DEBUG
 import SwiftUI
 import WebRTC
 
@@ -45,4 +44,3 @@ struct RTCVideoSurface: UIViewRepresentable {
         var attached: RTCVideoTrack?
     }
 }
-#endif
