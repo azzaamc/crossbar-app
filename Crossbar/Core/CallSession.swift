@@ -119,7 +119,14 @@ final class CallSession: ObservableObject {
         }
         callKit.onAudioActivated = { [weak self] session in
             self?.media.adoptAudioSession(session)
-            self?.log("audio session adopted from CallKit")
+            // Category and mode are logged because echo cancellation on iOS depends on
+            // them: the voice-processing audio unit that provides it is only engaged for
+            // `.voiceChat`, and a wrong mode is invisible in every metric while being
+            // audible to everyone on the call. Metrics cannot catch this one.
+            self?.log(
+                "audio session adopted — category=\(session.category.rawValue) "
+                    + "mode=\(session.mode.rawValue) sampleRate=\(Int(session.sampleRate))"
+            )
         }
         callKit.onAudioDeactivated = { [weak self] session in
             self?.media.releaseAudioSession(session)
