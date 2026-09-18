@@ -151,8 +151,15 @@ final class CallMediaSource: ObservableObject {
     /// on demand.
     @discardableResult
     func setSpeaker(_ on: Bool) -> String {
+        let rtc = RTCAudioSession.sharedInstance()
+        // Every RTCAudioSession method that changes the underlying session requires this
+        // lock, and skipping it fails silently as far as anything the user can hear:
+        // the call simply keeps playing out of the receiver. The lock was applied for
+        // `setConfiguration` and missed here.
+        rtc.lockForConfiguration()
+        defer { rtc.unlockForConfiguration() }
         do {
-            try RTCAudioSession.sharedInstance().overrideOutputAudioPort(on ? .speaker : .none)
+            try rtc.overrideOutputAudioPort(on ? .speaker : .none)
             return on ? "audio → speaker" : "audio → receiver"
         } catch {
             return "could not change the audio route: \(error.localizedDescription)"
