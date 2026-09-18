@@ -63,6 +63,12 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     /// surface cannot be relied on to prove liveness anyway.
     @Published private(set) var remoteVideo: [String: RTCVideoTrack] = [:]
 
+    /// Remote display names by peer, as the server reports them in `addPeer`.
+    ///
+    /// Carried because a tile captioned with a six-character socket id does not say who
+    /// is on the call, and the name is already arriving on the wire.
+    @Published private(set) var remoteNames: [String: String] = [:]
+
     private var statsTimer: Timer?
     private var inboundBytes: [String: [String: Int]] = [:]
     private var reportedPath: [String: String] = [:]
@@ -136,6 +142,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         pendingCandidates.removeAll()
         inboundBytes.removeAll()
         remoteVideo.removeAll()
+        remoteNames.removeAll()
 
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -319,6 +326,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
             return
         }
         let shouldOffer = payload["should_create_offer"] as? Bool ?? false
+        if let name = payload["peer_name"] as? String { remoteNames[peerId] = name }
 
         let config = RTCConfiguration()
         config.sdpSemantics = .unifiedPlan
@@ -474,6 +482,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         pendingCandidates[peerId] = nil
         inboundBytes[peerId] = nil
         remoteVideo[peerId] = nil
+        remoteNames[peerId] = nil
         append("removePeer \(peerId.prefix(8)) — connection closed")
     }
 

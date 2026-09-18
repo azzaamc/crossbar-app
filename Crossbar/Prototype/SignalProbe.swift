@@ -105,14 +105,8 @@ struct SignalProbeSection: View {
     }
 
     private func tile(_ track: RTCVideoTrack?, _ caption: String) -> some View {
-        VStack(spacing: 2) {
-            RTCVideoSurface(track: track)
-                .frame(height: 96)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text(caption)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
+        VideoTile(track: track, caption: caption)
+            .frame(height: 96)
     }
 
     private func join(_ client: MiroTalkSignalClient, roomOverride: String? = nil) {

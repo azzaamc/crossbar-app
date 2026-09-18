@@ -4,16 +4,17 @@ Last audited: 2026-09-17 (Asia/Karachi)
 
 ## Status in one sentence
 
-Crossbar is an Xcode-generated SwiftUI application containing a DEBUG-only,
-original-code Architecture B spike. As of 2026-09-18 that spike authenticates
-against the real Family Call API, speaks MiroTalk's signalling protocol natively,
-renders remote video, and has placed a **real call to a real family member** from
-native code: the call was created through the Family Call API, the room was recovered
-from the returned `joinUrl`, the native client joined it, the family member answered on
-MiroTalk's own browser client, and media crossed both ways. It contains **no product
-code**: no call UI, no contacts UI, no CallKit-in-product-flow, no persistence.
-Instruments, reproduction commands and the list of what is *not* measured are in
-`ARCHITECTURE_B_PROBE.md`.
+Crossbar is a native SwiftUI iOS client for the Family Call platform. As of 2026-09-18
+it has a **product shell** — contacts, placing and answering, an in-call screen with
+video tiles and controls, and CallKit driven by the product flow rather than a debug
+probe — over an engine that places and joins real calls to a real family member,
+carrying audio and video both ways.
+
+It cannot yet **receive** a call with the app closed. Ringing needs APNs and a
+server-side device-token model, neither of which exists, and shipping to anyone else
+needs a paid Apple Developer Program membership: the current free personal team
+provisions one device and expires every seven days. Instruments, reproduction commands
+and the list of what is *not* measured are in `ARCHITECTURE_B_PROBE.md`.
 
 ## Repository and checkpoint
 
@@ -73,53 +74,60 @@ product decision.
 
 - `Crossbar/CrossbarApp.swift`: generated `@main` SwiftUI entry point; presents
   `ContentView`.
-- `Crossbar/ContentView.swift`: in DEBUG, renders the Architecture A diagnostic
-  controls and media surface; in Release, renders only `Crossbar` text.
+- `Crossbar/ContentView.swift`: the product root. Owns the single `CallSession` and
+  shows whichever screen the state calls for — loading, unavailable, incoming, in-call,
+  or contacts — so one place decides what "in a call" looks like.
 - `Crossbar/Assets.xcassets/`: generated application assets.
 
-### DEBUG-only probe
+### Product
 
-- `Crossbar/Prototype/CallKitManager.swift`: `CXProvider`/`CXCallController`
-  wrapper with start, incoming report, answer, end, mute, connected, reset, and
-  audio-session activation callbacks, plus eager provider registration in
-  `init()`. It does **not** configure `AVAudioSession`; that setup was removed in
-  probe experiment P8.13 so WebKit owns the session on the media path.
-- `Crossbar/Prototype/CallProbeModel.swift`: observable coordinator for probe
-  UI, CallKit callbacks, WebKit commands, media-only bypass, state text, and the
-  `-CrossbarSimulateIncomingCall` launch argument.
-- `Crossbar/Prototype/WebMediaEngine.swift`: `WKWebView` host,
-  `WKScriptMessageHandler`, media-capture permission delegate, JSON command
-  serialization, and bounded diagnostic event log.
-- `Crossbar/Prototype/RuntimeProbe.html`: original local HTML/JavaScript runtime
-  that performs `getUserMedia`, attaches a local stream to one video element,
-  toggles track state, reacquires for camera switching, stops tracks, and emits
-  bridge events.
+- `Crossbar/Core/CallSession.swift`: the product state machine — identity, contacts,
+  one call at a time, the media engine behind it, and the event stream. Every user
+  action routes through CallKit, which calls back in.
+- `Crossbar/Core/CallKitController.swift`: `CXProvider`/`CXCallController` for the
+  product flow. Reports and calls back; keeps no call state of its own, because two
+  owners of "which call is this" is how they come to disagree.
+- `Crossbar/Features/ContactsView.swift`, `InCallView.swift`, `IncomingCallView.swift`:
+  the three screens.
 
-All four files are inside `#if DEBUG` on the Swift side. The HTML resource may
-still be copied into a Release bundle by Xcode's synchronized group, but no
-Release Swift code loads or exposes it.
+### Engine
 
-The Architecture B instruments live beside them and are also `#if DEBUG`:
+Compiled in Release as well as Debug — product code cannot depend on Debug-only files.
 
+- `Crossbar/Core/FamilyCallClient.swift`: the control plane — identity, contacts,
+  create, respond, join, end, and the `/api/events` stream — plus `JoinTarget`, which
+  recovers the room id and signalling origin from the `joinUrl`.
+- `Crossbar/Core/MiroTalkSignalClient.swift`: the Engine.IO v4 / Socket.IO v5 client,
+  peer connections with the synthesised offer policy, remote video tracks and peer
+  names, and per-transport ICE path reporting.
+- `Crossbar/Core/CallMediaSource.swift`: one capture feeding many senders, camera
+  switching, and the CallKit audio-session adoption with its forced gate transition.
+- `Crossbar/Core/CallVideoGrid.swift`: `VideoTile` and `CallVideoGrid`, both observing
+  the signalling client directly rather than through an outer model.
+- `Crossbar/Core/RTCVideoSurface.swift`: the `RTCMTLVideoView` wrapper that draws any
+  `RTCVideoTrack`.
+
+### Instruments (`#if DEBUG`)
+
+Reachable from the product's Probe button rather than owning the app.
+
+- `Crossbar/Prototype/ProbeView.swift`: the entry point that assembles them.
 - `Crossbar/Prototype/AudioSeamProbe.swift`: the seam spike — CallKit session
   adoption, a local loopback peer connection so the audio device module is genuinely
-  exercised, produced video frames, app lifecycle, and the SwiftUI screen.
-- `Crossbar/Prototype/MiroTalkSignalClient.swift`: a reduced native Engine.IO v4 /
-  Socket.IO v5 client, peer connections with the synthesised offer policy, a shared
-  media source, and per-transport ICE path reporting.
+  exercised, produced video frames, app lifecycle, and its screen.
+- `Crossbar/Prototype/SignalProbe.swift`: joins a room directly and reports what the
+  protocol does, with no control plane involved.
 - `Crossbar/Prototype/BackendReachabilityProbe.swift`: a bare `URLSession` GET used to
   establish that tailnet Serve injects the identity header for a non-browser client.
-- `Crossbar/Prototype/FamilyCallClient.swift`: the real control plane — identity,
-  contacts, create, respond, join, end, and the `/api/events` stream — plus the
-  `JoinTarget` that recovers the room id and signalling origin from the `joinUrl`.
-- `Crossbar/Prototype/FamilyCallFlow.swift`: the flow over that client and its debug
-  screen, composing one `MiroTalkSignalClient` with a shared `ProbeMediaSource`.
-- `Crossbar/Prototype/RTCVideoSurface.swift`: the `RTCMTLVideoView` wrapper that draws
-  any `RTCVideoTrack`, used for both local and remote video.
+- `Crossbar/Prototype/FamilyCallFlow.swift`: the control-plane debug surface, kept
+  because it exercises paths the product shell does not.
+- `Crossbar/Prototype/CallKitManager.swift`, `CallProbeModel.swift`,
+  `WebMediaEngine.swift`, `RuntimeProbe.html`: the Architecture A probe, retained as
+  the evidence for why Architecture B exists at all.
 
-Each writes to a file in the app's Documents directory (`seam.log`, `signal-*.log`,
-`backend.log`, `familycall.log`) so results can be pulled rather than read off a
-screenshot.
+The instruments write to the app's Documents directory (`seam.log`, `signal-*.log`,
+`backend.log`, `familycall.log`, and the product's `session.log`) so results can be
+pulled rather than read off a screenshot.
 
 ### Tests
 
