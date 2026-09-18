@@ -537,8 +537,18 @@ narrower than it was.
    buffers is unmeasured, and it is the first thing that wiring should log.
 
    Until it is done, the honest statement is that the *instrument* runs over the node —
-   not the app, which is why the product screen reports that it cannot reach the service
-   while the probe screen beside it is talking to the same host through the node.
+   not the app. That boundary is measured rather than inferred, from one launch with the
+   system app disconnected:
+
+   ```
+   session.log   GET api/session (requesting)
+                 load failed: A server with the specified hostname could not be found.
+   signal-A.log  connecting wss://qatar-vpn.tailea67b0.ts.net/socket.io/… via embedded node 127.0.0.1:57748
+   ```
+
+   One process, one host. The product's socket cannot resolve the name; the node-carried
+   one resolves it and completes a call on it, and the only difference between them is
+   which carrier the socket was built on.
 2. **Decide the media question on its own terms.** The node cannot carry media, so the
    overlay is not what makes a two-household call work — the public STUN path is, exactly
    as before. The next measurement that would change anything is a call between two
