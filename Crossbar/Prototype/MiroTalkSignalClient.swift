@@ -56,6 +56,16 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     // Peer connections, keyed by remote Socket.IO id, as the audited contract does.
     private var peers: [String: RTCPeerConnection] = [:]
     private var pendingCandidates: [String: [RTCIceCandidate]] = [:]
+
+    /// Remote video tracks, keyed by peer, for rendering.
+    ///
+    /// Published because a surface has to rebind when a track arrives. Keyed off
+    /// receivers rather than streams: under Unified Plan the track is available from
+    /// the receiver before any media flows, so the view attaches early and shows
+    /// nothing until frames actually arrive — which is the honest state, and the
+    /// surface cannot be relied on to prove liveness anyway.
+    @Published private(set) var remoteVideo: [String: RTCVideoTrack] = [:]
+
     private var statsTimer: Timer?
     private var audioBytes: [String: Int] = [:]
     private var reportedPath: [String: String] = [:]
@@ -128,6 +138,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         peers.removeAll()
         pendingCandidates.removeAll()
         audioBytes.removeAll()
+        remoteVideo.removeAll()
 
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -465,6 +476,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         pc.close()
         pendingCandidates[peerId] = nil
         audioBytes[peerId] = nil
+        remoteVideo[peerId] = nil
         append("removePeer \(peerId.prefix(8)) — connection closed")
     }
 
@@ -703,8 +715,13 @@ extension MiroTalkSignalClient: RTCPeerConnectionDelegate {
         streams: [RTCMediaStream]
     ) {
         let kind = receiver.track?.kind ?? "?"
+        let track = receiver.track
         Task { @MainActor in
-            self.append("remote \(kind) track <- \(self.peerId(for: pc)?.prefix(8) ?? "?")")
+            guard let peerId = self.peerId(for: pc) else { return }
+            self.append("remote \(kind) track <- \(peerId.prefix(8))")
+            if let video = track as? RTCVideoTrack {
+                self.remoteVideo[peerId] = video
+            }
             self.startStatsPolling()
         }
     }
@@ -807,6 +824,8 @@ struct SignalProbeSection: View {
                     .font(.caption.weight(.semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
 
+                videoGrid
+
                 log(peerA.lines)
                 log(peerB.lines)
                 log(peerC.lines)
@@ -814,13 +833,65 @@ struct SignalProbeSection: View {
             .padding(.top, 4)
         }
         .font(.caption)
+        // Same reason as the Family Call gate: the buttons on this screen cannot be
+        // pressed from here, because the MCP device-interaction tools only offer
+        // simulators, so a verification run needs an automatic path.
+        //   xcrun devicectl device process launch … -e '{"CROSSBAR_SIGNAL_AUTOROOM":"room"}'
+        //
+        // Two peers, not one: joining only A proves nothing about rendering, because
+        // there is no remote track to draw. A and B in one room connect to each other,
+        // so each receives and decodes the other's video — which exercises the
+        // receive path with no external peer and no browser needed.
+        .task {
+            let auto = ProcessInfo.processInfo.environment["CROSSBAR_SIGNAL_AUTOROOM"] ?? ""
+            guard !auto.isEmpty else { return }
+            // How many of A/B/C join. One is right when an external peer is the thing
+            // under test, because a second native peer would compete for the same
+            // remote-track slot and make the tile ambiguous.
+            let count = Int(ProcessInfo.processInfo.environment["CROSSBAR_SIGNAL_AUTOPEERS"] ?? "1") ?? 1
+            expanded = true
+            // The field is updated so it does not name a room other than the one
+            // joined; the override is still passed explicitly because that is what
+            // the connect actually uses.
+            room = auto
+            join(peerA, roomOverride: auto)
+            if count >= 2 { join(peerB, roomOverride: auto) }
+            if count >= 3 { join(peerC, roomOverride: auto) }
+        }
     }
 
-    private func join(_ client: MiroTalkSignalClient) {
+    /// Local capture beside each peer's decoded video.
+    ///
+    /// Each client here holds one remote peer, so `.values.first` names the right
+    /// track; the multiframe case is the product flow's, which keys properly. What
+    /// this renders is *decoded* frames — absent, not merely unproven, until media
+    /// actually arrives, which is why a black tile is meaningful and a frozen one is
+    /// not.
+    private var videoGrid: some View {
+        HStack(spacing: 6) {
+            tile(media.videoTrack, "local")
+            tile(peerA.remoteVideo.values.first, "A")
+            tile(peerB.remoteVideo.values.first, "B")
+            tile(peerC.remoteVideo.values.first, "C")
+        }
+    }
+
+    private func tile(_ track: RTCVideoTrack?, _ caption: String) -> some View {
+        VStack(spacing: 2) {
+            RTCVideoSurface(track: track)
+                .frame(height: 96)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func join(_ client: MiroTalkSignalClient, roomOverride: String? = nil) {
         client.media = media
         client.ignoreServerIceServers = ignoreStun
         media.startCapture()
-        client.connect(room: room)
+        client.connect(room: roomOverride ?? room)
     }
 
     private func disconnectAll() {

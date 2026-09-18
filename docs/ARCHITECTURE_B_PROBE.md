@@ -41,6 +41,7 @@ All are `#if DEBUG` and live in `Crossbar/Prototype/`. None is product code.
 | `BackendReachabilityProbe.swift` | a bare `URLSession` GET | whether tailnet Serve injects the identity header for a non-browser client |
 | `FamilyCallClient.swift` | the Family Call control plane: session, bootstrap, create, respond, join, end, and the `/api/events` stream | whether a native client can drive the real call lifecycle, and whether the room id can be recovered from the `joinUrl` |
 | `FamilyCallFlow.swift` | the flow over that client, plus one `MiroTalkSignalClient` and a shared capture | whether the product call path works end to end — identity, contacts, ringing, answering, media |
+| `RTCVideoSurface.swift` | a `UIViewRepresentable` over `RTCMTLVideoView` for any track | nothing on its own; it is how local and remote video reach the screen. Promoted out of the seam probe once the product path needed it too |
 
 Each writes its output to a file in the app's Documents directory — `seam.log`,
 `signal-A.log`, `signal-B.log`, `signal-C.log`, `backend.log` — truncated on the first
@@ -84,6 +85,17 @@ parses a leading-dash argument as one of its own options.
 Launch arguments cannot be used to drive the UI otherwise: the `xcode` MCP server's
 device-interaction tools only offer simulators here, so buttons on the phone have to
 be pressed by hand or replaced by a gated automatic path like this one.
+
+The signalling section has the same gate, and joins one peer by default:
+
+```
+-e '{"CROSSBAR_SIGNAL_AUTOROOM":"room","CROSSBAR_SIGNAL_AUTOPEERS":"2"}'
+```
+
+`AUTOPEERS=2` joins A and B as well, which is how remote rendering was verified with
+no external peer — two peers in one room each receive the other's video. Use `1` when
+an external peer is what is under test, because a second native peer competes for the
+same remote-track slot and makes the tile ambiguous.
 
 Two operational facts that caused wasted runs:
 
@@ -165,8 +177,12 @@ Stated so the next session does not inherit an overclaim:
   UI, no contacts, no CallKit-in-product-flow, no persistence.
 - **The signalling socket does not survive backgrounding** — no background mode is
   configured. A call that outlives the screen needs one.
-- **Video is negotiated but never rendered natively.** Frames are counted at the
-  capture source and bytes are counted in RTP; nothing draws a remote video track.
+- **Video renders, but nothing about its quality is measured.** A remote track from
+  MiroTalk's own browser client is decoded and drawn natively — verified by two
+  visibly different scenes on screen at once, the phone's own camera beside the Mac's —
+  so the transport, decode and render path is real. Frame rate, resolution, latency and
+  recovery from packet loss are unmeasured, and no camera switching, orientation change
+  or size negotiation has been exercised.
 - **Four peers untested.** Three form a working mesh; four is the same mechanism, but
   unverified.
 - **Interruption was not conclusively tested.** An alarm produced BEGAN/ENDED and moved

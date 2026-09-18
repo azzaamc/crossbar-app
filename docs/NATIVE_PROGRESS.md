@@ -115,6 +115,8 @@ The Architecture B instruments live beside them and are also `#if DEBUG`:
   `JoinTarget` that recovers the room id and signalling origin from the `joinUrl`.
 - `Crossbar/Prototype/FamilyCallFlow.swift`: the flow over that client and its debug
   screen, composing one `MiroTalkSignalClient` with a shared `ProbeMediaSource`.
+- `Crossbar/Prototype/RTCVideoSurface.swift`: the `RTCMTLVideoView` wrapper that draws
+  any `RTCVideoTrack`, used for both local and remote video.
 
 Each writes to a file in the app's Documents directory (`seam.log`, `signal-*.log`,
 `backend.log`, `familycall.log`) so results can be pulled rather than read off a
@@ -159,6 +161,8 @@ Architecture B (DEBUG instruments, measured on the physical iPhone):
 - A native Family Call control-plane client: identity, contacts, call create/respond/
   join/end, and the `/api/events` stream, with the room id and signalling origin taken
   from the `joinUrl` the backend returns.
+- Native rendering of remote video: a remote track from MiroTalk's own browser client,
+  decoded and drawn beside the local capture.
 
 ## What does not exist
 
@@ -173,8 +177,9 @@ Architecture B (DEBUG instruments, measured on the physical iPhone):
   native-device registration routes.
 - Background-audio capability or VoIP background mode. None is configured, so the
   signalling socket does not survive backgrounding.
-- Native rendering of a remote video track. Frames are counted at the capture source
-  and RTP bytes are counted; nothing draws remote video.
+- Any measurement of video quality. Rendering works; frame rate, resolution, latency
+  and recovery from packet loss are unmeasured, and camera switching, orientation and
+  size negotiation are untested.
 - Persistence, Keychain, or UserDefaults usage.
 - Extracted/copied/adapted MiroTalk source. None — the spike is original code written
   against `MIROTALK_CORE_AUDIT.md`, so the AGPL review still precedes any reuse.
@@ -266,6 +271,7 @@ marked as such there.
 | Native WebRTC under CallKit (Architecture B spike) | Yes | — | **Passes in both orderings, audio measured flowing** — with a loopback running, inbound-RTP bytes continue through CallKit taking the session (after the re-arm fix) and through a full activate → deactivate → activate cycle. WebRTC makes no `setActive:` of its own while CallKit owns the session. WebKit's capture died in the same situation |
 | Family Call control plane, read paths (native) | Yes | — | **Yes, on the device against production** — `GET /api/session` returned `authenticated=true` with the enrolled display name, `GET /api/bootstrap` returned 982 bytes and decoded into the client's models, and `GET /api/events` delivered its `ready` event through Serve. Establishes that Serve does not buffer SSE |
 | Family Call control plane, call lifecycle (native) | Yes | — | **Not exercised** — create, respond, join and end are implemented against the audited contract and have never been run, because each rings a real family member's phone |
+| Remote video rendering (native) | Yes | — | **Yes, against a real browser peer** — a remote track from MiroTalk's own Safari client was decoded and drawn natively, with the phone's own camera beside it on screen showing a visibly different scene |
 | Room id parsed from the `joinUrl` | Yes | — | **Not verified** — the parse is written and reasoned from `src/mirotalk.js:34-42`, but no production `joinUrl` has been seen |
 | Native capture teardown (Architecture B spike) | Yes | — | **Yes** — after Stop, `capture stopped` is logged and the status-bar camera/mic privacy indicators are absent, which is the objective evidence capture was released. The preview keeps its last rendered frame, so the preview alone proves nothing |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |

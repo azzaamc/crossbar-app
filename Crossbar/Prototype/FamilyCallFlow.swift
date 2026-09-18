@@ -2,6 +2,7 @@
 import Combine
 import Foundation
 import SwiftUI
+import WebRTC
 
 /// Drives one real Family Call end to end: identity, contacts, placing, answering,
 /// and the media engine that carries the result.
@@ -351,6 +352,8 @@ struct FamilyCallSection: View {
 
                 actions
 
+                videoArea
+
                 if !flow.contacts.isEmpty {
                     contactsList
                 }
@@ -419,6 +422,34 @@ struct FamilyCallSection: View {
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("family.rejoin")
             }
+        }
+    }
+
+    private var remotePeers: [String] { flow.signal.remoteVideo.keys.sorted() }
+
+    /// Shown once a call exists, because before that there is nothing to render and a
+    /// black rectangle reads as a fault. Sorted by peer id so the tiles do not swap
+    /// places as the dictionary is rehashed.
+    @ViewBuilder
+    private var videoArea: some View {
+        if flow.phase.call != nil {
+            HStack(spacing: 6) {
+                tile(flow.media.videoTrack, "you")
+                ForEach(remotePeers, id: \.self) { peerId in
+                    tile(flow.signal.remoteVideo[peerId], String(peerId.prefix(6)))
+                }
+            }
+        }
+    }
+
+    private func tile(_ track: RTCVideoTrack?, _ caption: String) -> some View {
+        VStack(spacing: 2) {
+            RTCVideoSurface(track: track)
+                .frame(height: 104)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 

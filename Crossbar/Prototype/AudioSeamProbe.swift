@@ -580,37 +580,6 @@ private func seamRouteReasonName(_ raw: UInt) -> String {
     }
 }
 
-/// Native camera preview for the spike. `RTCCameraPreviewView` no longer exists in
-/// the SDK; the supported path is an `RTCMTLVideoView` attached to the track.
-struct RTCLocalPreview: UIViewRepresentable {
-    let track: RTCVideoTrack?
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeUIView(context: Context) -> RTCMTLVideoView {
-        let view = RTCMTLVideoView()
-        view.videoContentMode = .scaleAspectFill
-        view.backgroundColor = .black
-        return view
-    }
-
-    func updateUIView(_ view: RTCMTLVideoView, context: Context) {
-        guard context.coordinator.attached !== track else { return }
-        context.coordinator.attached?.remove(view)
-        track?.add(view)
-        context.coordinator.attached = track
-    }
-
-    static func dismantleUIView(_ view: RTCMTLVideoView, coordinator: Coordinator) {
-        coordinator.attached?.remove(view)
-        coordinator.attached = nil
-    }
-
-    final class Coordinator {
-        var attached: RTCVideoTrack?
-    }
-}
-
 struct AudioSeamView: View {
     @ObservedObject var probe: AudioSeamProbe
     let model: CallProbeModel
@@ -645,7 +614,7 @@ struct AudioSeamView: View {
                 .accessibilityIdentifier("seam.loopback")
             }
 
-            RTCLocalPreview(track: probe.videoTrack)
+            RTCVideoSurface(track: probe.videoTrack)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
 
