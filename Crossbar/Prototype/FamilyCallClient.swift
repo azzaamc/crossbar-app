@@ -51,11 +51,28 @@ struct FamilyCall: Decodable, Identifiable, Equatable {
     var isActive: Bool { status == "active" }
 }
 
+/// A family group and the members the service will name (`src/db.js:228-240`).
+///
+/// Members are filtered server-side to users who have signed in at least once, so
+/// absence from this list means "never authenticated", not "not configured" — a
+/// distinction worth keeping, because the two need different fixes.
+struct FamilyGroup: Decodable, Identifiable {
+    struct Member: Decodable {
+        let id: String
+        let displayName: String
+    }
+
+    let id: String
+    let displayName: String
+    let members: [Member]?
+}
+
 struct FamilyBootstrap: Decodable {
     let user: FamilyUser
     let contacts: [FamilyContact]
     let calls: [FamilyCall]
     let ongoingCalls: [FamilyCall]
+    let groups: [FamilyGroup]?
 }
 
 /// `POST /api/calls`, `/respond` and `/join` all answer `{call, joinUrl}`; `joinUrl`
@@ -239,6 +256,16 @@ final class FamilyCallClient {
     func bootstrap() async throws -> FamilyBootstrap {
         let result = try await send(request("GET", "api/bootstrap"), as: FamilyBootstrap.self)
         log("  bootstrap: \(result.contacts.count) contacts, \(result.ongoingCalls.count) ongoing, \(result.calls.count) open")
+        // Named rather than counted: the whole question this instrument exists to
+        // answer is who can actually be called, and a count cannot say whether the
+        // person you intend to ring is on the list. An asterisk means they currently
+        // hold an event stream, so they are reachable now.
+        let names = result.contacts.map { $0.online ? "\($0.displayName)*" : $0.displayName }
+        log("  contacts: \(names.isEmpty ? "none" : names.joined(separator: ", "))")
+        for group in result.groups ?? [] {
+            let members = (group.members ?? []).map(\.displayName)
+            log("  group \(group.displayName): \(members.isEmpty ? "none signed in" : members.joined(separator: ", "))")
+        }
         return result
     }
 
