@@ -625,12 +625,12 @@ and it is the dependency this branch exists to remove.
   the node as built, and the audit's STUN/TURN decision is unmoved by it: media still
   takes whatever ICE finds. Nothing here says which of a relay, TURN, or accepting the
   public path is right for two households behind CGNAT.
-- **Where the stale-loopback boundary sits.** 150 s did not reach it and 600 s did, with
-  the node still `Running` and its cached loopback dead. Nothing here separates the
-  mechanism from the clock: memory pressure, a longer freeze, or a backgrounded app being
-  killed and relaunched all plausibly produce the same result sooner, and the useful
-  number for the product is the shortest suspension that breaks it, not the longest that
-  does not.
+- **What actually triggers the stale loopback.** 150 s survived, 600 s failed once and then
+  succeeded on an identical repeat, and nothing in the logs separates the run that broke
+  from the run that did not. Memory pressure is the obvious suspect — upstream's comment
+  says the OS reclaims the listener, which is not a timer — and the useful number for the
+  product would be the condition rather than the duration: a device that can name the
+  trigger can decide when to verify, instead of verifying on every foreground.
 - Behaviour when the node is **not** available at launch — no network, control plane
   unreachable, or the machine revoked. The instrument has only ever been run in the
   happy path.
@@ -685,7 +685,7 @@ narrower than it was.
    approved by hand, and the bus that delivers it dies after ~60 s. Nothing here has
    changed that, and it is the first thing a family member would meet.
 
-The two gates that make an unattended run possible:
+The gates that make an unattended run possible:
 
 ```bash
 xcrun devicectl device process launch --device <id> --terminate-existing \
