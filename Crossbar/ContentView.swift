@@ -50,6 +50,10 @@ struct ContentView: View {
     }
 }
 
-#Preview {
-    ContentView()
-}
+// No `#Preview` here on purpose. Rendering this view starts the whole session — it
+// authenticates, opens an event stream, and joins any call it is already part of — so
+// a preview is not a harmless mock. One did exactly that on 2026-09-18: an Xcode
+// preview running on the Mac authenticated through the same Tailscale identity, decided
+// it was a participant in a live call, and joined it as a third member with no camera.
+// The family member on the other end saw someone whose video never loaded. Previews
+// belong on leaf views that take plain data, not on the root that owns the session.

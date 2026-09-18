@@ -52,6 +52,29 @@ final class CallSession: ObservableObject {
     private var callKitCallID: UUID?
     private var logHandle: FileHandle?
 
+    /// The call **this device** is in, if any.
+    ///
+    /// Family Call's identity is a person, not a device: `/api/bootstrap` answers "am I
+    /// in a call?" identically for every client that authenticates as that person — a
+    /// second phone, a simulator, an Xcode preview. So the server cannot tell this
+    /// device whether *it* was in the call, and the client has to remember. Without
+    /// this, launching any instance silently joins the live call, which is exactly what
+    /// happened on 2026-09-18: an Xcode preview appeared as a third participant in a
+    /// real call, with a black camera and a peer whose video never loaded on the other
+    /// end. Resuming is now scoped to a call this device actually joined.
+    private static let deviceCallKey = "crossbar.currentCallID"
+
+    private var deviceCallID: String? {
+        get { UserDefaults.standard.string(forKey: Self.deviceCallKey) }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: Self.deviceCallKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.deviceCallKey)
+            }
+        }
+    }
+
     init() {
         client.log = { [weak self] in self?.log($0) }
         wireCallKit()
@@ -67,6 +90,7 @@ final class CallSession: ObservableObject {
             Task { await self.createCall(toContactID: handle) }
         }
         callKit.onAnswer = { [weak self] _ in
+            self?.log("CallKit answered")
             Task { await self?.accept() }
         }
         callKit.onEnd = { [weak self] _ in
@@ -119,9 +143,11 @@ final class CallSession: ObservableObject {
             phase = .ready
             startEvents()
 
-            // A call this person is already in — the app was closed or the phone rang
-            // while it was suspended. Rejoining is what a phone does here.
-            if let ongoing = bootstrap.ongoingCalls.first(where: { isMine($0) && $0.isActive }) {
+            // A call **this device** is already in — the app was closed or the phone
+            // rang while it was suspended. Not just any active call: every instance
+            // authenticating as this person sees the same active call, and joining it
+            // is how a preview ended up in a real one.
+            if let ongoing = bootstrap.ongoingCalls.first(where: { $0.id == deviceCallID && isMine($0) && $0.isActive }) {
                 await resume(ongoing)
             }
         } catch {
@@ -161,6 +187,7 @@ final class CallSession: ObservableObject {
             log("placing a call to \(displayName(for: contactID))")
             let envelope = try await client.createCall(inviteeIds: [contactID])
             phase = .outgoing(envelope.call)
+            deviceCallID = envelope.call.id
             connect(using: envelope.joinUrl)
         } catch {
             log("could not place the call: \(error.localizedDescription)")
@@ -187,6 +214,7 @@ final class CallSession: ObservableObject {
         do {
             let envelope = try await client.respond(callId: call.id, accepted: true)
             phase = .inCall(envelope.call)
+            deviceCallID = envelope.call.id
             callKit.reportConnected(callID: callID)
             connect(using: envelope.joinUrl)
         } catch {
@@ -229,6 +257,7 @@ final class CallSession: ObservableObject {
         signal.disconnect()
         media.stopCapture()
         callKitCallID = nil
+        deviceCallID = nil
         isMuted = false
         isCameraEnabled = true
         if case .failed = phase { return }
@@ -242,6 +271,7 @@ final class CallSession: ObservableObject {
             log("rejoining an active call")
             let envelope = try await client.join(callId: call.id)
             phase = .inCall(envelope.call)
+            deviceCallID = envelope.call.id
             if let callID = UUID(uuidString: envelope.call.id) { callKitCallID = callID }
             connect(using: envelope.joinUrl)
         } catch {
@@ -311,18 +341,24 @@ final class CallSession: ObservableObject {
             eventsDown = false
 
         case .incomingCall(let call):
-            guard call.participants?.contains(where: { $0.userId == me?.id }) ?? false else { return }
-            guard case .ready = phase else {
-                log("another invitation arrived while busy — ignoring")
+            // Every branch logs. This path had none, and an incoming call that rings
+            // briefly and then behaves oddly leaves nothing behind to explain it.
+            guard call.participants?.contains(where: { $0.userId == me?.id }) ?? false else {
+                log("invitation \(call.id) ignored — not a participant")
                 return
             }
+            guard case .ready = phase else {
+                log("invitation \(call.id) arrived while busy — ignored")
+                return
+            }
+            log("incoming call \(call.id) from \(displayName(for: call.callerId)) status=\(call.status)")
             phase = .ringing(call)
-            callKitCallID = UUID(uuidString: call.id)
-            if let callKitCallID {
-                callKit.reportIncoming(
-                    callID: callKitCallID,
-                    callerName: displayName(for: call.callerId)
-                )
+            if let callID = UUID(uuidString: call.id) {
+                callKitCallID = callID
+                callKit.reportIncoming(callID: callID, callerName: displayName(for: call.callerId))
+                log("reported to CallKit")
+            } else {
+                log("call id is not a UUID — CallKit cannot be told about it")
             }
 
         case .callStatus(let call):
