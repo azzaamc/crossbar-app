@@ -21,7 +21,13 @@ project are nested at:
 Do not initialize another repository, move `.git`, or recreate/relocate the
 project.
 
-- Current branch: `codex/architecture-a-spike`.
+- Branch this handoff was written on: `codex/architecture-a-spike`, which is
+  **not** the current branch. The repository now also carries `architecture-b`
+  (the architecture B spike, from `main`) and `tailscale-kit` (the embedded
+  Tailscale node, cut from `architecture-b` at `7462de8`). Read
+  `docs/ARCHITECTURE_B_PROBE.md` for what the B spike is made of and
+  `docs/TAILSCALE_KIT_PROBE.md` for the node; this document describes the
+  repository, the product and the production service, which have not moved.
 - Initial scaffold: `f15031f` (`Initial Commit`).
 - Probe checkpoint: `8c543e0` (`checkpoint: Architecture A iOS WebRTC probe`).
 - Existing tag `codex-handoff` points to the probe checkpoint and must not be
@@ -165,7 +171,12 @@ Current scheme: `Crossbar`. Current targets: `Crossbar`, `CrossbarTests`, and
 capabilities, packages, or third-party frameworks are configured.
 
 The local probe needs no Tailscale connection. Future backend/signaling tests
-do require the private tailnet.
+do require the private tailnet — **but not necessarily the Tailscale app**: on
+branch `tailscale-kit` the app embeds its own userspace node, and a two-peer
+call's signalling runs through it with the system client disconnected, at the
+same service and the same identity. Its limits are measured there too: the node
+carries signalling only, since it has no interface for WebRTC to gather
+candidates on, and its cached loopback cannot be trusted after a suspension.
 
 ## CallKit and PushKit status
 
