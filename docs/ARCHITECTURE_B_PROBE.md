@@ -181,15 +181,16 @@ these were found only because a result was suspicious rather than negative.
 
 Stated so the next session does not inherit an overclaim:
 
-- **The call lifecycle is verified for the paths a first call takes, and no further.**
-  Placing a call and answering it are measured end to end against production, with a
-  real family member on MiroTalk's own browser client, carrying media both ways. The
-  routes that a first call never touches **remain unexercised**: `/join` (only used to
-  rejoin an active call), `/invite`, `/end`, a declined call, and the group route.
-  Nothing beyond what that call actually ran should be described as working.
-- **The room-id parse is verified, once.** A production `joinUrl` yielded its room and
-  signalling origin and the client joined that room. Seen exactly once, so it is proven
-  for the shape the service produces now rather than for every shape it could produce.
+- **The call lifecycle is verified for the paths a two-person call takes, and no
+  further.** Placing, answering and ending are measured end to end against production
+  with a real family member on MiroTalk's own browser client, carrying audio and video
+  both ways with the remote video drawn on screen. The routes a two-person call never
+  touches **remain unexercised**: `/join` (only used to rejoin an active call),
+  `/invite`, a declined call, and the group route. Nothing beyond what these calls
+  actually ran should be described as working.
+- **The room-id parse is verified.** Production `joinUrl`s from two real calls each
+  yielded their room and signalling origin, and the client joined those rooms. It is
+  proven for the shape the service produces now, not for every shape it could produce.
 - **No product code.** Everything here is a measurement instrument. There is no call
   UI, no contacts, no CallKit-in-product-flow, no persistence.
 - **The signalling socket does not survive backgrounding** — no background mode is

@@ -165,8 +165,8 @@ Architecture B (DEBUG instruments, measured on the physical iPhone):
 
 ## What does not exist
 
-- Call ending, declining, inviting, rejoining and the group route. Placement and
-  answering have run for a real call; the rest of the lifecycle has not.
+- Declining, inviting, rejoining and the group route. Placement, answering and ending
+  have run for real calls; the rest of the lifecycle has not.
 - Product call UI, contacts UI, ringing UI, navigation, or CallKit in the product flow
   (CallKit is exercised only by the DEBUG Architecture A probe).
 - PushKit, APNs, VoIP token registration, notification extension, or backend
@@ -266,9 +266,9 @@ marked as such there.
 | Family Call API from native code | Yes | — | **Yes** — `URLSession` GET to `/api/session` through tailnet Serve returned `HTTP 200 authenticated=true identity.source=tailscale` with the enrolled display name, and no `Origin` header. No backend change needed for identity |
 | Native WebRTC under CallKit (Architecture B spike) | Yes | — | **Passes in both orderings, audio measured flowing** — with a loopback running, inbound-RTP bytes continue through CallKit taking the session (after the re-arm fix) and through a full activate → deactivate → activate cycle. WebRTC makes no `setActive:` of its own while CallKit owns the session. WebKit's capture died in the same situation |
 | Family Call control plane, read paths (native) | Yes | — | **Yes, on the device against production** — `GET /api/session` returned `authenticated=true` with the enrolled display name, `GET /api/bootstrap` returned 982 bytes and decoded into the client's models, and `GET /api/events` delivered its `ready` event through Serve. Establishes that Serve does not buffer SSE |
-| Family Call control plane, call lifecycle (native) | Yes | — | **Yes, for what a first call runs** — `POST /api/calls` returned 201 with a `joinUrl`, the invitee answered on MiroTalk's own browser client, `call-status` arrived as `active` over SSE, and the native client joined the room and carried media both ways. `/join`, `/invite`, `/end`, a decline and the group route remain unexercised |
-| Remote video rendering (native) | Yes | — | **Yes, against a real browser peer** — a remote track from MiroTalk's own Safari client was decoded and drawn natively, with the phone's own camera beside it on screen showing a visibly different scene |
-| Room id parsed from the `joinUrl` | Yes | — | **Yes** — a production `joinUrl` yielded its room and signalling origin, and the client joined that room. Seen once |
+| Family Call control plane, call lifecycle (native) | Yes | — | **Yes, for what a two-person call runs** — two real calls to a real family member: `POST /api/calls` returned 201 with a `joinUrl`, the room was parsed from it, the invitee answered on MiroTalk's own browser client, `call-status` arrived as `active` over SSE, the native client joined the room, audio and video crossed both ways with the remote video rendered, and `POST /api/calls/:id/end` returned 200. `/join`, `/invite`, a decline and the group route remain unexercised |
+| Remote video rendering (native) | Yes | — | **Yes, on real calls** — a remote track from MiroTalk's own browser client decoded and drawn natively, showing a different person in a different room beside the local capture, alongside roughly 2.4 Mbps of inbound video measured per kind |
+| Room id parsed from the `joinUrl` | Yes | — | **Yes** — production `joinUrl`s from two real calls each yielded their room and signalling origin, and the client joined those rooms |
 | Native capture teardown (Architecture B spike) | Yes | — | **Yes** — after Stop, `capture stopped` is logged and the status-bar camera/mic privacy indicators are absent, which is the objective evidence capture was released. The preview keeps its last rendered frame, so the preview alone proves nothing |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
 | Audio route behaviour | Yes | Not meaningfully tested | **Spike (B) partial** — AirPods connect/disconnect produced route reasons 1 and 2 and WebRTC followed the route rather than fighting it; speaker override and wired not tested |
