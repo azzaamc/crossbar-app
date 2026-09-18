@@ -319,6 +319,41 @@ final class FamilyCallFlow: ObservableObject {
     }
 }
 
+/// Local capture beside each remote peer's decoded video.
+///
+/// **Observes the signal client directly rather than reading it through the flow.** A
+/// nested `ObservableObject` does not republish its changes, so a view watching only
+/// the flow never learns that a remote track arrived — which is exactly how the first
+/// real call rendered its local tile and nothing else, while the log showed the remote
+/// video track had been received. The signalling screen never had this bug because it
+/// holds the clients itself.
+///
+/// Sorted by peer id so tiles do not swap places as the dictionary is rehashed.
+private struct CallVideoArea: View {
+    @ObservedObject var signal: MiroTalkSignalClient
+    let localTrack: RTCVideoTrack?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            tile(localTrack, "you")
+            ForEach(signal.remoteVideo.keys.sorted(), id: \.self) { peerId in
+                tile(signal.remoteVideo[peerId], String(peerId.prefix(6)))
+            }
+        }
+    }
+
+    private func tile(_ track: RTCVideoTrack?, _ caption: String) -> some View {
+        VStack(spacing: 2) {
+            RTCVideoSurface(track: track)
+                .frame(height: 104)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 /// The debug surface for the real control plane.
 ///
 /// Placing a call rings someone's phone, so the confirmation is in front of the
@@ -435,31 +470,12 @@ struct FamilyCallSection: View {
         }
     }
 
-    private var remotePeers: [String] { flow.signal.remoteVideo.keys.sorted() }
-
     /// Shown once a call exists, because before that there is nothing to render and a
-    /// black rectangle reads as a fault. Sorted by peer id so the tiles do not swap
-    /// places as the dictionary is rehashed.
+    /// black rectangle reads as a fault.
     @ViewBuilder
     private var videoArea: some View {
         if flow.phase.call != nil {
-            HStack(spacing: 6) {
-                tile(flow.media.videoTrack, "you")
-                ForEach(remotePeers, id: \.self) { peerId in
-                    tile(flow.signal.remoteVideo[peerId], String(peerId.prefix(6)))
-                }
-            }
-        }
-    }
-
-    private func tile(_ track: RTCVideoTrack?, _ caption: String) -> some View {
-        VStack(spacing: 2) {
-            RTCVideoSurface(track: track)
-                .frame(height: 104)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            Text(caption)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            CallVideoArea(signal: flow.signal, localTrack: flow.media.videoTrack)
         }
     }
 

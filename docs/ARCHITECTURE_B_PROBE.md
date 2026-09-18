@@ -159,20 +159,33 @@ these were found only because a result was suspicious rather than negative.
     produced a log containing only `section appeared`. The reason
     (`NSURLErrorCannotFindHost`) became visible only after the catch was logged and
     the request line was written *before* the request rather than after it.
+11. **A nested `ObservableObject` does not republish.** The first real call rendered
+    its local tile and **nothing else**, while the log plainly showed the remote video
+    track had been received. `FamilyCallSection` observes the flow, but the remote
+    tracks live on the signal client the flow owns, so a change there never reached the
+    view. The signalling screen had the same code and worked, because it holds the
+    clients itself and therefore observes them directly — which is what made the
+    comparison misleading. Fixed by giving the video area its own view that observes
+    the signal client.
+12. **A stats line that only counted audio.** `media IN` reported the first inbound
+    stat whose kind was `audio`, so a live video call logged a steady audio byte count
+    and no video at all — indistinguishable from one that was receiving no picture.
+    Every inbound kind is now reported. This one was caught only because the rendered
+    screen disagreed with the log, and the screen was right to be trusted over it.
 
 ## What the spike does not show
 
 Stated so the next session does not inherit an overclaim:
 
-- **The control plane is verified on its read paths only.** `GET /api/session`,
-  `GET /api/bootstrap` and `GET /api/events` are measured on the device against
-  production, including the identity Serve injects and the contact list that comes
-  back. Creating, answering, joining and ending a call are written but **have not been
-  exercised against the live service**, because every one of them rings a real family
-  member's phone. Nothing that calls those routes should be described as working.
-- **The room-id parse is untested against a real `joinUrl`.** The parsing logic is
-  written and reasoned from `src/mirotalk.js:34-42`, but no live response has been run
-  through it, so the exact shape of a production `joinUrl` remains unconfirmed.
+- **The call lifecycle is verified for the paths a first call takes, and no further.**
+  Placing a call and answering it are measured end to end against production, with a
+  real family member on MiroTalk's own browser client, carrying media both ways. The
+  routes that a first call never touches **remain unexercised**: `/join` (only used to
+  rejoin an active call), `/invite`, `/end`, a declined call, and the group route.
+  Nothing beyond what that call actually ran should be described as working.
+- **The room-id parse is verified, once.** A production `joinUrl` yielded its room and
+  signalling origin and the client joined that room. Seen exactly once, so it is proven
+  for the shape the service produces now rather than for every shape it could produce.
 - **No product code.** Everything here is a measurement instrument. There is no call
   UI, no contacts, no CallKit-in-product-flow, no persistence.
 - **The signalling socket does not survive backgrounding** — no background mode is

@@ -67,7 +67,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     @Published private(set) var remoteVideo: [String: RTCVideoTrack] = [:]
 
     private var statsTimer: Timer?
-    private var audioBytes: [String: Int] = [:]
+    private var inboundBytes: [String: [String: Int]] = [:]
     private var reportedPath: [String: String] = [:]
     private var reportedTailnetPairs: Set<String> = []
 
@@ -137,7 +137,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         for (_, pc) in peers { pc.close() }
         peers.removeAll()
         pendingCandidates.removeAll()
-        audioBytes.removeAll()
+        inboundBytes.removeAll()
         remoteVideo.removeAll()
 
         task?.cancel(with: .goingAway, reason: nil)
@@ -475,7 +475,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         guard let pc = peers.removeValue(forKey: peerId) else { return }
         pc.close()
         pendingCandidates[peerId] = nil
-        audioBytes[peerId] = nil
+        inboundBytes[peerId] = nil
         remoteVideo[peerId] = nil
         append("removePeer \(peerId.prefix(8)) — connection closed")
     }
@@ -499,14 +499,18 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private func pollStats() {
         for (peerId, pc) in peers {
             pc.statistics { [weak self] report in
-                var found: (bytes: Int, energy: Double)?
+                // Every inbound kind, not just audio. Reporting only audio made a live
+                // video call look like it was carrying no picture, because a video
+                // call's inbound video bytes never appeared anywhere in the log.
+                var inbound: [String: (bytes: Int, energy: Double)] = [:]
                 for (_, stat) in report.statistics {
                     guard stat.type == "inbound-rtp",
-                          let kind = stat.values["kind"] as? String
+                          let kind = stat.values["kind"] as? String,
+                          inbound[kind] == nil
                     else { continue }
                     let bytes = (stat.values["bytesReceived"] as? NSNumber)?.intValue ?? 0
                     let energy = (stat.values["totalAudioEnergy"] as? NSNumber)?.doubleValue ?? 0
-                    if kind == "audio", found == nil { found = (bytes, energy) }
+                    inbound[kind] = (bytes, energy)
                 }
                 let path = Self.selectedPairDescription(report)
                 let tailnet = Self.tailnetPairs(report)
@@ -522,12 +526,14 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
                             self.append("TAILNET PAIR [\(peerId.prefix(8))] \(entry)")
                         }
                     }
-                    guard let found else { return }
-                    let previous = self.audioBytes[peerId] ?? found.bytes
-                    let delta = found.bytes - previous
-                    self.audioBytes[peerId] = found.bytes
-                    let energy = String(format: "%.3f", found.energy)
-                    self.append("media IN <- \(peerId.prefix(8)) bytes=\(found.bytes) delta=\(delta) energy=\(energy)")
+                    for kind in inbound.keys.sorted() {
+                        guard let stat = inbound[kind] else { continue }
+                        let previous = self.inboundBytes[peerId]?[kind] ?? stat.bytes
+                        let delta = stat.bytes - previous
+                        self.inboundBytes[peerId, default: [:]][kind] = stat.bytes
+                        let energy = String(format: "%.3f", stat.energy)
+                        self.append("media IN <- \(peerId.prefix(8)) \(kind) bytes=\(stat.bytes) delta=\(delta) energy=\(energy)")
+                    }
                 }
             }
         }

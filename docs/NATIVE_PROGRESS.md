@@ -7,11 +7,10 @@ Last audited: 2026-09-17 (Asia/Karachi)
 Crossbar is an Xcode-generated SwiftUI application containing a DEBUG-only,
 original-code Architecture B spike. As of 2026-09-18 that spike authenticates
 against the real Family Call API, speaks MiroTalk's signalling protocol natively,
-has completed a real device-to-device call with MiroTalk's own browser client
-carrying media both ways, and drives the real call lifecycle natively — verified
-against production on its **read paths** (identity, contacts, event stream) and
-written but **not yet exercised** for placing, answering, joining or ending a call,
-because each of those rings a real family member's phone. It contains **no product
+renders remote video, and has placed a **real call to a real family member** from
+native code: the call was created through the Family Call API, the room was recovered
+from the returned `joinUrl`, the native client joined it, the family member answered on
+MiroTalk's own browser client, and media crossed both ways. It contains **no product
 code**: no call UI, no contacts UI, no CallKit-in-product-flow, no persistence.
 Instruments, reproduction commands and the list of what is *not* measured are in
 `ARCHITECTURE_B_PROBE.md`.
@@ -166,11 +165,8 @@ Architecture B (DEBUG instruments, measured on the physical iPhone):
 
 ## What does not exist
 
-- Verified call placement, answering, joining or ending. The client implements all
-  four against the audited contract and none has been run against the live service;
-  only `GET /api/session`, `GET /api/bootstrap` and `GET /api/events` are measured.
-- A confirmed `joinUrl` shape. The room-id parse is written and reasoned from
-  `src/mirotalk.js:34-42` but has never seen a production response.
+- Call ending, declining, inviting, rejoining and the group route. Placement and
+  answering have run for a real call; the rest of the lifecycle has not.
 - Product call UI, contacts UI, ringing UI, navigation, or CallKit in the product flow
   (CallKit is exercised only by the DEBUG Architecture A probe).
 - PushKit, APNs, VoIP token registration, notification extension, or backend
@@ -270,9 +266,9 @@ marked as such there.
 | Family Call API from native code | Yes | — | **Yes** — `URLSession` GET to `/api/session` through tailnet Serve returned `HTTP 200 authenticated=true identity.source=tailscale` with the enrolled display name, and no `Origin` header. No backend change needed for identity |
 | Native WebRTC under CallKit (Architecture B spike) | Yes | — | **Passes in both orderings, audio measured flowing** — with a loopback running, inbound-RTP bytes continue through CallKit taking the session (after the re-arm fix) and through a full activate → deactivate → activate cycle. WebRTC makes no `setActive:` of its own while CallKit owns the session. WebKit's capture died in the same situation |
 | Family Call control plane, read paths (native) | Yes | — | **Yes, on the device against production** — `GET /api/session` returned `authenticated=true` with the enrolled display name, `GET /api/bootstrap` returned 982 bytes and decoded into the client's models, and `GET /api/events` delivered its `ready` event through Serve. Establishes that Serve does not buffer SSE |
-| Family Call control plane, call lifecycle (native) | Yes | — | **Not exercised** — create, respond, join and end are implemented against the audited contract and have never been run, because each rings a real family member's phone |
+| Family Call control plane, call lifecycle (native) | Yes | — | **Yes, for what a first call runs** — `POST /api/calls` returned 201 with a `joinUrl`, the invitee answered on MiroTalk's own browser client, `call-status` arrived as `active` over SSE, and the native client joined the room and carried media both ways. `/join`, `/invite`, `/end`, a decline and the group route remain unexercised |
 | Remote video rendering (native) | Yes | — | **Yes, against a real browser peer** — a remote track from MiroTalk's own Safari client was decoded and drawn natively, with the phone's own camera beside it on screen showing a visibly different scene |
-| Room id parsed from the `joinUrl` | Yes | — | **Not verified** — the parse is written and reasoned from `src/mirotalk.js:34-42`, but no production `joinUrl` has been seen |
+| Room id parsed from the `joinUrl` | Yes | — | **Yes** — a production `joinUrl` yielded its room and signalling origin, and the client joined that room. Seen once |
 | Native capture teardown (Architecture B spike) | Yes | — | **Yes** — after Stop, `capture stopped` is logged and the status-bar camera/mic privacy indicators are absent, which is the objective evidence capture was released. The preview keeps its last rendered frame, so the preview alone proves nothing |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
 | Audio route behaviour | Yes | Not meaningfully tested | **Spike (B) partial** — AirPods connect/disconnect produced route reasons 1 and 2 and WebRTC followed the route rather than fighting it; speaker override and wired not tested |
