@@ -139,6 +139,26 @@ final class CallMediaSource: ObservableObject {
         rtc.audioSessionDidDeactivate(session)
     }
 
+    /// Routes call audio to the speaker, or back to the receiver.
+    ///
+    /// Needed explicitly, because once CallKit activates the session **it** owns the
+    /// route and defaults a call to the receiver — the `defaultToSpeaker` category
+    /// option is not honoured after that. A video call coming out of the earpiece is not
+    /// what anyone expects, and the system's own route control lives on CallKit's call
+    /// screen rather than in this app.
+    ///
+    /// Only valid while the session is active, so this is applied on adoption as well as
+    /// on demand.
+    @discardableResult
+    func setSpeaker(_ on: Bool) -> String {
+        do {
+            try RTCAudioSession.sharedInstance().overrideOutputAudioPort(on ? .speaker : .none)
+            return on ? "audio → speaker" : "audio → receiver"
+        } catch {
+            return "could not change the audio route: \(error.localizedDescription)"
+        }
+    }
+
     /// Forces the audio gate through a *real* transition.
     ///
     /// Assigning `true` when it is already `true` is not a change, so RTCAudioSession

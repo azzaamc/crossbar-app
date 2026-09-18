@@ -38,6 +38,7 @@ final class CallSession: ObservableObject {
     @Published private(set) var contacts: [FamilyContact] = []
     @Published private(set) var isMuted = false
     @Published private(set) var isCameraEnabled = true
+    @Published private(set) var isSpeakerOn = true
     /// Surfaced rather than swallowed. A socket that has quietly died looks exactly
     /// like a quiet one, and this project has already lost a measurement to that.
     @Published private(set) var eventsDown = false
@@ -127,6 +128,9 @@ final class CallSession: ObservableObject {
                 "\(applied) — live category=\(session.category.rawValue) "
                     + "mode=\(session.mode.rawValue) sampleRate=\(Int(session.sampleRate))"
             )
+            // Applied here rather than at connect time, because the session is only
+            // active now and CallKit owns the route from this point.
+            self.log(self.media.setSpeaker(self.isSpeakerOn))
         }
         callKit.onAudioDeactivated = { [weak self] session in
             self?.media.releaseAudioSession(session)
@@ -284,6 +288,7 @@ final class CallSession: ObservableObject {
         isOutgoingCall = false
         isMuted = false
         isCameraEnabled = true
+        isSpeakerOn = true
         if case .failed = phase { return }
         phase = .ready
     }
@@ -345,6 +350,13 @@ final class CallSession: ObservableObject {
 
     func switchCamera() {
         log(media.switchCamera())
+    }
+
+    /// Video calls default to the speaker: the earpiece is for a phone held to an ear,
+    /// and this one is held in front of a face.
+    func toggleSpeaker() {
+        isSpeakerOn.toggle()
+        log(media.setSpeaker(isSpeakerOn))
     }
 
     // MARK: - Events

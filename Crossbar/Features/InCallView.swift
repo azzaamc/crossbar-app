@@ -31,7 +31,7 @@ struct InCallView: View {
                     .multilineTextAlignment(.center)
             }
 
-            HStack(spacing: 22) {
+            HStack(spacing: 16) {
                 control(
                     session.isMuted ? "mic.slash.fill" : "mic.fill",
                     session.isMuted ? "Unmute" : "Mute",
@@ -45,6 +45,12 @@ struct InCallView: View {
                 ) { session.toggleCamera() }
 
                 control("camera.rotate.fill", "Flip") { session.switchCamera() }
+
+                control(
+                    "speaker.wave.2.fill",
+                    "Speaker",
+                    isActive: session.isSpeakerOn
+                ) { session.toggleSpeaker() }
 
                 control("phone.down.fill", "End", isDestructive: true) { session.end() }
             }
