@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Combine
+import CoreMedia
 import Foundation
 import WebRTC
 
@@ -20,6 +21,14 @@ final class CallMediaSource: ObservableObject {
     private var started = false
     private var useFrontCamera = true
 
+    /// Where the outcomes go. A camera start or switch finishes after the call that asked
+    /// for it has returned, so the result has to be reported rather than returned.
+    var log: (String) -> Void = { _ in }
+
+    /// The switch in flight, if any. One at a time: two concurrent switches are two
+    /// reconfigurations of one session.
+    private var switchTask: Task<Void, Never>?
+
     init() {
         factory = RTCPeerConnectionFactory(
             encoderFactory: RTCDefaultVideoEncoderFactory(),
@@ -35,44 +44,135 @@ final class CallMediaSource: ObservableObject {
 
     /// Idempotent by design: three peers must not start three captures, which is
     /// exactly what went wrong when each client owned its own.
+    ///
+    /// The start is asynchronous and its outcome is logged when the SDK reports it. The
+    /// previous version returned "capture started on …" the moment it had *asked*, which
+    /// is a claim about a camera nobody had confirmed was running.
     @discardableResult
     func startCapture() -> String {
-        guard !started else { return "capture already running" }
-        return start(on: useFrontCamera ? .front : .back)
+        guard !started, switchTask == nil else { return "capture already running" }
+        let position: AVCaptureDevice.Position = useFrontCamera ? .front : .back
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await self.start(on: position)
+            self.log("capture → \(outcome.message)")
+        }
+        return "capture starting on the \(name(of: position)) camera…"
     }
 
-    private func start(on position: AVCaptureDevice.Position) -> String {
-        guard let capturer else { return "no capturer" }
+    private func start(on position: AVCaptureDevice.Position) async -> (didStart: Bool, message: String) {
+        guard let capturer else { return (false, "no capturer") }
         let devices = RTCCameraVideoCapturer.captureDevices()
         guard let device = devices.first(where: { $0.position == position }) ?? devices.first else {
-            return "no capture device — audio only"
+            return (false, "no capture device — audio only")
         }
-        guard let format = RTCCameraVideoCapturer.supportedFormats(for: device).last else {
-            return "no capture format — audio only"
+        guard let choice = Self.chooseFormat(for: device,
+                                             preferredPixelFormat: capturer.preferredOutputPixelFormat())
+        else {
+            return (false, "no usable format on \(device.localizedName) — audio only")
         }
-        capturer.startCapture(with: device, format: format, fps: 30)
+
+        let error: Error? = await withCheckedContinuation { continuation in
+            capturer.startCapture(with: device, format: choice.format, fps: choice.fps) {
+                continuation.resume(returning: $0)
+            }
+        }
+        if let error {
+            return (false, "start failed on \(device.localizedName): \(error.localizedDescription)")
+        }
         started = true
-        return "capture started on \(device.localizedName)"
+        let dimensions = CMVideoFormatDescriptionGetDimensions(choice.format.formatDescription)
+        return (true, "\(device.localizedName) \(dimensions.width)x\(dimensions.height)@\(choice.fps)")
     }
 
     /// Re-acquires on the other camera.
     ///
-    /// Stop-then-start rather than `RTCCameraVideoCapturer.switchCamera()`: the only
-    /// path this project has measured is re-acquisition, and a swap that silently
-    /// changes nothing is worse than one that visibly restarts.
+    /// **Serialised, and that is the fix rather than a detail.** `stopCapture` and
+    /// `startCapture` are both asynchronous — the SDK says so in both headers — and this
+    /// used to call them back to back. The start therefore reconfigured the same
+    /// `AVCaptureVideoDataOutput` while the previous session was still being dismantled on
+    /// WebRTC's own dispatch queue, and AVFoundation threw from
+    /// `-[AVCaptureVideoDataOutput setVideoSettings:]`. Swift cannot catch an Objective-C
+    /// exception, so the app took `SIGABRT`: two crash reports on 2026-09-19, both
+    /// `EXC_CRASH` / `Abort trap: 6`, both faulting on
+    /// `org.webrtc.RTCDispatcherCaptureSession` the moment the camera was flipped during a
+    /// call. The start now waits for the stop's completion handler.
+    ///
+    /// The position is only flipped once the switch has actually succeeded, so a failed
+    /// switch no longer leaves the flag describing a camera that is not running.
     @discardableResult
     func switchCamera() -> String {
         guard started else { return "no capture to switch" }
-        useFrontCamera.toggle()
-        capturer?.stopCapture()
-        started = false
-        return start(on: useFrontCamera ? .front : .back)
+        guard switchTask == nil else { return "a camera switch is already running" }
+        let position: AVCaptureDevice.Position = useFrontCamera ? .back : .front
+        switchTask = Task { [weak self] in
+            guard let self else { return }
+            await self.stopCaptureAwaiting()
+            let outcome = await self.start(on: position)
+            if outcome.didStart { self.useFrontCamera.toggle() }
+            self.switchTask = nil
+            self.log("flip → \(outcome.message)")
+        }
+        return "switching to the \(name(of: position)) camera…"
     }
 
     func stopCapture() {
         guard started else { return }
-        capturer?.stopCapture()
         started = false
+        Task { [weak self] in
+            guard let self else { return }
+            await self.stopCaptureAwaiting()
+            self.log("capture stopped")
+        }
+    }
+
+    /// Stops the session and waits for the SDK to finish tearing it down.
+    ///
+    /// The wait is what keeps the next start from reconfiguring an output that is still
+    /// connected to a running session — see `switchCamera()`.
+    private func stopCaptureAwaiting() async {
+        guard let capturer else { return }
+        await withCheckedContinuation { continuation in
+            capturer.stopCapture { continuation.resume() }
+        }
+    }
+
+    private func name(of position: AVCaptureDevice.Position) -> String {
+        position == .front ? "front" : "back"
+    }
+
+    /// A format the session can be reconfigured into.
+    ///
+    /// Deliberately **not** `.last`, which is what this used to pass. The tail of a
+    /// device's format list is where the high-frame-rate and semi-compressed formats live,
+    /// and WebRTC sets the output's `videoSettings` from the format it is handed — so this
+    /// choice decides whether that property can be set at all. The frame rate has to sit
+    /// inside one of the format's own ranges for the same reason: asking for a rate a format
+    /// does not list is its own way to fail.
+    ///
+    /// Preference order: 1280x720, then the largest format at or below 1920 wide, then
+    /// whatever is left. 720p is what a family video call needs; capturing 4K in order to
+    /// encode and send something much smaller costs CPU and battery on a call that can run
+    /// for an hour.
+    private static func chooseFormat(for device: AVCaptureDevice,
+                                     preferredPixelFormat: FourCharCode)
+        -> (format: AVCaptureDevice.Format, fps: Int)? {
+        let usable = RTCCameraVideoCapturer.supportedFormats(for: device).compactMap {
+            format -> (format: AVCaptureDevice.Format, width: Int, fps: Int)? in
+            guard CMFormatDescriptionGetMediaSubType(format.formatDescription) == preferredPixelFormat
+            else { return nil }
+            let ranges = format.videoSupportedFrameRateRanges
+            guard let fps = [30, 24, 15].first(where: { target in
+                ranges.contains { $0.minFrameRate <= Double(target) && Double(target) <= $0.maxFrameRate }
+            }) else { return nil }
+            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return (format, Int(dimensions.width), fps)
+        }
+        guard !usable.isEmpty else { return nil }
+        let chosen = usable.first { $0.width == 1280 }
+            ?? usable.filter { $0.width <= 1920 }.max { $0.width < $1.width }
+            ?? usable.max { $0.width < $1.width }
+        return chosen.map { ($0.format, $0.fps) }
     }
 
     /// The session underneath, which is the only place multitasking camera access can be

@@ -95,6 +95,8 @@ final class CallSession: ObservableObject {
     #if DEBUG
     /// One-shot guard for the CallKit self-test gate, which lives in `load`.
     private var ranSelfTest = false
+    /// The same for the camera self-test.
+    private var ranCameraSelfTest = false
     #endif
 
     /// The call **this device** is in, if any.
@@ -122,6 +124,7 @@ final class CallSession: ObservableObject {
 
     init() {
         client.log = { [weak self] in self?.log($0) }
+        media.log = { [weak self] in self?.log("media: \($0)") }
         wireCallKit()
         wireSystemCamera()
         wireTailnet()
@@ -387,6 +390,11 @@ final class CallSession: ObservableObject {
                 ranSelfTest = true
                 runCallKitSelfTest()
             }
+            if !ranCameraSelfTest,
+               ProcessInfo.processInfo.environment["CROSSBAR_CAMERA_SELFTEST"] == "1" {
+                ranCameraSelfTest = true
+                runCameraSelfTest()
+            }
             #endif
 
             // A call **this device** is already in — the app was closed or the phone
@@ -425,6 +433,32 @@ final class CallSession: ObservableObject {
         guard phase.call == nil else { return }
         log("self-test: asking CallKit to place a call")
         _ = callKit.startOutgoing(handle: "crossbar-selftest")
+    }
+    #endif
+
+    #if DEBUG
+    /// Drives the capture through a start and two switches, with no call and no peer.
+    ///
+    /// The camera switch is the one path in this app that has crashed it: two `EXC_CRASH`
+    /// reports on 2026-09-19, both faulting on WebRTC's capture queue inside
+    /// `-[AVCaptureVideoDataOutput setVideoSettings:]` the moment the camera was flipped
+    /// during a call. Reaching that needs a live 1:1 call and a finger on the Flip button —
+    /// which is exactly why it reached a real phone before it reached the probe screen — so
+    /// the reproduction is gated instead, and it doubles as the check that the switch still
+    /// works after any later change to the capture path.
+    ///
+    ///   … -e '{"CROSSBAR_CAMERA_SELFTEST":"1"}'
+    func runCameraSelfTest() {
+        log("camera self-test: \(media.startCapture())")
+        Task {
+            for round in 1...2 {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                log("camera self-test \(round): \(media.switchCamera())")
+            }
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            media.stopCapture()
+            log("camera self-test: asked to stop")
+        }
     }
     #endif
 
