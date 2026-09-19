@@ -217,14 +217,32 @@ final class TailnetNode: ObservableObject {
     /// The carrier for a running node, waiting until it has actually carried a request.
     ///
     /// Readiness is not `node != nil`, and not `up()` having returned either. A node
-    /// object exists from the first moment of bring-up, and the loopback listener accepts
-    /// connections before anything can be carried over it: measured 2026-09-18, a call
-    /// launched while the system Tailscale app was disconnected dialled the loopback ~11 s
-    /// before `node is up` appeared and both sockets died with
+    /// object exists from the first moment of bring-up, and the loopback listener
+    /// accepts connections before anything can be carried over it: measured 2026-09-18, a
+    /// call launched while the system Tailscale app was disconnected dialled the loopback
+    /// ~11 s before `node is up` appeared and both sockets died with
     /// `A TLS error caused the secure connection failed` — against a status document that
     /// still said `no peers`. So this waits for a request that went through the SOCKS path
     /// and came back.
+    ///
+    /// A node can also come up `Running` with a loopback that never answers, and that is
+    /// not only a post-suspension failure: measured at launch on 2026-09-19, a carrier that
+    /// had answered a minute earlier in one run carried nothing in the next. The only
+    /// recovery is a new node, so one rebuild is attempted before giving up — bounded to
+    /// one, because a network that is genuinely down must not become a bring-up loop.
     func attach() async throws -> CallTransport {
+        do {
+            return try await carrierFromCurrentNode()
+        } catch {
+            guard await backendState() == "Running" else { throw error }
+            log("the carrier carried nothing — rebuilding the node once")
+            await stop()
+            return try await carrierFromCurrentNode()
+        }
+    }
+
+    /// Builds a carrier for the node that is up, and waits for it to carry a request.
+    private func carrierFromCurrentNode() async throws -> CallTransport {
         await start()
 
         guard let node else {
@@ -239,18 +257,16 @@ final class TailnetNode: ObservableObject {
                                       label: "node \(loopback.address)",
                                       loopbackAddress: loopback.address)
 
-        var last = "nothing was attempted"
         for attempt in 1...10 {
             if await carriesARequest(transport) {
                 if attempt > 1 { log("carrier \(loopback.address) answered on attempt \(attempt)") }
                 carrier = transport
                 return transport
             }
-            last = "no answer"
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
 
-        log("carrier \(loopback.address) carried nothing in 10 attempts — last: \(last)")
+        log("carrier \(loopback.address) carried nothing in 10 attempts")
         throw TailnetError.loopbackUnavailable(address: loopback.address)
     }
 
@@ -385,7 +401,9 @@ final class TailnetNode: ObservableObject {
 
         loginWatch = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, !self.state.isRunning else { return }
+                // Also stops when the node is gone: a failed bring-up leaves no bus to
+                // watch, and re-subscribing to it every 15 s would be noise, not recovery.
+                guard let self, self.node != nil, !self.state.isRunning else { return }
                 self.busProcessor?.cancel()
                 do {
                     let client = LocalAPIClient(localNode: node, logger: nil)

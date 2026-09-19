@@ -15,7 +15,7 @@ struct SignalProbeSection: View {
     @State private var expanded = false
     @State private var room = "crosstest"
     @State private var ignoreStun = false
-    @State private var viaNode = false
+    @State private var viaNode = TailnetNode.isEnabled
     @Environment(\.scenePhase) private var scenePhase
     @State private var pip = CallPiPController()
     @State private var pipBox = ViewBox()
@@ -99,8 +99,13 @@ struct SignalProbeSection: View {
             // The carrier is gated the same way as the room, and for the same reason:
             // the run that matters is the one nobody can start by hand.
             //   … -e '{"CROSSBAR_SIGNAL_AUTOROOM":"room","CROSSBAR_SIGNAL_VIANODE":"1"}'
-            if ProcessInfo.processInfo.environment["CROSSBAR_SIGNAL_VIANODE"] == "1" {
-                viaNode = true
+            // The embedded node is the product's route now, so it is this instrument's
+            // default too: a run that measures the direct path does so deliberately, by
+            // asking for it. Defaulting the other way round also keeps the launch payload
+            // to two variables, which matters because `devicectl -e` silently presents
+            // nothing at all with the four this used to need.
+            if let asked = ProcessInfo.processInfo.environment["CROSSBAR_SIGNAL_VIANODE"] {
+                viaNode = asked != "0"
             }
             // The node's own counters, read while the call is up.
             //
