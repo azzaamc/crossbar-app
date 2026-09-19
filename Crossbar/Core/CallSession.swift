@@ -130,7 +130,12 @@ final class CallSession: ObservableObject {
     private func reportCameraToRoom() {
         guard !signal.myPeerId.isEmpty else { return }
         let appIsInFront = UIApplication.shared.applicationState == .active
-        signal.setVideoEnabled(appIsInFront && isCameraEnabled)
+        // A video call that is in PiP keeps transmitting: the window exists to keep the
+        // call on screen, and taking the camera away there would make it a different call.
+        // A call with no window (audio only, or PiP unavailable) falls back to audio, and
+        // the far end is told so it does not sit on a frozen frame.
+        let keepsCamera = appIsInFront || pip.isArmed
+        signal.setVideoEnabled(keepsCamera && isCameraEnabled)
         // The window is not dismissed for us when the call screen comes back, and leaving
         // it up would draw the same call twice. The arrangement stays armed, so the next
         // trip to the background opens it again.
@@ -145,6 +150,9 @@ final class CallSession: ObservableObject {
 
     private func armPiP() {
         guard let view = pipSourceView, let track = signal.remoteVideo.values.first else { return }
+        // The capture session has to opt in before PiP needs it, or minimising the call
+        // takes the camera away and the call silently becomes audio-only.
+        log(media.enableMultitaskingCamera())
         pip.arm(track: track, sourceView: view)
     }
 

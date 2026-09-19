@@ -130,17 +130,19 @@ struct SignalProbeSection: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .background:
-                // iOS takes the camera from a backgrounded app. Saying so, and stopping
-                // capture deliberately rather than leaving it to the system, is what turns
-                // "the far end is staring at a frozen frame" into "this peer is on audio
-                // only" — the far end's client hides the video and shows the avatar.
-                for client in [peerA, peerB, peerC] where client.myPeerId.isEmpty == false {
-                    client.setVideoEnabled(false)
+                // A video call that goes to Picture-in-Picture keeps its camera — that is
+                // what every other calling app does, and it is possible now that the
+                // capture session has opted into multitasking access. Only a call with no
+                // PiP window falls back to audio: there the camera is taken by iOS
+                // anyway, and the far end is told rather than left with a frozen frame.
+                if pip.isArmed {
+                    peerA.record("left the app — video call in PiP, camera stays")
+                } else {
+                    for client in [peerA, peerB, peerC] where client.myPeerId.isEmpty == false {
+                        client.setVideoEnabled(false)
+                    }
+                    peerA.record("left the app — no PiP, so audio only")
                 }
-                // PiP is not started here on purpose: it was armed while this app was in
-                // front, and the system starts it from the armed source view. The line is
-                // the evidence that it was armed at the moment it mattered.
-                peerA.record("left the app — PiP armed=\(pip.isArmed) active=\(pip.isActive)")
             case .active:
                 for client in [peerA, peerB, peerC] where client.myPeerId.isEmpty == false {
                     client.setVideoEnabled(true)
@@ -180,6 +182,9 @@ struct SignalProbeSection: View {
               let track = peerA.remoteVideo.values.first,
               let view = pipBox.view
         else { return }
+        // Before arming, because this is a property of the capture session and PiP is what
+        // needs it: without it, minimising a video call takes the camera away.
+        peerA.record(media.enableMultitaskingCamera())
         pip.arm(track: track, sourceView: view)
     }
 

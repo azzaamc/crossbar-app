@@ -75,6 +75,30 @@ final class CallMediaSource: ObservableObject {
         started = false
     }
 
+    /// The session underneath, which is the only place multitasking camera access can be
+    /// turned on.
+    var captureSession: AVCaptureSession? { capturer?.captureSession }
+
+    /// Lets the camera keep running while the app is in Picture-in-Picture.
+    ///
+    /// iOS 16 opted the camera into PiP behind a per-session flag (the entitlement is only
+    /// needed by apps targeting earlier than that). Until it is set, going to PiP costs
+    /// the camera — so a video call silently became audio-only the moment it was
+    /// minimised, which is not what any other calling app does and not what the person on
+    /// the other end expects.
+    ///
+    /// Returns a line for the log either way: "this device cannot" is a fact about the
+    /// hardware, not a failure of the call.
+    @discardableResult
+    func enableMultitaskingCamera() -> String {
+        guard let session = captureSession else { return "no capture session yet — camera not kept for PiP" }
+        guard session.isMultitaskingCameraAccessSupported else {
+            return "this device cannot use the camera in PiP"
+        }
+        session.isMultitaskingCameraAccessEnabled = true
+        return "camera kept for PiP (multitasking camera access on)"
+    }
+
     /// Ungates WebRTC's audio, for a caller that has no CallKit call to do it.
     ///
     /// `prepareAudioSession()` puts the framework into manual-audio mode, so on its own
