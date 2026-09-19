@@ -106,7 +106,7 @@ matters when a run produces nothing:
 ```
 
 `PROBE_AUTOSHOW` presents the probe screen over whatever the product is showing, because
-the screen is otherwise reached by a toolbar tap in the contacts list and none of the
+the screen is otherwise reached from **Settings → Advanced → Instruments** and none of the
 gates above can fire from a screen that was never mounted. It is set from `onAppear` — a
 `fullScreenCover` whose binding is already true when the view is inserted is never
 presented at all — and not from the root view's `.task`, which is cancelled when the phase
@@ -141,6 +141,27 @@ Two more `devicectl` facts from the same session, each of which looks like somet
 SOCKS loopback instead of the system's route, and logs which carrier each socket took plus
 the node's own peer counters; leave it off for the control run whose flat counters are
 what make a routed run's growth mean anything.
+
+**A stub control plane is how a launch path that needs somebody to call you gets tested.** A
+ringing invitation survives on exactly one surface a client can find after the fact —
+`/api/bootstrap` → `calls[]` with `myStatus: "invited"` — so a small HTTP stub answering
+`/api/session`, `/api/bootstrap` and `/api/events` exercises it with no second person, and
+serving it over this Mac's own tailnet name keeps App Transport Security happy without a
+certificate of our own:
+
+```bash
+python3 /tmp/invite-stub.py &                        # answers on 127.0.0.1:8080
+tailscale serve --bg --https=10000 http://127.0.0.1:8080
+xcrun devicectl device process launch --device <id> \
+  -e '{"CROSSBAR_BACKEND_URL":"https://<this-mac>.<tailnet>.ts.net:10000"}' \
+  com.abdullahchaudhry.Crossbar
+tailscale serve --https=10000 off                    # when finished
+```
+
+Measured 2026-09-19: the app logged `an invitation was waiting for this device — ringing it`,
+`incoming call … from Dad status=ringing` and `reported to CallKit`, with the incoming-call UI
+and the system banner on screen. The same stub drives the call screen when its `joinUrl` names
+a real MiroTalk room, which is how the in-call layout gets exercised without ringing a relative.
 
 There is no rebuild gate any more. `CROSSBAR_TAILSCALE_REBUILD` was removed on 2026-09-19
 when the node became the product's transport: the app now verifies the carrier every time
@@ -280,7 +301,7 @@ these were found only because a result was suspicious rather than negative.
     that stream is the *only* path an incoming call can take.
 17. **A gate that could never fire, because its screen was never mounted.** The
     signalling instrument's launch gates were correct and complete, and an unattended run
-    still joined nothing: the probe screen sits behind a toolbar tap in the contacts
+    still joined nothing: the probe screen sat behind a toolbar tap in the contacts
     list, so nothing presented it, and the log files still held the *previous* run's
     contents — which is very hard to tell from a run that produced nothing. The only tell
     was a timestamp. Fixed at the root rather than in the instrument, with

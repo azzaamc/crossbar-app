@@ -114,6 +114,11 @@ Compiled in Release as well as Debug — product code cannot depend on Debug-onl
 - `Crossbar/Core/CallTransport.swift`: how a client's sockets leave the device — the
   configuration, and the label naming its route, because a carried session and a direct one
   are otherwise identical in a log.
+- `Crossbar/Core/AppSettings.swift`: the few things a person can change — the service
+  address, the signalling override, and whether the app carries its own tailnet.
+- `Crossbar/Features/CallStage.swift`: the call's video composition — remote on the stage,
+  the local capture as a draggable corner, two columns for three people, stage plus strip
+  for four, and never a scroll.
 - `Crossbar/Core/MiroTalkSignalClient.swift`: the Engine.IO v4 / Socket.IO v5 client,
   peer connections with the synthesised offer policy, remote video tracks and peer
   names, and per-transport ICE path reporting.
@@ -126,7 +131,7 @@ Compiled in Release as well as Debug — product code cannot depend on Debug-onl
 
 ### Instruments (`#if DEBUG`)
 
-Reachable from the product's Probe button rather than owning the app.
+Reachable from Settings → Advanced → Instruments rather than owning the app.
 
 - `Crossbar/Prototype/ProbeView.swift`: the entry point that assembles them.
 - `Crossbar/Prototype/AudioSeamProbe.swift`: the seam spike — CallKit session
@@ -357,6 +362,10 @@ marked as such there.
 | MiroTalk signalling through the embedded Tailscale node | Yes | — | **Yes** — a full two-peer call (admission, `addPeer`, SDP and ICE relay, negotiation to `pc state 2`, ~33 MB of video each way) ran with both sockets dialled through the node's SOCKS loopback. The node's own peer counters went 0 → ~86 KB at the moment the socket connected, which is what separates the node from the system Tailscale app that is also installed on the phone. Branch `tailscale-kit`; see `TAILSCALE_KIT_PROBE.md` |
 | Embedded node as the app's transport | Yes | — | **Yes** — the product starts the node itself and dials both clients through it: `carried by the embedded node — node 127.0.0.1:61174`, then `GET api/session -> HTTP 200 authenticated=true name=Azzaam Chaudhry`, `GET api/bootstrap -> HTTP 200` (2 contacts) and `GET api/events -> HTTP 200`, measured from the app's own log pulled off the device on 2026-09-19. No Tailscale app involved; the tailnet lists the node as `crossbar-ios` (100.121.218.110). A carrier that answers nothing is reported as a failure rather than retried on the system route |
 | Signalling through the node, by the product's own carrier | Yes | — | **Yes, 2026-09-19** — with `CROSSBAR_TAILNET_NODE` left at its default, two peers joined one MiroTalk room through `TailnetNode.attach()`, the same carrier `CallSession` hands to both clients: `connecting wss://… via node 127.0.0.1:61719` for both, then `pc state -> 2`, `ICE path … state=succeeded`, and media both ways (`bytesSent=177169`, `media IN … audio`). The instrument's route toggle now defaults to the node, since that is the product's route |
+| Incoming invitation found at launch | Yes | Yes | **Yes** — against a stub control plane served over this Mac's tailnet name: the app logged `an invitation was waiting for this device — ringing it`, `incoming call … from Dad status=ringing`, `reported to CallKit`, and the incoming-call UI and system banner appeared. Before this the app opened onto the contacts list while somebody was still ringing, because an invitation survives only in `/api/bootstrap` → `calls[]` as `myStatus: "invited"` and `load()` looked only at `ongoingCalls` |
+| Camera released when a call ends mid-start | Yes | — | **Yes** — `CROSSBAR_CAMERA_SELFTEST` drives the race deliberately: `media: capture stopped — the stop arrived before the start was confirmed`, and the status bar shows no camera indicator afterwards. The bug it fixes left the camera running after an outgoing call nobody answered |
+| In-call video layout | Yes | **Yes** | **Partly** — measured on the simulator against a real remote peer (the phone, in the room through its own node): one remote filled the stage edge to edge (402×230 pt) while the local preview sat in a corner at 86×115 pt with a 10 pt inset, and a drag moved it to the diagonally opposite corner, where it stayed. The three- and four-participant arrangements are covered by geometry assertions rather than by a rendered call |
+| Settings surface | Yes | **Yes** | **Yes** — Service (address, signalling override, reconnect), Network (route, embedded-node switch, sign-out, console link), Identity (name, source) and Advanced (instruments, camera and CallKit self-tests) all render; sign-out is disabled while the node is switched off, which is the correct state |
 | Media over the overlay from an embedded node | Yes | — | **No, and structurally so** — a userspace tsnet node has no network interface (`"TUN":false`, `using fake (no-op) tun device`), so libwebrtc cannot gather a candidate on the overlay: the node's own address never appeared among the 55 candidates gathered during a node-carried call, while the system Tailscale tunnel's address did. Media rode the phone's Wi-Fi host pair, as it does today |
 | Native peer ↔ MiroTalk browser client, over the embedded node | Yes | — | **Yes** — the phone's app signalling through the node with its Tailscale app *disconnected* called MiroTalk's own web client in Chromium on the Mac: the browser offered 3 m-lines (audio, video, data channel), the native client answered, `pc state 2` / `ice state 2`, and media crossed both ways over the LAN pair (phone `192.168.1.120` ↔ Mac `192.168.1.127`), ~18 MB of the phone's camera to the browser and the browser's pattern back, seen on both screens. Every pair to the Mac's tailnet address sat `in-progress sent=0 recv=0`. Branch `tailscale-kit` |
 | Three-/four-person mesh | Yes | — | **Spike (B) three peers** — three native peers formed three links with two connections each; every link reached `pc state 2` and carried media both ways, with one shared capture feeding all senders. Four peers untested |

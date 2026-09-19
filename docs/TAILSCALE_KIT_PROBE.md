@@ -791,8 +791,9 @@ and it is the dependency this branch exists to remove.
    only meaningful within the launch that produced it — which also means the cached
    address can never be handed to a new process, only to code that shares the node.
 7. **An instrument gate cannot fire if its screen is never mounted.** The signalling
-   gates already existed, but the probe screen is reached by a toolbar tap in the
-   contacts list, so an unattended run loaded the app, started the node, and joined
+   gates already existed, but the probe screen is reached from Settings → Advanced →
+   Instruments (it was a toolbar tap in the contacts list when this was written), so an
+   unattended run loaded the app, started the node, and joined
    nothing — the log files still held the *previous* afternoon's run, which is the kind
    of silent no-op this project keeps having to design out. Fixed at the root rather than
    in the instrument: `CROSSBAR_PROBE_AUTOSHOW=1` presents the probe screen over whatever
