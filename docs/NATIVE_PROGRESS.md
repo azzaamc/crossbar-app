@@ -16,6 +16,16 @@ needs a paid Apple Developer Program membership: the current free personal team
 provisions one device and expires every seven days. Instruments, reproduction commands
 and the list of what is *not* measured are in `ARCHITECTURE_B_PROBE.md`.
 
+As of 2026-09-19 the app also **carries its own tailnet**, so it no longer needs the
+Tailscale app installed and signed in on the phone. `Core/TailnetNode.swift` brings up an
+embedded userspace tsnet node at launch, and both clients dial through its SOCKS loopback
+via `Core/CallTransport.swift` — the control plane and the MiroTalk signalling socket
+alike, with the route named on the contacts screen so a direct session and a carried one
+cannot be confused. What the node can carry is structural, not a setting: it carries those
+two HTTP paths, and it **cannot carry media**, because a userspace node has no network
+interface for libwebrtc to gather a candidate on. A call's audio and video take the
+ordinary WebRTC path over the device's own interfaces. See `TAILSCALE_KIT_PROBE.md`.
+
 ## Repository and checkpoint
 
 - User-designated workspace root:
@@ -97,6 +107,13 @@ Compiled in Release as well as Debug — product code cannot depend on Debug-onl
 - `Crossbar/Core/FamilyCallClient.swift`: the control plane — identity, contacts,
   create, respond, join, end, and the `/api/events` stream — plus `JoinTarget`, which
   recovers the room id and signalling origin from the `joinUrl`.
+- `Crossbar/Core/TailnetNode.swift`: the family network the app carries itself. Brings up
+  the embedded userspace tsnet node, surfaces its login page on a first run, hands out the
+  carrier both clients dial through, and rebuilds the node when a suspension leaves its
+  cached loopback dead.
+- `Crossbar/Core/CallTransport.swift`: how a client's sockets leave the device — the
+  configuration, and the label naming its route, because a carried session and a direct one
+  are otherwise identical in a log.
 - `Crossbar/Core/MiroTalkSignalClient.swift`: the Engine.IO v4 / Socket.IO v5 client,
   peer connections with the synthesised offer policy, remote video tracks and peer
   names, and per-transport ICE path reporting.
@@ -124,19 +141,29 @@ Reachable from the product's Probe button rather than owning the app.
 - `Crossbar/Prototype/CallKitManager.swift`, `CallProbeModel.swift`,
   `WebMediaEngine.swift`, `RuntimeProbe.html`: the Architecture A probe, retained as
   the evidence for why Architecture B exists at all.
+- `Crossbar/Prototype/TailscaleProbe.swift`: drives the **product's** node rather than
+  owning one — a second node pointed at the same state directory would fight the first for
+  both the device identity and the path — and measures it: both halves of the wire contract
+  through the carrier, and the node's own peer counters, which are the only evidence that
+  says *which* carrier moved the bytes while the system Tailscale app is also installed.
 
 The instruments write to the app's Documents directory (`seam.log`, `signal-*.log`,
-`backend.log`, `familycall.log`, and the product's `session.log`) so results can be
-pulled rather than read off a screenshot.
+`backend.log`, `familycall.log`, `tailscale.log`, the node's own `tailscale-node.log`, and
+the product's `session.log`) so results can be pulled rather than read off a screenshot.
 
 ### Tests
 
-- `CrossbarTests/CrossbarTests.swift`: generated placeholder unit test; it has
-  no assertions and proves no behavior.
-- `CrossbarUITests/CrossbarUITests.swift`:
-  - `testExample` launches the app, waits for the `probe.status` element to
-    exist, then immediately compares its label to `Runtime ready`;
-  - `testLaunchPerformance` is Xcode's generated launch metric.
+Both generated scaffolds were removed on 2026-09-19, because neither could fail on a
+plausible bug and one could not pass at all:
+
+- the unit target held an empty `example()` with no assertions;
+- `CrossbarUITests.testExample` asserted that the label of `probe.status` is
+  `Runtime ready`, and no element with that identifier exists anywhere in the app — it
+  belonged to the Architecture A web runtime. The identifier it waits for is gone, so it
+  failed for a reason no wait could fix. (`ARCHITECTURE_B_PROBE.md` and the earlier
+  revision of this file described it as a synchronization defect; it was also a stale one.)
+
+`CrossbarUITests.testLaunchPerformance` remains: it measures launch time and nothing else.
 
 `testExample` is timing-dependent because element existence occurs while the
 label can still be `Loading runtime…`. See **Verification record**.
@@ -173,20 +200,23 @@ Architecture B (DEBUG instruments, measured on the physical iPhone):
 
 ## What does not exist
 
-- Declining, inviting, rejoining and the group route. Placement, answering and ending
-  have run for real calls; the rest of the lifecycle has not.
-- Product call UI, contacts UI, ringing UI, navigation, or CallKit in the product flow
-  (CallKit is exercised only by the DEBUG Architecture A probe).
-- PushKit, APNs, VoIP token registration, notification extension, or backend
-  native-device registration routes.
-- Background-audio capability or VoIP background mode. None is configured, so the
-  signalling socket does not survive backgrounding.
-- Any measurement of video quality. Rendering works; frame rate, resolution, latency
+Corrected 2026-09-19. This list was written against the 2026-09-17 audit and several of
+its entries have since been built; what follows is what is actually absent now.
+
+- **Inviting a second participant, and the group route.** Placement, answering, declining,
+  rejoining and ending have all run for real calls. Nothing can start a call with more than
+  one invitee, and `FamilyGroup` is decoded and logged but never drawn.
+- **PushKit, APNs, VoIP token registration, notification extension, or the backend routes
+  that would register a native device.** A suspended or terminated app does not ring.
+- **Any measurement of video quality.** Rendering works; frame rate, resolution, latency
   and recovery from packet loss are unmeasured, and camera switching, orientation and
   size negotiation are untested.
-- Persistence, Keychain, or UserDefaults usage.
-- Extracted/copied/adapted MiroTalk source. None — the spike is original code written
+- **Keychain, or any persistence beyond `UserDefaults`.** Defaults hold exactly two things:
+  the call this device is in, and an optional tailnet auth key.
+- **Extracted/copied/adapted MiroTalk source.** None — the client is original code written
   against `MIROTALK_CORE_AUDIT.md`, so the AGPL review still precedes any reuse.
+- **Media over the overlay.** Not absent by omission: an embedded node structurally cannot
+  carry it. A call's media is peer-to-peer over the device's own interfaces.
 
 ## Verification record
 
@@ -287,6 +317,7 @@ marked as such there.
 | MiroTalk signaling | Yes | — | **Yes** — native Engine.IO/Socket.IO connects to production MiroTalk, joins, receives `addPeer`/`serverInfo`, and relays SDP and ICE in the audited shapes |
 | Two-device call | Yes | — | **Yes, with MiroTalk's own browser client** — a native peer and Safari on a second tailnet device negotiated, the browser answered the native offer and then renegotiated a data channel which the native client answered, ICE completed, and media crossed both ways with the phone's camera rendering in Safari |
 | MiroTalk signalling through the embedded Tailscale node | Yes | — | **Yes** — a full two-peer call (admission, `addPeer`, SDP and ICE relay, negotiation to `pc state 2`, ~33 MB of video each way) ran with both sockets dialled through the node's SOCKS loopback. The node's own peer counters went 0 → ~86 KB at the moment the socket connected, which is what separates the node from the system Tailscale app that is also installed on the phone. Branch `tailscale-kit`; see `TAILSCALE_KIT_PROBE.md` |
+| Embedded node as the app's transport | Yes | — | **Yes** — the product starts the node itself and dials both clients through it: `carried by the embedded node — node 127.0.0.1:61174`, then `GET api/session -> HTTP 200 authenticated=true name=Azzaam Chaudhry`, `GET api/bootstrap -> HTTP 200` (2 contacts) and `GET api/events -> HTTP 200`, measured from the app's own log pulled off the device on 2026-09-19. No Tailscale app involved; the tailnet lists the node as `crossbar-ios` (100.121.218.110). A carrier that answers nothing is reported as a failure rather than retried on the system route |
 | Media over the overlay from an embedded node | Yes | — | **No, and structurally so** — a userspace tsnet node has no network interface (`"TUN":false`, `using fake (no-op) tun device`), so libwebrtc cannot gather a candidate on the overlay: the node's own address never appeared among the 55 candidates gathered during a node-carried call, while the system Tailscale tunnel's address did. Media rode the phone's Wi-Fi host pair, as it does today |
 | Native peer ↔ MiroTalk browser client, over the embedded node | Yes | — | **Yes** — the phone's app signalling through the node with its Tailscale app *disconnected* called MiroTalk's own web client in Chromium on the Mac: the browser offered 3 m-lines (audio, video, data channel), the native client answered, `pc state 2` / `ice state 2`, and media crossed both ways over the LAN pair (phone `192.168.1.120` ↔ Mac `192.168.1.127`), ~18 MB of the phone's camera to the browser and the browser's pattern back, seen on both screens. Every pair to the Mac's tailnet address sat `in-progress sent=0 recv=0`. Branch `tailscale-kit` |
 | Three-/four-person mesh | Yes | — | **Spike (B) three peers** — three native peers formed three links with two connections each; every link reached `pc state 2` and carried media both ways, with one shared capture feeding all senders. Four peers untested |

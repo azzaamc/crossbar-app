@@ -25,6 +25,14 @@ import WebRTC
 @MainActor
 final class MiroTalkSignalClient: NSObject, ObservableObject {
     @Published private(set) var state = "idle"
+
+    /// Whether the socket is still open.
+    ///
+    /// Asked of the task rather than inferred from `state`, which is prose written for a
+    /// person ("joined (no peers)", "in a call") and too loose to branch on. What branches
+    /// on it is the recovery path after the node is rebuilt: a socket holding a
+    /// now-stale loopback has to be re-dialled, and one that is still open must not be.
+    var isSocketOpen: Bool { task?.state == .running }
     @Published private(set) var lines: [String] = []
 
     /// Distinguishes the two probe peers in the log and to the server.
@@ -90,23 +98,13 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private var reportedPath: [String: String] = [:]
     private var reportedTailnetPairs: Set<String> = []
 
-    /// Where the signalling socket is created, which is where a transport is chosen.
+    /// Where the signalling socket is created, which is where the route is chosen.
     ///
-    /// `.default` dials the origin over whatever the system already provides, which is
-    /// how every measurement before this one ran — through the Tailscale app's tunnel.
-    /// A configuration from `URLSessionConfiguration.tailscaleSession` sends it down
-    /// the embedded node's loopback instead, so the app can carry its own tailnet.
-    ///
-    /// The label travels with the configuration rather than beside it, because a
-    /// proxied session and a direct one are otherwise indistinguishable in a log: a
-    /// run that silently took the system's route while the screen said otherwise is
-    /// exactly the wrong answer this project keeps finding.
-    struct Transport {
-        var configuration: URLSessionConfiguration = .default
-        var label = "direct"
-    }
-
-    var transport = Transport()
+    /// Set by `CallSession` to the embedded node's carrier before the socket is dialled,
+    /// so the signalling socket and the control plane leave by the same route and neither
+    /// needs the Tailscale app installed. `CallTransport` documents what each route means,
+    /// and why the label travels with the configuration rather than beside it.
+    var transport = CallTransport()
 
     /// The MiroTalk origin.
     ///
@@ -159,7 +157,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         append("peer \(label) room=\(room) uuid=\(peerUUID.prefix(8))")
         append("connecting \(url.absoluteString) via \(transport.label)")
 
-        let session = URLSession(configuration: transport.configuration)
+        let session = transport.session()
         self.session = session
         let task = session.webSocketTask(with: url)
         self.task = task

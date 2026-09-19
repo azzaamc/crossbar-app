@@ -17,7 +17,12 @@ struct ContentView: View {
     /// signalling instrument gets driven without a hand.
     ///
     ///   … -e '{"CROSSBAR_PROBE_AUTOSHOW":"1"}'
-    @State private var showProbe = false
+    ///
+    /// Read at initialisation, not from the task below. Asking for a presentation from the
+    /// first task tick is a race, and it lost often enough to look like the variable was
+    /// never delivered at all: on 2026-09-19 two runs with the same four-key payload
+    /// presented nothing while the same variable alone presented the screen a minute later.
+    @State private var showProbe = ProcessInfo.processInfo.environment["CROSSBAR_PROBE_AUTOSHOW"] == "1"
     #endif
 
     var body: some View {
@@ -25,6 +30,29 @@ struct ContentView: View {
             switch session.phase {
             case .loading:
                 ProgressView("Connecting to Family Call…")
+
+            case .needsLogin:
+                ContentUnavailableView {
+                    Label("Sign in to the family network",
+                          systemImage: "person.badge.key.fill")
+                } description: {
+                    Text(session.tailnetLoginURL == nil
+                         ? "This app carries the family network itself, so nothing else has to be "
+                         + "installed. It is starting up, and the sign-in page will appear here "
+                         + "as soon as it is ready."
+                         : "Approve this device in the page that opens. The app carries on by "
+                         + "itself once it is authorised.")
+                } actions: {
+                    if session.tailnetLoginURL != nil {
+                        Button("Open the sign-in page") { session.node.openLoginPage() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    if let url = session.tailnetLoginURL {
+                        Text(url)
+                            .font(.caption2.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
 
             case .failed(let reason):
                 ContentUnavailableView {
@@ -51,26 +79,6 @@ struct ContentView: View {
         // ringing.
         .task {
             await session.load()
-            #if DEBUG
-            // Buttons on a device cannot be pressed from here, so the CallKit path gets
-            // a gated way in that rings nobody. See `runCallKitSelfTest`.
-            if ProcessInfo.processInfo.environment["CROSSBAR_CALLKIT_SELFTEST"] == "1" {
-                session.runCallKitSelfTest()
-            }
-            // Same reasoning, and the same shape. The embedded node is what lets this
-            // app reach the tailnet without the Tailscale app, so measuring it has to
-            // be possible on a device nobody can tap:
-            //   xcrun devicectl device process launch … -e '{"CROSSBAR_TAILSCALE_AUTOSTART":"1"}'
-            // Started in its own task so bring-up does not wait on the session load
-            // above, which reaches the network and can take seconds.
-            if ProcessInfo.processInfo.environment["CROSSBAR_TAILSCALE_AUTOSTART"] == "1" {
-                Task { await TailscaleProbe.shared.start() }
-            }
-            // Same reasoning again: a gated instrument is only gated if it is on screen.
-            if ProcessInfo.processInfo.environment["CROSSBAR_PROBE_AUTOSHOW"] == "1" {
-                showProbe = true
-            }
-            #endif
         }
         #if DEBUG
         // The instruments, presented over whatever the product is showing. A debug

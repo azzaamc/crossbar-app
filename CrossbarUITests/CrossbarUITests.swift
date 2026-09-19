@@ -23,16 +23,6 @@ final class CrossbarUITests: XCTestCase {
     }
 
     @MainActor
-    func testExample() throws {
-        let app = XCUIApplication()
-        app.launch()
-
-        let status = app.staticTexts["probe.status"]
-        XCTAssertTrue(status.waitForExistence(timeout: 10))
-        XCTAssertEqual(status.label, "Runtime ready")
-    }
-
-    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {

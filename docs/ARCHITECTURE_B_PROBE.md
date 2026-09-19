@@ -38,7 +38,7 @@ All are `#if DEBUG` and live in `Crossbar/Prototype/`. None is product code.
 | File | What it is | What it measures |
 | --- | --- | --- |
 | `AudioSeamProbe.swift` | the original Architecture B seam spike, plus its SwiftUI screen | CallKit audio-session adoption, a local loopback peer connection so the ADM is genuinely exercised, produced video frames, app lifecycle |
-| `MiroTalkSignalClient.swift` | a reduced native Engine.IO v4 / Socket.IO v5 client, peer connections, and the shared media source | admission into a MiroTalk room, the mesh fan-out, SDP/ICE exchange, the offer policy, inbound RTP, and — on branch `tailscale-kit` — which carrier the socket took, since its `Transport` is a session configuration *and* the label naming it |
+| `MiroTalkSignalClient.swift` | a reduced native Engine.IO v4 / Socket.IO v5 client, peer connections, and the shared media source | admission into a MiroTalk room, the mesh fan-out, SDP/ICE exchange, the offer policy, inbound RTP, and which carrier the socket took — since 2026-09-19 through `CallTransport`, a session configuration *and* the label naming its route, which the product now sets from the embedded node's loopback |
 | `BackendReachabilityProbe.swift` | a bare `URLSession` GET | whether tailnet Serve injects the identity header for a non-browser client |
 | `FamilyCallClient.swift` | the Family Call control plane: session, bootstrap, create, respond, join, end, and the `/api/events` stream | whether a native client can drive the real call lifecycle, and whether the room id can be recovered from the `joinUrl` |
 | `FamilyCallFlow.swift` | the flow over that client, plus one `MiroTalkSignalClient` and a shared capture | whether the product call path works end to end — identity, contacts, ringing, answering, media |
@@ -102,20 +102,33 @@ Two further gates, added on branch `tailscale-kit`, and the first is the one tha
 matters when a run produces nothing:
 
 ```
--e '{"CROSSBAR_PROBE_AUTOSHOW":"1","CROSSBAR_SIGNAL_VIANODE":"1","CROSSBAR_TAILSCALE_REBUILD":"1"}'
+-e '{"CROSSBAR_PROBE_AUTOSHOW":"1","CROSSBAR_SIGNAL_VIANODE":"1"}'
 ```
 
 `PROBE_AUTOSHOW` presents the probe screen over whatever the product is showing, because
 the screen is otherwise reached by a toolbar tap in the contacts list and none of the
-gates above can fire from a screen that was never mounted — the instrument then leaves
-the *previous* run's log files in place, which is very hard to distinguish from a run that
-did nothing. `VIANODE` routes the signalling sockets through the embedded Tailscale node's
+gates above can fire from a screen that was never mounted. It is read when the root view
+is *initialised*, not from a task: asking for a presentation from the first task tick is a
+race, and on 2026-09-19 it lost twice in a row with a four-key payload while the same
+variable alone worked a minute later — which reads exactly like the variable never being
+delivered. `VIANODE` routes the signalling sockets through the embedded Tailscale node's
 SOCKS loopback instead of the system's route, and logs which carrier each socket took plus
 the node's own peer counters; leave it off for the control run whose flat counters are
-what make a routed run's growth mean anything. `CROSSBAR_TAILSCALE_REBUILD=1` rebuilds the
-node when a foreground check finds its loopback dead, and `force` rebuilds on every
-foreground — which is how the rebuild gets tested, since the failure it answers is
-intermittent and cannot be provoked on demand. See `TAILSCALE_KIT_PROBE.md`.
+what make a routed run's growth mean anything.
+
+There is no rebuild gate any more. `CROSSBAR_TAILSCALE_REBUILD` was removed on 2026-09-19
+when the node became the product's transport: the app now verifies the carrier every time
+it comes forward and rebuilds the node when the verify fails, because the failure it
+answers is intermittent and cannot be provoked on demand — a gate that had to be switched
+on to get the correct behaviour was the wrong default for product code. See
+`TAILSCALE_KIT_PROBE.md`.
+
+**Check the log files' timestamps before believing their contents.** The instrument leaves
+the previous run's files in place when it does not run, and stale files read exactly like
+fresh ones: a `signal-B.log` showing a completed call with ~59 MB sent, and a
+`signal-A.log` with one line in it, both turned out to be from the previous day on
+2026-09-19, while the run that produced them had never joined anything. List the container
+(`devicectl device info files`) and compare the times before drawing a conclusion.
 
 Two operational facts that caused wasted runs:
 

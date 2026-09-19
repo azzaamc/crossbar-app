@@ -19,6 +19,11 @@ final class CallSession: ObservableObject {
     /// answer a call the user started.
     enum Phase: Equatable {
         case loading
+        /// The family network is waiting to be authorised. Not a failure and not a slow
+        /// load: nothing else can be attempted until a human opens the login page, so the
+        /// screen has to say so. The URL itself is published separately, because it
+        /// arrives while this phase is already in force.
+        case needsLogin
         case ready
         case outgoing(FamilyCall)
         case ringing(FamilyCall)
@@ -49,6 +54,26 @@ final class CallSession: ObservableObject {
 
     private let client = FamilyCallClient()
     private let callKit = CallKitController()
+
+    /// The family network this app carries with it.
+    ///
+    /// Shared rather than owned: a node holds a device identity and a state directory, so
+    /// one per process is the only arrangement that does not leave two of them fighting
+    /// over both. The DEBUG instruments use this same object, which is also why it is not
+    /// created here.
+    let node = TailnetNode.shared
+
+    /// Where the carrier is, once a node has produced one. Held because a rebuild makes a
+    /// new one, and everything dialling the old address has to be re-dialled.
+    private var carrier: CallTransport?
+
+    /// The family network's state, mirrored for the views.
+    ///
+    /// Mirrored rather than read through `node` where it is drawn, because a nested
+    /// `ObservableObject` does not republish: a screen observing this session would never
+    /// see the node change on its own.
+    @Published private(set) var tailnetState: TailnetNode.State = .idle
+    @Published private(set) var tailnetLoginURL: String?
     private var eventsTask: Task<Void, Never>?
     private var callKitCallID: UUID?
 
@@ -66,6 +91,11 @@ final class CallSession: ObservableObject {
     /// the wrong API for it.
     private var isOutgoingCall = false
     private var logHandle: FileHandle?
+
+    #if DEBUG
+    /// One-shot guard for the CallKit self-test gate, which lives in `load`.
+    private var ranSelfTest = false
+    #endif
 
     /// The call **this device** is in, if any.
     ///
@@ -94,6 +124,8 @@ final class CallSession: ObservableObject {
         client.log = { [weak self] in self?.log($0) }
         wireCallKit()
         wireSystemCamera()
+        wireTailnet()
+        wireTailnetLifecycle()
         media.prepareAudioSession()
         pip.onLog = { [weak self] line in self?.log("PiP: \(line)") }
         // The remote track and the in-call tile arrive at different moments, and PiP needs
@@ -156,6 +188,105 @@ final class CallSession: ObservableObject {
         pip.arm(track: track, sourceView: view)
     }
 
+    // MARK: - The family network
+
+    /// Follows the embedded node, and mirrors it for the screens.
+    private func wireTailnet() {
+        node.addLogConsumer { [weak self] line in self?.log("tailnet: \(line)") }
+        node.$state
+            .sink { [weak self] state in self?.tailnetState = state }
+            .store(in: &cancellables)
+        node.$loginURL
+            .sink { [weak self] url in
+                guard let self else { return }
+                self.tailnetLoginURL = url
+                // Waiting for a human is a state to show rather than a slow load: nothing
+                // below can be attempted until someone authorises this device, so a screen
+                // that says "connecting" would be lying about what it is waiting for.
+                if url != nil, self.phase == .loading { self.phase = .needsLogin }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Re-checks the carrier whenever the app comes forward.
+    ///
+    /// The cached loopback cannot be trusted after a suspension. Measured once: a node came
+    /// back `Running` with an address that no longer answered, and an identical run the next
+    /// day did not reproduce it. So the failure is intermittent, the clock predicts nothing,
+    /// and the app verifies rather than assumes. A rebuild means a *new* address, which
+    /// everything holding the old one has to be told about.
+    private func wireTailnetLifecycle() {
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            // A real user does not tap a button after switching back to the app.
+            MainActor.assumeIsolated { Task { await self?.reverifyCarrier() } }
+        }
+    }
+
+    /// Verifies the carrier, rebuilds the node if it stopped answering, and re-dials what
+    /// the rebuild invalidated.
+    private func reverifyCarrier() async {
+        // Nothing to verify before the first attach: `load()` builds the carrier from
+        // scratch, and a second bring-up racing it is exactly what `start()` exists to
+        // prevent.
+        guard TailnetNode.isEnabled, carrier != nil, node.state.isRunning else { return }
+        guard await node.verifyOrRebuild(reason: "the app came forward") else { return }
+
+        log("family network rebuilt — re-dialling through the new carrier")
+        guard let transport = try? await node.attach() else { return }
+        hand(transport)
+
+        // The event stream was holding a socket on the old loopback, so it is restarted
+        // rather than left to notice. The signalling socket is re-dialled only when it is
+        // actually closed: a live call must not be torn down on a hunch.
+        if eventsTask != nil { startEvents() }
+        if let call = phase.call, !signal.isSocketOpen { await resume(call) }
+    }
+
+    /// How this app is reaching the family network, as one line for the screen.
+    ///
+    /// Shown rather than only logged, because "which route is this actually using" has cost
+    /// this project more measurements than any other question: the system Tailscale app is
+    /// still installed on these phones, so a working connection proves a working route, not
+    /// which one. The label is the carrier's own, so a node-carried session and a direct one
+    /// cannot be confused on screen.
+    var tailnetRoute: String {
+        guard let carrier else {
+            switch tailnetState {
+            case .idle: return "Family network: not started"
+            case .starting: return "Family network: starting"
+            case .running: return "Family network: up, no carrier yet"
+            case .failed(let reason): return "Family network: \(reason)"
+            }
+        }
+        return "Family network: \(carrier.label)"
+    }
+
+    /// Points both clients at a carrier.
+    private func hand(_ transport: CallTransport) {
+        carrier = transport
+        client.transport = transport
+        signal.transport = transport
+    }
+
+    /// The carrier everything in this app dials through.
+    ///
+    /// The node is the route, not an optimisation: Family Call answers only on the tailnet,
+    /// so a client without one cannot reach it at all. `CROSSBAR_TAILNET_NODE=off` dials
+    /// direct for an instrument that needs the other route — an override rather than a
+    /// fallback, because nothing selects it silently. A run that took the system's route
+    /// while the screen said otherwise is the failure this project keeps finding.
+    private func attachTransport() async throws -> CallTransport {
+        guard TailnetNode.isEnabled else {
+            log("the embedded node is switched off — dialling direct")
+            return .direct
+        }
+        let transport = try await node.attach()
+        log("carried by the embedded node — \(transport.label)")
+        return transport
+    }
+
     // MARK: - CallKit wiring
 
     private func wireCallKit() {
@@ -215,13 +346,27 @@ final class CallSession: ObservableObject {
         eventsDown = false
         eventsTask?.cancel()
 
+        // The family network comes first, because everything below it is tailnet-only and
+        // the carrier is now the app's own node rather than another app's tunnel.
+        do {
+            hand(try await attachTransport())
+        } catch {
+            log("the family network is not carrying anything: \(error.localizedDescription)")
+            // Waiting to be authorised is not a failure — it is a first run, and the screen
+            // for it is the login page. A node that is up but carries nothing is a failure,
+            // and says so. `wireTailnet` has already set `.needsLogin` when a URL exists.
+            let waiting = tailnetLoginURL != nil && !node.state.isRunning
+            phase = waiting ? .needsLogin : .failed(error.localizedDescription)
+            return
+        }
+
         do {
             let session = try await client.checkSession()
             guard session.authenticated, session.configured else {
                 phase = .failed(
                     session.authenticated
-                        ? "This Tailscale identity is not enrolled in Family Call."
-                        : "No Tailscale identity. Check that Tailscale is connected."
+                        ? "This tailnet identity is not enrolled in Family Call."
+                        : "The service did not recognise this device's tailnet identity."
                 )
                 return
             }
@@ -231,6 +376,18 @@ final class CallSession: ObservableObject {
             contacts = bootstrap.contacts
             phase = .ready
             startEvents()
+
+            #if DEBUG
+            // Inside the load rather than in the view's task, because the view's task is
+            // cancelled when its identity changes and this gate sat after an await there.
+            // Buttons on a device cannot be pressed from here, so the CallKit path needs a
+            // way in that rings nobody; see `runCallKitSelfTest`.
+            if !ranSelfTest,
+               ProcessInfo.processInfo.environment["CROSSBAR_CALLKIT_SELFTEST"] == "1" {
+                ranSelfTest = true
+                runCallKitSelfTest()
+            }
+            #endif
 
             // A call **this device** is already in — the app was closed or the phone
             // rang while it was suspended. Not just any active call: every instance

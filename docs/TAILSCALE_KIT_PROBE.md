@@ -8,6 +8,19 @@ It is deliberately isolated: branch `tailscale-kit`, cut from `architecture-b` a
 architecture-b` plus deleting `Vendor/` and `Scripts/` — no other branch depends on
 either.
 
+**It is the product's transport now (2026-09-19), not an instrument.** `TailnetNode` is
+product code; `CallSession.load()` attaches to it before it asks for anything; and both
+clients dial through its carrier — the control plane (`FamilyCallClient`, through an
+injectable `CallTransport` in place of `URLSession.shared`) and the signalling socket
+(`MiroTalkSignalClient`). Measured on the phone with the app's own log pulled from its
+container: `carried by the embedded node — node 127.0.0.1:61174`, then `GET api/session ->
+HTTP 200 authenticated=true name=Azzaam Chaudhry`, `GET api/bootstrap -> HTTP 200`, and
+`GET api/events -> HTTP 200`, with the contacts screen showing `Family network: node
+127.0.0.1:61174`. The tailnet lists the node as a machine of its own (`crossbar-ios`,
+`100.121.218.110`), so nothing about the app's access depends on the Tailscale app being
+installed on the phone. The DEBUG instrument that used to own the node now drives the same
+object and only measures it.
+
 **Status: the node is authorised and running on the physical iPhone as `crossbar-ios`,
 and it carries both halves of the wire contract — the Family Call control plane
 including Serve's injected identity, and the MiroTalk signalling WebSocket. A first run
@@ -109,48 +122,57 @@ The node's own Go log goes to `Documents/tailscale-node.log` on its own file
 descriptor — the Go runtime writes it from its own threads, so interleaving it into the
 probe's line buffer would corrupt both.
 
-It starts a node, polls `statusJSON()`, performs the same two checks the macOS spike
+It starts a node, polls `statusJSON()`, and performs the same two checks the macOS spike
 did (HTTP to `/api/session` and the Engine.IO handshake) through the node's SOCKS
-loopback, and re-checks automatically on `didBecomeActive`.
+loopback.
 
-It is also the node's *carrier*, which is what the call measurement needed and what the
-product will need next. Three entry points, all DEBUG-only for now:
+The carrier itself is **product code** now: `TailnetNode.attach()` returns a
+`CallTransport` whose session leaves through the node, and the transport carries the label
+naming its route, so a log line cannot claim a route the socket did not take. Both clients
+take one — `FamilyCallClient` for the control plane and `MiroTalkSignalClient` for the
+signalling socket. What is left DEBUG-only in this file is only the measuring:
 
-- `runningNode()` — waits for the bring-up, shared, so a caller that arrives mid-`up()`
-  never dials a loopback the node has not opened yet (the autostart path and a peer
-  joining at launch are exactly that race).
-- `proxiedSession()` — a `URLSessionConfiguration` that leaves through the node, with the
-  loopback it dials returned alongside, because `proxyVia` writes the address into the
-  configuration and nothing reads it back out: without it, a node-carried session and a
-  direct one are indistinguishable in a log.
+- `check()` — both halves of the wire contract through the carrier: HTTP to `/api/session`
+  and the Engine.IO handshake, the same two checks the macOS spike made.
 - `logNodeTraffic()` — the node's own peer counters, read from the raw status JSON
   (`Status.Peer` drops them), reported as deltas. This is the only evidence that says
   *which* carrier moved the bytes while the system Tailscale app is also installed.
 
-`MiroTalkSignalClient` takes the first two as a `Transport` — a configuration and the
-label naming its carrier, so a log line cannot claim a route the socket did not take.
-
-The re-check runs `refreshStatus()` *before* `check()` on purpose. `statusJSON()` goes
-through tsnet's in-memory LocalAPI and never touches the loopback, so if the status
-still reports a running backend while the request fails, the node is alive and only the
-cached loopback address has gone stale — see the constraint below.
+The re-check on `didBecomeActive` is product behaviour now, in
+`CallSession.reverifyCarrier()`: it verifies the carrier and rebuilds the node when the
+verify fails, then re-dials whatever the rebuild invalidated. The verify runs before any
+rebuild on purpose — `statusJSON()` goes through tsnet's in-memory LocalAPI and never
+touches the loopback, so a status document that still reports a running backend while the
+request fails means the node is alive and only the cached address has gone stale; and a
+backend that is *not* running means the network went away, where rebuilding would turn an
+outage into a bring-up loop. See the constraint below.
 
 ### Driving it without a human
 
-The node cannot be started by a button when nobody can press one, and the interesting
-measurement is what happens across a suspend — when nobody can press one by definition.
-So it follows the pattern already in this codebase (`CROSSBAR_CALLKIT_SELFTEST`,
-`CROSSBAR_AUTOLOAD`, `CROSSBAR_SIGNAL_AUTOROOM`):
+The node needs no gate and no button: `CallSession.load()` starts it at launch, because
+every route the app needs is tailnet-only. The gates that remain
+(`CROSSBAR_PROBE_AUTOSHOW`, `CROSSBAR_SIGNAL_AUTOROOM`, `CROSSBAR_SIGNAL_VIANODE`) follow
+the pattern this codebase already used, with one correction from 2026-09-19: they are read
+**before** the first `await` in the view's task. A `.task` on a view whose identity changes
+— and the phase switch does change it — is cancelled, so a gate sequenced after
+`await session.load()` never fires at all. The probe screen silently never appeared until
+that was moved.
+
+To check that a `-e` payload reached the app at all, point the backend at a URL that cannot
+answer and watch the carrier refuse it rather than fall back:
 
 ```bash
 xcrun devicectl device process launch --device <id> --terminate-existing \
-  -e '{"CROSSBAR_TAILSCALE_AUTOSTART":"1"}' \
+  -e '{"CROSSBAR_BACKEND_URL":"https://example.invalid:8443"}' \
   com.abdullahchaudhry.Crossbar
-
-xcrun devicectl device copy from --device <id> --domain-type appDataContainer \
-  --domain-identifier com.abdullahchaudhry.Crossbar \
-  --source Documents/tailscale.log --destination /tmp/tailscale.log
+# the app's log then reads:
+#   carrier 127.0.0.1:61283 carried nothing in 10 attempts — last: no answer
 ```
+
+`CROSSBAR_TAILNET_NODE=off` dials direct instead of through the node, for an instrument
+that needs the other route. It is an override rather than a fallback: nothing selects it
+silently, because a run that took the system's path while the screen said otherwise is the
+failure this branch keeps finding.
 
 `TAILSCALE_AUTH_KEY` is also read from the environment, and an auth key can be stored
 in the app's defaults from the probe screen, so a fresh node can be authorised either

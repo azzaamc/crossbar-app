@@ -148,6 +148,22 @@ enum FamilyEvent: Equatable {
     case failed(String)
 }
 
+// MARK: - Where the service is
+
+/// The one place the Family Call deployment's address is written down.
+///
+/// Two clients dial it — the control plane directly, and the embedded node when it checks
+/// that its carrier actually carries a request — and a second constant beside the first is
+/// how a deployment detail drifts from the one thing that used it. The environment
+/// override is the same one every instrument here uses, so a different host needs no edit.
+enum FamilyCallService {
+    static var baseURL: URL {
+        let override = ProcessInfo.processInfo.environment["CROSSBAR_BACKEND_URL"]
+        return override.flatMap(URL.init(string:))
+            ?? URL(string: "https://qatar-vpn.tailea67b0.ts.net:8443")!
+    }
+}
+
 // MARK: - Client
 
 /// The Family Call control plane, as a native client.
@@ -169,13 +185,25 @@ final class FamilyCallClient {
     /// before it exists.
     var log: (String) -> Void = { _ in }
 
-    /// The private tailnet endpoint. The same override the reachability probe uses,
-    /// so no deployment detail is baked into the source.
-    private var baseURL: URL {
-        let override = ProcessInfo.processInfo.environment["CROSSBAR_BACKEND_URL"]
-        return override.flatMap(URL.init(string:))
-            ?? URL(string: "https://qatar-vpn.tailea67b0.ts.net:8443")!
+    /// The carriage every request leaves by.
+    ///
+    /// `.direct` until an owner sets it, which is how this client behaved before the
+    /// embedded node existed: over whatever the system provides, the Tailscale app's
+    /// tunnel included. `CallSession` sets it to the node's carrier before the first
+    /// request, so the control plane goes down the loopback with the signalling socket
+    /// and neither depends on another app being installed and signed in.
+    ///
+    /// The session is rebuilt when the transport is replaced rather than being read from
+    /// the transport per request: what replaces it is a *new* node after a rebuild, whose
+    /// loopback is a different address, and a session holds the proxy it was built with.
+    var transport: CallTransport = .direct {
+        didSet { session = transport.session() }
     }
+
+    private var session = URLSession(configuration: .default)
+
+    /// Where the service is. One constant, shared with the node's carrier check.
+    private var baseURL: URL { FamilyCallService.baseURL }
 
     /// Built through `URLComponents` rather than `appendingPathComponent` so that a
     /// caller-supplied override with a path cannot silently change where a request
@@ -201,7 +229,7 @@ final class FamilyCallClient {
     @discardableResult
     private func send<T: Decodable>(_ request: URLRequest, as type: T.Type) async throws -> T {
         log("\(request.httpMethod ?? "?") \(request.url?.absoluteString ?? "?")")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
 
         guard (200..<300).contains(code) else {
@@ -240,7 +268,7 @@ final class FamilyCallClient {
         // otherwise leaves no trace at all, which is indistinguishable from one that
         // was never attempted — and that ambiguity already cost a run here.
         log("GET api/session (requesting)")
-        let (data, response) = try await URLSession.shared.data(for: request("GET", "api/session"))
+        let (data, response) = try await session.data(for: request("GET", "api/session"))
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
         let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let identity = shape["identity"] as? [String: Any]
@@ -260,7 +288,7 @@ final class FamilyCallClient {
     /// open, and that is a product-level fact rather than a detail.
     @discardableResult
     func pushConfig() async throws -> (enabled: Bool, publicKeyLength: Int) {
-        let (data, response) = try await URLSession.shared.data(for: request("GET", "api/push/config"))
+        let (data, response) = try await session.data(for: request("GET", "api/push/config"))
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
         let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let enabled = shape["enabled"] as? Bool ?? false
@@ -354,7 +382,7 @@ final class FamilyCallClient {
                     // mistaken for a dead one.
                     request.timeoutInterval = 120
 
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let (bytes, response) = try await self.session.bytes(for: request)
                     let code = (response as? HTTPURLResponse)?.statusCode ?? -1
                     self.log("GET api/events -> HTTP \(code)")
                     guard code == 200 else {

@@ -5,110 +5,38 @@ import SwiftUI
 import TailscaleKit
 import UIKit
 
-/// A connection carrier that leaves through the embedded node.
+/// The embedded node, as an instrument.
 ///
-/// The address travels with the configuration because it is the only part of this a
-/// log can show: `proxyVia` writes it into the configuration and nothing reads it back
-/// out, so a node-carried session and a direct one are otherwise indistinguishable.
-struct NodeSession {
-    let configuration: URLSessionConfiguration
-
-    /// The loopback the configuration dials. The node caches it on first use and
-    /// never invalidates it, which is what makes it worth naming in every log line.
-    let loopbackAddress: String
-}
-
-/// The one way this probe can refuse: no node, and the reason it is not up.
-enum TailscaleProbeError: LocalizedError {
-    case nodeUnavailable(String)
-    case loopbackUnavailable(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .nodeUnavailable(let status):
-            return "no node to carry this — \(status)"
-        case .loopbackUnavailable(let address):
-            return "the node is up but \(address) never answered, so nothing was dialled"
-        }
-    }
-}
-
-/// Can Crossbar carry its own tailnet, so a family member never has to install and
-/// sign in to the Tailscale app?
+/// The node itself is **product code** now (`TailnetNode`): the app starts it at launch and
+/// dials the control plane and the signalling socket through it, so no family member has to
+/// install and sign in to the Tailscale app. What is left here is only the measuring — does
+/// the loopback carry both halves of the wire contract, and what has the node itself put on
+/// the wire?
 ///
-/// Every measurement so far was taken on macOS, where `URLSession` and this wrapper
-/// are the same code but the *platform* is not. The open questions are all iOS-only:
-///
-///  1. Does a userspace tsnet node come up and authorise inside an app sandbox?
-///  2. Does its SOCKS loopback actually carry the control plane and the MiroTalk
-///     WebSocket, which is the whole reason for embedding it?
-///  3. Does any of that survive the app being suspended? This is the one that
-///     matters commercially — a call app spends its life in the background, and
-///     the existing signalling instrument already proved that a suspended app's
-///     WebSocket dies silently, with no close frame and no error.
-///
-/// On (3) there is a specific, documented reason to expect trouble. `proxyVia`
-/// reaches the node through `TailscaleNode.loopback()`, which caches the address
-/// on first call and never invalidates it. Upstream's own comment on `statusJSON`
-/// says the OS reclaims that loopback TCP listener from a suspended process on
-/// iOS, "where the cached loopback address goes permanently stale". The cached
-/// value is visible here as `loopback=…` on every check, so staleness would show
-/// up as an address that stops working rather than an error that explains itself.
-///
-/// This is a measurement instrument, not product code. Nothing in the product asks
-/// for a node yet; every symbol here is DEBUG-only.
+/// It drives the app's node rather than owning one. A node holds a device identity and a
+/// state directory under `Documents/tailscale`, and two of them pointed at the same path
+/// fight over both, which is why there is one per process and this is a view onto it.
 @MainActor
 final class TailscaleProbe: NSObject, ObservableObject {
-    /// One node per app, not one per screen.
-    ///
-    /// A node owns a device identity and a state directory, so a second instance
-    /// pointed at the same path would fight the first for both. The instrument screen
-    /// and the launch-time entry point below therefore share this one.
     static let shared = TailscaleProbe()
 
     @Published private(set) var status = "Not started"
     @Published private(set) var lines: [String] = []
-    @Published private(set) var authURL: String?
-    @Published var authKeyEntry = ""
 
-    private var node: TailscaleNode?
+    private let node = TailnetNode.shared
+    private var cancellables = Set<AnyCancellable>()
     private var logHandle: FileHandle?
-    private var nodeLogFD: Int32?
-
-    /// The bring-up currently in flight, so concurrent callers wait for one node
-    /// rather than racing a second into the same state directory.
-    private var bringUp: Task<Void, Never>?
 
     /// Last peer totals read from the node, so a dump can report a delta.
     private var nodeTraffic: [String: (rx: Int64, tx: Int64)] = [:]
 
-    /// Whether a stale loopback may be rebuilt on foreground, and whether to rebuild
-    /// regardless: `1` rebuilds only what fails a check, `force` rebuilds every time.
-    ///
-    /// A gate rather than an unconditional behaviour because this is still an instrument
-    /// and a rebuild is a decision — but the product's answer is not in doubt: a phone
-    /// whose screen locked must not come back deaf, and the failure it guards against
-    /// cannot be predicted from how long the app was away.
-    private var rebuildMode: String? {
-        ProcessInfo.processInfo.environment["CROSSBAR_TAILSCALE_REBUILD"]
-    }
+    /// The login URL, straight from the node that owns the bus subscription.
+    var authURL: String? { node.loginURL }
 
-    /// The IPN bus subscription. Retained for the node's life: dropping it would end
-    /// the long-poll and with it the only source of the login URL.
-    private var busProcessor: MessageProcessor?
-
-    /// Last status reported to the log, so the timed poll only writes on change.
-    private var lastStatusSummary: String?
-
-    /// The raw status document is written once per node, not once per poll.
-    private var loggedRawStatus = false
-
-    /// The Family Call deployment, matching the backend reachability probe so a
-    /// different host needs no edit here.
-    private var backendBase: URL {
-        ProcessInfo.processInfo.environment["CROSSBAR_BACKEND_URL"]
-            .flatMap(URL.init(string:))
-            ?? URL(string: "https://qatar-vpn.tailea67b0.ts.net:8443")!
+    /// Mirrored for the text field, which binds to this object rather than the node.
+    var authKeyEntry: String {
+        get { node.authKeyEntry }
+        set { node.authKeyEntry = newValue }
     }
 
     /// MiroTalk's own listener is a separate port from the API, so it gets its own
@@ -119,467 +47,70 @@ final class TailscaleProbe: NSObject, ObservableObject {
             ?? URL(string: "wss://qatar-vpn.tailea67b0.ts.net/socket.io/?EIO=4&transport=websocket")!
     }
 
-    /// No key is compiled in and none belongs in the repository. The node is
-    /// authorised once; its state lives in the container afterwards, so this is
-    /// only needed on a fresh install.
-    private var authKey: String? {
-        if let stored = UserDefaults.standard.string(forKey: Self.authKeyDefaultsKey),
-           !stored.isEmpty {
-            return stored
-        }
-        if let env = ProcessInfo.processInfo.environment["TAILSCALE_AUTH_KEY"], !env.isEmpty {
-            return env
-        }
-        return nil
-    }
-
-    private static let authKeyDefaultsKey = "TailscaleAuthKey"
-
     override init() {
         super.init()
-        // Lifecycle is recorded rather than inferred: the span between these two
-        // lines is the thing question (3) is about, and the timestamps matter more
-        // than the order.
-        let center = NotificationCenter.default
-        center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
-                           object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.append("— didEnterBackground —") }
+        node.addLogConsumer { [weak self] line in
+            Task { @MainActor in self?.append(line) }
         }
-        center.addObserver(forName: UIApplication.willEnterForegroundNotification,
-                           object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
+        node.$state
+            .combineLatest(node.$loginURL)
+            .sink { [weak self] state, login in
                 guard let self else { return }
-                self.append("— willEnterForeground —")
-            }
-        }
-        center.addObserver(forName: UIApplication.didBecomeActiveNotification,
-                           object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.node != nil else { return }
-                self.append("— didBecomeActive, re-checking through the node —")
-                // Re-checking automatically is the point: a real user does not tap a
-                // button after switching back to the app.
-                //
-                // Both paths run, and the pair is what makes the result readable.
-                // statusJSON() goes through tsnet's in-memory LocalAPI and does not
-                // touch the loopback, so if the status still reports a running
-                // backend while the request below fails, the node is alive and only
-                // the cached loopback address has gone stale.
-                Task {
-                    await self.refreshStatus()
-                    let reachable = await self.check()
-                    // A suspended node can come back Running with a loopback that no longer
-                    // answers — measured once at 600 s and *not* reproduced in an identical
-                    // 600 s run, so the failure is intermittent and the clock predicts
-                    // nothing. The product therefore cannot trust the cached address after a
-                    // suspension at all; it verifies, and rebuilds when the verify fails.
-                    // `force` exists so the rebuild itself can be tested without first
-                    // provoking a failure that may not come:
-                    //   … -e '{"CROSSBAR_TAILSCALE_REBUILD":"1"}'   (or "force")
-                    switch self.rebuildMode {
-                    case nil:
-                        return
-                    case "force":
-                        guard await self.rebuildNode("forced, to test the recovery itself")
-                        else { return }
-                    default:
-                        guard !reachable else { return }
-                        guard await self.rebuildNode("Running, but its loopback stopped answering")
-                        else { return }
-                    }
-                    await self.refreshStatus()
-                    await self.check()
+                switch state {
+                case .idle: self.status = "Not started"
+                case .starting: self.status = login == nil ? "Bringing up…" : "Waiting for a login"
+                case .running: self.status = "Running"
+                case .failed(let reason): self.status = "Failed — \(reason)"
                 }
             }
-        }
+            .store(in: &cancellables)
     }
 
-    // MARK: - Node lifecycle
-
-    /// Starts the node — the only way it starts, so every caller waits for the same
-    /// bring-up.
-    ///
-    /// `up()` returns only once the node is authorised, and `loopback()` is only worth
-    /// having after that. A second `start()` that returned early would therefore hand
-    /// back a node that is not running yet, which is precisely what a caller about to
-    /// dial the loopback must not be given — so concurrent callers wait on the one
-    /// bring-up rather than starting a second into the same state directory.
     func start() async {
-        if let bringUp {
-            await bringUp.value
-            return
-        }
-        let task = Task { await self.bringUpNode() }
-        bringUp = task
-        await task.value
-        bringUp = nil
-    }
-
-    private func bringUpNode() async {
-        guard node == nil else {
-            append("node already running")
-            return
-        }
-
-        let path = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("tailscale", isDirectory: true)
-        try? FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
-
-        append("starting node in \(path.path)")
-        append(authKey == nil
-            ? "no auth key — expecting interactive login"
-            : "using a stored auth key")
-
-        let config = Configuration(hostName: "crossbar-ios",
-                                   path: path.path,
-                                   authKey: authKey,
-                                   controlURL: kDefaultControlURL,
-                                   // Not ephemeral: an ephemeral node leaves the tailnet
-                                   // when it disconnects and would need authorising again
-                                   // on every launch, which makes repeated device runs
-                                   // useless.
-                                   ephemeral: false)
-
-        do {
-            let node = try TailscaleNode(config: config, logger: makeNodeLogger())
-            self.node = node
-            status = "Bringing up…"
-
-            // The bus is watched *before* `up()`, because `up()` is the thing that
-            // blocks waiting for the login this bus delivers. Starting it afterwards
-            // would be starting it after the only event it exists to catch.
-            await startIPNBus(for: node)
-
-            // `up()` does not return until the node is authorised — it blocks on login.
-            // So the status poll runs *alongside* it rather than after: without that, a
-            // node with no auth key parks forever and never reveals the URL that would
-            // authorise it, which is exactly what the first device run did. The poll
-            // also uses the in-memory LocalAPI path, which works before the node is in
-            // the netmap and therefore before the loopback is useful.
-            let watcher = Task { [weak self] in
-                while !Task.isCancelled {
-                    await self?.refreshStatus()
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
-                }
-            }
-            defer { watcher.cancel() }
-
-            try await node.up()
-            append("node is up")
-            await refreshStatus()
-        } catch {
-            append("bring-up failed: \(error)")
-            status = "Bring-up failed"
-            self.node = nil
-        }
+        await node.start()
     }
 
     func stop() async {
-        guard let node else { return }
-        busProcessor?.cancel()
-        busProcessor = nil
-        do {
-            try await node.close()
-            append("node closed")
-            status = "Stopped"
-        } catch {
-            append("close failed: \(error)")
-        }
-        self.node = nil
-        self.authURL = nil
+        await node.stop()
     }
 
-    // MARK: - Carrying someone else's traffic
+    func saveAuthKey() { node.saveAuthKey() }
+    func clearAuthKey() { node.clearAuthKey() }
+    func openAuthURL() { node.openLoginPage() }
 
-    /// The node, once it is up.
-    ///
-    /// A node object exists from the first moment of bring-up, well before `up()` has
-    /// returned, so `node != nil` is *not* the readiness condition — and a dial through
-    /// a node that is not Running yet fails, because the loopback listener accepts
-    /// connections from the moment the node exists while nothing can be carried over it.
-    /// Measured on 2026-09-18: a call launched while the system Tailscale app was
-    /// disconnected dialled the loopback ~11 s before `node is up` appeared, and both the
-    /// probe's check and the signalling socket came back with
-    /// `A TLS error caused the secure connection failed` — against a status document
-    /// that still said `no peers`. So this waits for whatever bring-up is in flight,
-    /// whoever started it, rather than trusting the object's existence.
-    func runningNode() async throws -> TailscaleNode {
-        if let bringUp {
-            await bringUp.value
-        } else if node == nil {
-            await start()
-        }
-        guard let node = self.node else {
-            throw TailscaleProbeError.nodeUnavailable(status)
-        }
-        return node
-    }
-
-    /// A session configuration that leaves through the node, and the loopback it dials.
-    ///
-    /// The wait matters as much as the configuration. `up()` returning is not the same as
-    /// the loopback accepting: the macOS spike recorded the first request after bring-up
-    /// failing with `NSURLErrorBadURL` on `lo0` and the next one in the same run
-    /// succeeding, and that race cost a call here — two signalling sockets died with
-    /// `receive failed: bad URL` immediately after bring-up, nothing retried them, and the
-    /// run then measured a node carrying nothing while claiming to test one. Nothing is
-    /// dialled until the listener answers.
-    func proxiedSession() async throws -> NodeSession {
-        try await sessionThrough(try await runningNode())
-    }
-
-    /// The carrier for a node that is already up, once it has carried a request.
-    private func sessionThrough(_ node: TailscaleNode) async throws -> NodeSession {
-        let (configuration, loopback) = try await URLSessionConfiguration.tailscaleSession(node)
-        try await waitForCarrier(configuration, at: loopback.address)
-        return NodeSession(configuration: configuration, loopbackAddress: loopback.address)
-    }
-
-    /// Waits until the carrier has carried a real request, and says how many attempts that
-    /// took.
-    ///
-    /// A knock on the listener is not enough, and this is measured rather than assumed: on
-    /// 2026-09-18 a carrier whose LocalAPI probe on the same loopback had just answered
-    /// failed the very next request with `bad URL`, so what "ready" means is a request that
-    /// went through the SOCKS path and came back, not a listener that exists. The endpoint
-    /// is the one the control plane uses anyway, and any HTTP status counts — the question
-    /// is whether the path carried it, not whether it was authorised.
-    ///
-    /// Retried rather than trusted because the failure it guards against arrives without
-    /// warning: the same build failed this way on one launch and not the next.
-    private func waitForCarrier(_ configuration: URLSessionConfiguration,
-                                at address: String) async throws {
-        let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-
-        var last = "nothing was attempted"
-        for attempt in 1...10 {
-            var request = URLRequest(url: backendBase.appendingPathComponent("api/session"))
-            request.setValue("application/json", forHTTPHeaderField: "accept")
-            request.timeoutInterval = 5
-            do {
-                let (_, response) = try await session.data(for: request)
-                if let code = (response as? HTTPURLResponse)?.statusCode {
-                    if attempt > 1 {
-                        append("carrier \(address) answered on attempt \(attempt) (HTTP \(code))")
-                    }
-                    return
-                }
-                last = "a response that was not HTTP"
-            } catch {
-                last = error.localizedDescription
-            }
-            try? await Task.sleep(nanoseconds: 500_000_000)
-        }
-        append("carrier \(address) carried nothing in 10 attempts — last: \(last)")
-        throw TailscaleProbeError.loopbackUnavailable(address)
-    }
-
-    /// What the node itself has carried, from its own peer statistics.
-    ///
-    /// This is the measurement that separates "the socket was configured to use the
-    /// node" from "the node carried it". The system Tailscale app is also installed on
-    /// this phone, so a working socket proves a working route, not which one — and the
-    /// candidate lists show the system tunnel's address while the node has no interface
-    /// to offer at all. These counters only move for traffic the node itself put on the
-    /// wire.
-    ///
-    /// The typed status document drops the byte counters, so this reads the raw JSON,
-    /// which carries them. Totals are cumulative for the node's life and are reported
-    /// as a delta against the previous reading — a single reading cannot say whether
-    /// the call in front of it added anything.
-    func logNodeTraffic(_ note: String) async {
-        guard let node else {
-            append("node traffic [\(note)] — no node")
-            return
-        }
-        do {
-            let data = try await node.statusJSON()
-            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-            let peers = object["Peer"] as? [String: [String: Any]] ?? [:]
-
-            var carried: [String] = []
-            for peer in peers.values {
-                let rx = (peer["RxBytes"] as? NSNumber)?.int64Value ?? 0
-                let tx = (peer["TxBytes"] as? NSNumber)?.int64Value ?? 0
-                guard rx + tx > 0 else { continue }
-                let name = peer["HostName"] as? String ?? "?"
-                let previous = nodeTraffic[name] ?? (0, 0)
-                nodeTraffic[name] = (rx, tx)
-                carried.append("\(name) rx=\(rx)(+\(rx - previous.0)) tx=\(tx)(+\(tx - previous.1))")
-            }
-
-            if carried.isEmpty {
-                // The field names are the thing that could be wrong here, and a silent
-                // zero would look like a negative result rather than a missing one.
-                let fields = peers.values.first.map { $0.keys.sorted().joined(separator: ",") }
-                    ?? "no peers in the status document"
-                append("node traffic [\(note)] — nothing carried; peer fields: \(fields)")
-            } else {
-                append("node traffic [\(note)] — \(carried.sorted().joined(separator: "; "))")
-            }
-        } catch {
-            append("node traffic [\(note)] — read failed: \(error.localizedDescription)")
-        }
-    }
-
-    func saveAuthKey() {
-        let trimmed = authKeyEntry.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        UserDefaults.standard.set(trimmed, forKey: Self.authKeyDefaultsKey)
-        authKeyEntry = ""
-        append("auth key stored in this app's defaults")
-    }
-
-    func clearAuthKey() {
-        UserDefaults.standard.removeObject(forKey: Self.authKeyDefaultsKey)
-        append("auth key cleared from this app's defaults")
-    }
-
-    func openAuthURL() {
-        guard let authURL, let url = URL(string: authURL) else { return }
-        UIApplication.shared.open(url)
-    }
-
-    // MARK: - Authorisation
-
-    /// Subscribes to the IPN bus, which is where the login URL lives.
-    ///
-    /// `statusJSON()` carries an `AuthURL` field and it was empty on every poll while
-    /// the node sat at NeedsLogin, so the status document is not the source. Upstream's
-    /// README names the bus — "watch the ipn bus … for the browseToURL field for
-    /// interactive web-based auth" — and this is the same mechanism the bundled
-    /// example uses.
-    ///
-    /// This is the shape the product wants: a first run that sends someone to a
-    /// Tailscale login page, rather than an auth key someone has to keep and hand out.
-    private func startIPNBus(for node: TailscaleNode) async {
-        let watcher = IPNBusWatcher(
-            report: { [weak self] line in
-                Task { @MainActor in self?.append(line) }
-            },
-            onLoginURL: { [weak self] url in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.authURL = url
-                    self.append("login URL ready — open it to authorise this device")
-                    self.append(url)
-                }
-            })
-
-        do {
-            let client = LocalAPIClient(localNode: node, logger: nil)
-            busProcessor = try await client.watchIPNBus(mask: [.initialState, .prefs],
-                                                        consumer: watcher)
-            append("watching the IPN bus for a login URL")
-        } catch {
-            append("could not watch the IPN bus: \(error)")
-        }
-    }
-
-    // MARK: - Status
-
-    func refreshStatus() async {
-        guard let node else {
-            append("no node — start it first")
-            return
-        }
-        do {
-            let data = try await node.statusJSON()
-            let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-            let backend = object["BackendState"] as? String ?? "?"
-            let auth = (object["AuthURL"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            let ips = object["TailscaleIPs"] as? [String] ?? []
-
-            status = "BackendState: \(backend)"
-            authURL = auth
-
-            // Dumped once. The status document is the only place the node's own view of
-            // itself is visible, and the login URL that authorises a first run comes
-            // from it or from nowhere — so a run that shows no AuthURL has to be able
-            // to show what the document actually contained.
-            if !loggedRawStatus {
-                loggedRawStatus = true
-                append("raw status: \(String(decoding: data, as: UTF8.self))")
-            }
-
-            // This runs on a timer for as long as the node waits to be authorised, so
-            // lines are emitted on change only. A node parked at NeedsLogin would
-            // otherwise write the same three lines every three seconds and bury
-            // everything else in the log.
-            let summary = "\(backend)|\(auth ?? "")|\(ips.joined(separator: ","))"
-            guard summary != lastStatusSummary else { return }
-            lastStatusSummary = summary
-
-            append("BackendState=\(backend)")
-            if let auth { append("AuthURL=\(auth)") }
-            if !ips.isEmpty { append("IPs=\(ips.joined(separator: ", "))") }
-        } catch {
-            let text = "\(error)"
-            guard text != lastStatusSummary else { return }
-            lastStatusSummary = text
-            append("status failed: \(text)")
-        }
-    }
-
-    // MARK: - Traffic through the node
+    // MARK: - Measurement
 
     /// Both halves of the wire contract, through one node.
     ///
-    /// `tailscaleSession` re-reads the node's loopback each time, so the address
-    /// printed here is the *cached* one. If the cached address goes stale after a
-    /// suspend, that is exactly where it will show.
-    ///
-    /// Returns whether the loopback carried anything at all — which is the question a
-    /// suspend asks, and a different one from whether the wire contract is intact. The
-    /// session is built fresh on every call, so a failure here is the address, not
-    /// connection state.
+    /// This is the check the branch exists on: the control plane, which is how identity is
+    /// established at all, and the MiroTalk signalling WebSocket, which is how a call is
+    /// arranged. Either one failing means the node is not a usable route, whatever its
+    /// status document says.
     @discardableResult
     func check() async -> Bool {
-        // A node can exist for many seconds before it is Running — `node != nil` is not
-        // readiness (see `runningNode`) — so this waits for a bring-up already in flight
-        // rather than dialling into one. It deliberately does not *start* a node: "check"
-        // with no node is a missing node, not an instruction to bring one up. Observed
-        // without this wait: a TLS failure that says nothing about the wire contract,
-        // against a status document still reporting `no peers`.
-        if let bringUp { await bringUp.value }
-        guard let node = self.node else {
-            append("no node — start it first")
-            return false
-        }
-
         append("— check —")
-
-        var loopbackAddress = "?"
         do {
-            let carrier = try await sessionThrough(node)
-            loopbackAddress = carrier.loopbackAddress
-            append("loopback=\(carrier.loopbackAddress)")
-            let session = URLSession(configuration: carrier.configuration)
+            let carrier = try await node.attach()
+            append("carrier=\(carrier.label) loopback=\(carrier.loopbackAddress ?? "?")")
+            let session = carrier.session()
 
-            // 1. The control plane, which is how identity is established at all.
-            var request = URLRequest(url: backendBase.appendingPathComponent("api/session"))
+            // 1. The control plane.
+            var request = URLRequest(url: FamilyCallService.baseURL.appendingPathComponent("api/session"))
             request.setValue("application/json", forHTTPHeaderField: "accept")
             request.timeoutInterval = 20
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             append("HTTP \(code)")
-
             if let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
                 let authenticated = json["authenticated"] as? Bool ?? false
                 let name = (json["identity"] as? [String: Any])?["name"] as? String ?? "?"
                 append("authenticated=\(authenticated) identity=\(name)")
-                status = authenticated
-                    ? "Identity resolves through the embedded node"
-                    : "Reached the service, no identity (HTTP \(code))"
             } else {
                 append("unparseable body (\(data.count) bytes)")
-                status = "HTTP \(code)"
             }
 
-            // 2. MiroTalk signalling. The Engine.IO handshake arrives on the first
-            //    frame, so one receive separates success from silence — the same
-            //    test the macOS spike used.
+            // 2. MiroTalk signalling. The Engine.IO handshake arrives on the first frame, so
+            //    one receive separates success from silence — the test the macOS spike used.
             let socket = session.webSocketTask(with: socketURL)
             socket.resume()
             defer { socket.cancel(with: .goingAway, reason: nil) }
@@ -604,83 +135,69 @@ final class TailscaleProbe: NSObject, ObservableObject {
             append("ws first frame: \(frame.prefix(120))")
             append(frame.hasPrefix("0")
                 ? "signalling handshake OK"
-                : "connected, but frame is not the handshake")
-            // A frame of any kind means the loopback carried it, which is the question
-            // this return value answers; whether it is the *right* frame is the wire
-            // contract's business, and is reported on the line above.
+                : "connected, but the frame is not the handshake")
             return true
         } catch {
-            append("check failed at loopback=\(loopbackAddress): \(error.localizedDescription)")
-            status = "Failed — \(error.localizedDescription)"
+            append("check failed: \(error.localizedDescription)")
             return false
         }
     }
 
-    /// The node's `BackendState`, through the LocalAPI path that never touches the
-    /// loopback — which is the only reason it is readable when the loopback is the thing
-    /// that broke.
-    private func backendState() async -> String? {
-        guard let node = self.node,
-              let data = try? await node.statusJSON(),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return nil }
-        return object["BackendState"] as? String
+    /// What the node itself has carried, from its own peer statistics.
+    ///
+    /// This is the measurement that separates "the socket was configured to use the node"
+    /// from "the node carried it". The system Tailscale app is installed on this phone too,
+    /// so a working socket proves a working route, not which one — and the candidate lists
+    /// show the system tunnel's address while the node has no interface to offer at all.
+    /// These counters only move for traffic the node itself put on the wire.
+    ///
+    /// The typed status document drops the byte counters, so this reads the raw JSON, which
+    /// carries them. Totals are cumulative for the node's life and are reported as a delta
+    /// against the previous reading: a single reading cannot say whether the call in front
+    /// of it added anything.
+    func logNodeTraffic(_ note: String) async {
+        guard let data = await node.statusJSON() else {
+            append("node traffic [\(note)] — no node")
+            return
+        }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let peers = object["Peer"] as? [String: [String: Any]] ?? [:]
+
+        var carried: [String] = []
+        for peer in peers.values {
+            let rx = (peer["RxBytes"] as? NSNumber)?.int64Value ?? 0
+            let tx = (peer["TxBytes"] as? NSNumber)?.int64Value ?? 0
+            guard rx + tx > 0 else { continue }
+            let name = peer["HostName"] as? String ?? "?"
+            let previous = nodeTraffic[name] ?? (0, 0)
+            nodeTraffic[name] = (rx, tx)
+            carried.append("\(name) rx=\(rx)(+\(rx - previous.0)) tx=\(tx)(+\(tx - previous.1))")
+        }
+
+        if carried.isEmpty {
+            // The field names are the thing that could be wrong here, and a silent zero
+            // would read as a negative result rather than a missing one.
+            let fields = peers.values.first.map { $0.keys.sorted().joined(separator: ",") }
+                ?? "no peers in the status document"
+            append("node traffic [\(note)] — nothing carried; peer fields: \(fields)")
+        } else {
+            append("node traffic [\(note)] — \(carried.sorted().joined(separator: "; "))")
+        }
     }
 
-    /// Rebuilds the node, which is the only way to reach a live loopback again.
-    ///
-    /// Measured on 2026-09-18, and this is the failure the branch flagged as the one that
-    /// decides whether any of it is usable: a ten-minute suspension left the node
-    /// `Running`, its own status unchanged, and yet a **fresh** `URLSession` against the
-    /// cached loopback timed out. An identical ten-minute suspension in the next run left
-    /// the same cached address working. **So the failure is real and intermittent, and no
-    /// amount of clock-watching predicts it** — which is the finding that matters, because
-    /// it means the cached address cannot be trusted after any suspension and the device
-    /// has to verify rather than assume.
-    ///
-    /// `loopback()` caches for the node's life with no invalidation and no API to clear it,
-    /// and nothing exposes the listener, so the only recovery is a new node — cheap,
-    /// because the machine key is on disk: the replacement authorises without a login and
-    /// brings a new loopback with it.
-    ///
-    /// Rebuilt only when the backend still reports `Running`. A backend that is not running
-    /// means the network went away rather than the listener, and rebuilding on every failed
-    /// request would turn an outage into a bring-up loop.
-    func rebuildNode(_ reason: String) async -> Bool {
-        guard let state = await backendState() else {
-            append("not rebuilding: the node could not be asked")
-            return false
+    /// The node's own view of itself, as the raw document.
+    func refreshStatus() async {
+        guard let data = await node.statusJSON() else {
+            append("no node — start it first")
+            return
         }
-        guard state == "Running" else {
-            append("not rebuilding: the node is \(state), so the network is the problem")
-            return false
-        }
-
-        append("— rebuilding the node: \(reason) —")
-        await stop()
-        do {
-            _ = try await runningNode()
-            append("node rebuilt")
-            return true
-        } catch {
-            append("rebuild failed: \(error.localizedDescription)")
-            return false
-        }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        let backend = object["BackendState"] as? String ?? "?"
+        let ips = object["TailscaleIPs"] as? [String] ?? []
+        append("BackendState=\(backend) ips=[\(ips.joined(separator: ", "))]")
     }
 
     // MARK: - Logging
-
-    /// The go backend writes to this descriptor from its own threads, so it gets a
-    /// file of its own: interleaving it into the probe's line buffer would corrupt
-    /// both.
-    private func makeNodeLogger() -> LogSink {
-        let url = documentsDirectory.appendingPathComponent("tailscale-node.log")
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        let fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
-        // A descriptor the go runtime writes to must stay open for the node's life.
-        nodeLogFD = fd
-        return NodeLogSink(fd: fd < 0 ? nil : fd)
-    }
 
     private var documentsDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -692,8 +209,8 @@ final class TailscaleProbe: NSObject, ObservableObject {
         writeToLogFile(line)
     }
 
-    /// Screen-only output has already cost measurements twice, so everything also
-    /// goes to Documents/tailscale.log for pulling.
+    /// Screen-only output has already cost measurements twice, so everything also goes to
+    /// `Documents/tailscale.log` for pulling.
     private func writeToLogFile(_ line: String) {
         if logHandle == nil {
             let url = documentsDirectory.appendingPathComponent("tailscale.log")
@@ -703,55 +220,6 @@ final class TailscaleProbe: NSObject, ObservableObject {
         }
         guard let data = (line + "\n").data(using: .utf8) else { return }
         logHandle?.write(data)
-    }
-}
-
-/// Taps the IPN bus for the one thing the status document does not carry: the login URL.
-///
-/// An actor because `MessageConsumer` requires one, and because the bus delivers from
-/// the network stack rather than the main actor. Only changes are reported upward — the
-/// bus re-sends the current state with every notification, and forwarding each one
-/// would bury the log.
-private actor IPNBusWatcher: MessageConsumer {
-    private let report: @Sendable (String) -> Void
-    private let onLoginURL: @Sendable (String) -> Void
-
-    private var lastState: Ipn.State?
-    private var lastURL: String?
-
-    init(report: @escaping @Sendable (String) -> Void,
-         onLoginURL: @escaping @Sendable (String) -> Void) {
-        self.report = report
-        self.onLoginURL = onLoginURL
-    }
-
-    func notify(_ notify: Ipn.Notify) {
-        if let state = notify.State, state != lastState {
-            lastState = state
-            report("bus state: \(state)")
-        }
-        if let url = notify.BrowseToURL, !url.isEmpty, url != lastURL {
-            lastURL = url
-            onLoginURL(url)
-        }
-    }
-
-    func error(_ error: any Error) {
-        report("bus error: \(error)")
-    }
-}
-
-/// `nonisolated` because `LogSink` is called from the network stack, not the main
-/// actor, and this app defaults unannotated declarations to `MainActor`.
-private struct NodeLogSink: LogSink {
-    let fd: Int32?
-
-    nonisolated var logFileHandle: Int32? { fd }
-
-    nonisolated func log(_ message: String) {
-        guard let fd else { return }
-        var bytes = Array(("probe: " + message + "\n").utf8)
-        _ = bytes.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
     }
 }
 

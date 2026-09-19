@@ -242,12 +242,11 @@ struct SignalProbeSection: View {
         }
         Task {
             do {
-                let session = try await TailscaleProbe.shared.proxiedSession()
+                let transport = try await TailnetNode.shared.attach()
                 // Read the node's counters before anything is dialled, so the growth
                 // during the call is attributable to the call.
                 await TailscaleProbe.shared.logNodeTraffic("before connecting")
-                client.transport = .init(configuration: session.configuration,
-                                         label: "embedded node \(session.loopbackAddress)")
+                client.transport = transport
                 client.connect(room: room)
             } catch {
                 // Deliberately not falling back to the direct route. A call that took

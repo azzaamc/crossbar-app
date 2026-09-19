@@ -40,6 +40,16 @@ struct ContactsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                Section {
+                    // Which route is carrying this app belongs on the screen, not only in a
+                    // log: carrying its own tailnet is the entire point of the embedded node,
+                    // and the Tailscale app is still installed on this phone, so a working
+                    // connection does not by itself say which one it came through.
+                    Label(session.tailnetRoute, systemImage: "lock.shield")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("family.route")
+                }
             }
             .navigationTitle("Family Call")
             .refreshable { await session.load() }
