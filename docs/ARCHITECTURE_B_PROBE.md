@@ -107,11 +107,23 @@ matters when a run produces nothing:
 
 `PROBE_AUTOSHOW` presents the probe screen over whatever the product is showing, because
 the screen is otherwise reached by a toolbar tap in the contacts list and none of the
-gates above can fire from a screen that was never mounted. It is read when the root view
-is *initialised*, not from a task: asking for a presentation from the first task tick is a
-race, and on 2026-09-19 it lost twice in a row with a four-key payload while the same
-variable alone worked a minute later — which reads exactly like the variable never being
-delivered. `VIANODE` routes the signalling sockets through the embedded Tailscale node's
+gates above can fire from a screen that was never mounted.
+
+**Its mechanism has been wrong three ways, and it is still not dependable.** It was first
+set from the root view's `.task`, which is cancelled when the phase switch changes the
+view's identity; then from a `@State` initialiser, where a `fullScreenCover` whose binding
+is already true at insertion is simply never presented; and now from `onAppear`, which is at
+least mechanically sound. Measured on the device, 2026-09-19: `{"CROSSBAR_PROBE_AUTOSHOW":
+"1"}` alone presents the screen, and so does `PROBE_AUTOSHOW` with `CROSSBAR_BACKEND_URL` —
+but **every payload that also carried `CROSSBAR_SIGNAL_AUTOROOM` presented nothing, seven
+runs in a row**, whatever value that variable had, while `devicectl` reported the launch as
+successful either way and the app itself started and loaded normally in those runs. That
+correlation is the whole of what is known: the auto-join gate could not be driven through
+the launch environment on this build, so a signalling run still needs a hand on the screen.
+Nothing here shows which side of the boundary the failure is on, so do not record it as the
+variable being delivered and ignored.
+
+`VIANODE` routes the signalling sockets through the embedded Tailscale node's
 SOCKS loopback instead of the system's route, and logs which carrier each socket took plus
 the node's own peer counters; leave it off for the control run whose flat counters are
 what make a routed run's growth mean anything.

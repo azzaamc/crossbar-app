@@ -18,11 +18,13 @@ struct ContentView: View {
     ///
     ///   … -e '{"CROSSBAR_PROBE_AUTOSHOW":"1"}'
     ///
-    /// Read at initialisation, not from the task below. Asking for a presentation from the
-    /// first task tick is a race, and it lost often enough to look like the variable was
-    /// never delivered at all: on 2026-09-19 two runs with the same four-key payload
-    /// presented nothing while the same variable alone presented the screen a minute later.
-    @State private var showProbe = ProcessInfo.processInfo.environment["CROSSBAR_PROBE_AUTOSHOW"] == "1"
+    /// Set by `onAppear` below, and deliberately not in the `@State` initialiser: a
+    /// `fullScreenCover` whose binding is already true when the view is inserted is not
+    /// presented at all — the presentation wants a change — and not from the load task
+    /// either, which is cancelled when the phase switch changes the view's identity.
+    /// Both were tried on 2026-09-19 and both presented nothing, which reads exactly like
+    /// the variable never being delivered.
+    @State private var showProbe = false
     #endif
 
     var body: some View {
@@ -84,6 +86,11 @@ struct ContentView: View {
         // The instruments, presented over whatever the product is showing. A debug
         // screen reachable only by tapping a toolbar item cannot be reached at all
         // when the phone is on a desk.
+        .onAppear {
+            if ProcessInfo.processInfo.environment["CROSSBAR_PROBE_AUTOSHOW"] == "1" {
+                showProbe = true
+            }
+        }
         .fullScreenCover(isPresented: $showProbe) { ProbeView() }
         #endif
     }
