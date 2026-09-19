@@ -103,9 +103,36 @@ cannot drift.
 
 There is **no app icon asset catalog**. `AppIcon.appiconset` was retired on
 2026-09-19 in favour of the document, and `Assets.xcassets` now holds only
-`AccentColor` — which is still empty, so the app uses the system accent colour
-(blue) rather than anything from the icon. The mark's only saturated colour is
-the rings' gold, `#e5be12`, if that is wanted.
+`AccentColor`.
+
+## Accent colour
+
+`AccentColor` is the icon's gold, adapted per appearance. A single bright gold
+cannot be both a legible label on white and a legible fill under white text, and
+iOS uses the accent for both, so the two appearances differ on purpose:
+
+| Appearance | Value | Measured against | Contrast |
+| --- | --- | --- | --- |
+| Any (light) | `#8A6A00` sRGB | white | 5.07:1 |
+| Dark | display-P3 `0.833, 0.666, 0` (renders `#DDA800`) | black | 9.68:1 |
+
+The dark value is the icon's own authored P3 triple, so the mark and the app
+carry literally the same gold. The light value is a darker gold chosen for
+contrast: the icon's gold on white is only 1.79:1, which is what the first
+screenshot of a `borderedProminent` button showed — white on gold, washed out.
+Numbers measured 2026-09-19 from rendered pixels of simulator screenshots
+(CoreGraphics, sRGB), not from the source values.
+
+Known tradeoff: in **dark** mode `.borderedProminent` fills with the accent and
+labels in white, which is 2.17:1 against that bright gold, so a dark-mode filled
+button is the softest control in the app. Every other case measured passes: gold
+label on white 5.07:1, gold label on black 9.68:1, white on gold in light mode
+5.07:1. The light value reads as a dark gold/bronze rather than the mark's
+brighter gold; if that matters more than contrast, `#B8860B` looks closer to the
+mark but takes light-mode labels down to 3.28:1 (large text only).
+
+`.orange` in `ContactsView` and `InCallView` is not the accent — it marks a
+warning that the event stream is down.
 
 ## Simulator procedure
 
