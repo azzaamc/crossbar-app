@@ -49,8 +49,8 @@ final class CallKitManager: NSObject, CXProviderDelegate {
 
     func reportIncoming(callID: UUID, video: Bool) {
         let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: "Family member")
-        update.localizedCallerName = "Family member"
+        update.remoteHandle = CXHandle(type: .generic, value: "Unknown caller")
+        update.localizedCallerName = "Unknown caller"
         update.hasVideo = video
         provider.reportNewIncomingCall(with: callID, update: update) { [weak self] error in
             guard let self, let error else { return }

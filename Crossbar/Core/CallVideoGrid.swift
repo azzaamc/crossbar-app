@@ -50,7 +50,7 @@ struct VideoTile: View {
     }
 }
 
-/// The local capture and every remote peer's video, as tiles.
+/// The call's video: this device's capture and every remote peer's, handed to the stage.
 ///
 /// **Observes the signalling client directly.** A nested `ObservableObject` does not
 /// republish, so a view that reads remote tracks through some outer model never learns
@@ -58,42 +58,41 @@ struct VideoTile: View {
 /// and nothing else, while the log plainly showed the remote video track had been
 /// received. Any view showing video must own or directly observe the client.
 ///
-/// Peers are ordered by id so tiles do not swap places as the dictionary rehashes.
+/// Peers are ordered by id so tiles do not swap places as the dictionary rehashes, which
+/// is also what makes "the first remote" a stable answer for the arrangement.
 struct CallVideoGrid: View {
     @ObservedObject var signal: MiroTalkSignalClient
     let localTrack: RTCVideoTrack?
+
+    /// Whether the user's own camera is on; see `CallStage.localCameraOff`.
+    var localCameraOff = false
 
     /// The remote tile's view, handed to whoever starts Picture-in-Picture: the window
     /// animates out of the tile the user was watching, so it has to be a real view.
     var onRemoteViewReady: ((RTCMTLVideoView) -> Void)?
 
-    private var peerIDs: [String] { signal.remoteVideo.keys.sorted() }
-
-    private var columns: [GridItem] {
-        // One remote reads better large; more than one and a pair of columns keeps
-        // every face visible at once, which is what a family call is for.
-        peerIDs.count <= 1
-            ? [GridItem(.flexible(), spacing: 8)]
-            : [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)]
+    /// Only peers that have sent video appear here, as they always have: a tile for someone
+    /// whose camera has never arrived would be an empty rectangle pretending to be a
+    /// participant.
+    private var peers: [StagePeer] {
+        signal.remoteVideo.keys.sorted().map { peerID in
+            StagePeer(
+                id: peerID,
+                track: signal.remoteVideo[peerID],
+                // The name arrives in `addPeer`. A socket id is not who is on the
+                // call, so it is only ever the fallback.
+                caption: signal.remoteNames[peerID] ?? String(peerID.prefix(6)),
+                cameraOff: signal.remoteVideoOff.contains(peerID)
+            )
+        }
     }
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 8) {
-                VideoTile(track: localTrack, caption: "You")
-                    .aspectRatio(3.0 / 4.0, contentMode: .fit)
-                ForEach(peerIDs, id: \.self) { peerID in
-                    // The name arrives in `addPeer`. A socket id is not who is on the
-                    // call, so it is only ever the fallback.
-                    VideoTile(
-                        track: signal.remoteVideo[peerID],
-                        caption: signal.remoteNames[peerID] ?? String(peerID.prefix(6)),
-                        cameraOff: signal.remoteVideoOff.contains(peerID),
-                        onViewReady: onRemoteViewReady
-                    )
-                    .aspectRatio(3.0 / 4.0, contentMode: .fit)
-                }
-            }
-        }
+        CallStage(
+            peers: peers,
+            localTrack: localTrack,
+            localCameraOff: localCameraOff,
+            onRemoteViewReady: onRemoteViewReady
+        )
     }
 }

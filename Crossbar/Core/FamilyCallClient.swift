@@ -157,10 +157,26 @@ enum FamilyEvent: Equatable {
 /// how a deployment detail drifts from the one thing that used it. The environment
 /// override is the same one every instrument here uses, so a different host needs no edit.
 enum FamilyCallService {
+    /// The compiled default: this household's deployment. A build nobody has configured
+    /// still works, which matters because this app belongs to the person using it rather
+    /// than to an administrator.
+    static let compiledDefault = URL(string: "https://qatar-vpn.tailea67b0.ts.net:8443")!
+
+    /// Where the service is, in order of authority: the environment (how every measurement
+    /// on this branch was taken against another host), then what someone typed in Settings,
+    /// then the compiled default.
+    ///
+    /// Asked afresh on every request rather than captured at launch, so a change in
+    /// Settings takes effect without a relaunch.
     static var baseURL: URL {
-        let override = ProcessInfo.processInfo.environment["CROSSBAR_BACKEND_URL"]
-        return override.flatMap(URL.init(string:))
-            ?? URL(string: "https://qatar-vpn.tailea67b0.ts.net:8443")!
+        if let value = ProcessInfo.processInfo.environment["CROSSBAR_BACKEND_URL"],
+           let url = URL(string: value) {
+            return url
+        }
+        if let stored = AppSettings.serviceAddress, let url = URL(string: stored) {
+            return url
+        }
+        return compiledDefault
     }
 }
 

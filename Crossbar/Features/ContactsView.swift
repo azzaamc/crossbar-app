@@ -5,16 +5,13 @@ import SwiftUI
 struct ContactsView: View {
     @ObservedObject var session: CallSession
 
+    @State private var showSettings = false
+    @State private var showIdentity = false
+
     var body: some View {
         NavigationStack {
             List {
-                if let me = session.me {
-                    Section {
-                        LabeledContent("Signed in as", value: me.displayName)
-                    }
-                }
-
-                Section("Family") {
+                Section("On the network") {
                     ForEach(session.contacts) { contact in
                         ContactRow(session: session, contact: contact)
                     }
@@ -25,7 +22,7 @@ struct ContactsView: View {
                     // detail: with it down, the phone will not ring.
                     Section {
                         Label(
-                            "Reconnecting to Family Call — calls may not reach you until this clears.",
+                            "Reconnecting to the service — calls may not reach you until this clears.",
                             systemImage: "wifi.exclamationmark"
                         )
                         .font(.footnote)
@@ -48,30 +45,108 @@ struct ContactsView: View {
                     Label(session.tailnetRoute, systemImage: "lock.shield")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("family.route")
+                        .accessibilityIdentifier("network.route")
                 }
             }
-            .navigationTitle("Family Call")
+            .navigationTitle("Contacts")
             .refreshable { await session.load() }
             .overlay {
                 if session.contacts.isEmpty {
                     ContentUnavailableView(
                         "No contacts yet",
                         systemImage: "person.2",
-                        description: Text("Family members appear here once they are enrolled.")
+                        description: Text("People appear here once they are enrolled.")
                     )
                 }
             }
-            #if DEBUG
-            // The instruments live behind this rather than owning the app: they are how
-            // the wire contract gets re-measured, and they must not be the product.
+            // The identity and the settings, in the corner they belong in. The instruments
+            // moved to Settings → Advanced: still reachable, no longer the first thing a
+            // thumb finds on the first screen.
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    NavigationLink("Probe") { ProbeView() }
+                ToolbarItem(placement: .topBarTrailing) { settingsButton }
+                ToolbarItem(placement: .topBarTrailing) { identityBubble }
+            }
+            .sheet(isPresented: $showSettings) { SettingsView(session: session) }
+        }
+    }
+
+    private var initial: String {
+        String(session.me?.displayName.prefix(1) ?? "?")
+    }
+
+    /// The identity, as a bubble rather than a row.
+    ///
+    /// It was a "Signed in as …" row at the head of the list, which read like a form field
+    /// and said nothing about where the name came from. Tapping it says both, and the rest
+    /// of the screen keeps its space for people.
+    private var identityBubble: some View {
+        Button {
+            showIdentity.toggle()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(.tint.opacity(0.18))
+                    .frame(width: 28, height: 28)
+                Text(initial)
+                    .font(.footnote.weight(.semibold))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("identity.bubble")
+        .accessibilityLabel("Identity")
+        .popover(isPresented: $showIdentity) {
+            identityCard.presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var identityCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(.tint.opacity(0.18))
+                        .frame(width: 44, height: 44)
+                    Text(initial)
+                        .font(.title3.weight(.semibold))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(session.me?.displayName ?? "Not signed in")
+                        .font(.headline)
+                    if let relationship = session.me?.relationship, !relationship.isEmpty {
+                        Text(relationship)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-            #endif
+
+            Divider()
+
+            Label("Identity comes from your tailnet sign-in", systemImage: "checkmark.seal.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("The service reads it from the network this device is on and injects it into "
+                 + "every request. There is no account or password to change here.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+            Label("This device appears as \(TailnetNode.hostName)", systemImage: "iphone")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
+        .padding(16)
+        .frame(maxWidth: 320, alignment: .leading)
+    }
+
+    private var settingsButton: some View {
+        Button {
+            showSettings = true
+        } label: {
+            Image(systemName: "gearshape")
+        }
+        .accessibilityIdentifier("settings.open")
+        .accessibilityLabel("Settings")
     }
 }
 

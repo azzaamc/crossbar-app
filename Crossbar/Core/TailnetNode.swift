@@ -42,6 +42,12 @@ import UIKit
 final class TailnetNode: ObservableObject {
     static let shared = TailnetNode()
 
+    /// What this device's node is called in the tailnet's own device list.
+    ///
+    /// One constant: the settings screen shows it so a person can find the machine they are
+    /// about to revoke, and the bring-up registers it.
+    static let hostName = "crossbar-ios"
+
     /// Where the node is, as the UI and the product state machine need to see it.
     enum State: Equatable {
         case idle
@@ -125,7 +131,8 @@ final class TailnetNode: ObservableObject {
     /// system's route while the screen said otherwise is the exact failure this project
     /// keeps finding.
     static var isEnabled: Bool {
-        ProcessInfo.processInfo.environment["CROSSBAR_TAILNET_NODE"] != "off"
+        guard AppSettings.usesEmbeddedNode else { return false }
+        return ProcessInfo.processInfo.environment["CROSSBAR_TAILNET_NODE"] != "off"
     }
 
     // MARK: - Lifecycle
@@ -155,7 +162,7 @@ final class TailnetNode: ObservableObject {
             .appendingPathComponent("tailscale", isDirectory: true)
         try? FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
 
-        let config = Configuration(hostName: "crossbar-ios",
+        let config = Configuration(hostName: Self.hostName,
                                    path: path.path,
                                    authKey: authKey,
                                    controlURL: kDefaultControlURL,
@@ -238,6 +245,31 @@ final class TailnetNode: ObservableObject {
             log("the carrier carried nothing — rebuilding the node once")
             await stop()
             return try await carrierFromCurrentNode()
+        }
+    }
+
+    /// Signs this device out of the tailnet, and stops carrying it.
+    ///
+    /// `resetAuth()` is the framework's own way to do it: the node forgets its machine key,
+    /// so the next bring-up needs a login — which is the screen this app already shows while
+    /// it waits for one, so signing out needs no second flow. The alternative is revoking the
+    /// machine in the admin console, which leaves the key sitting on the device until it is
+    /// next used.
+    ///
+    /// The call's own state goes with it: a node that is no longer authorised cannot carry
+    /// anything, so nothing that was riding on it stays up.
+    @discardableResult
+    func signOut() async -> String {
+        guard let node else { return "nothing to sign out of — the node is not running" }
+        do {
+            let client = LocalAPIClient(localNode: node, logger: nil)
+            try await client.resetAuth()
+            await stop()
+            log("signed out of the tailnet — the next connection will ask for a login")
+            return "Signed out. The next connection will ask to authorise this device."
+        } catch {
+            log("sign-out failed: \(error.localizedDescription)")
+            return "Could not sign out: \(error.localizedDescription)"
         }
     }
 
@@ -465,9 +497,9 @@ enum TailnetError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .nodeUnavailable(let reason):
-            return "The family network is not up — \(reason)"
+            return "The network is not up — \(reason)"
         case .loopbackUnavailable(let address):
-            return "The family network is up but \(address) never answered, so nothing was dialled."
+            return "The network is up but \(address) never answered, so nothing was dialled."
         }
     }
 }

@@ -69,7 +69,7 @@ final class FamilyCallFlow: ObservableObject {
             let session = try await client.checkSession()
             guard session.authenticated, session.configured else {
                 let reason = session.authenticated
-                    ? "Identity reached the service but is not enrolled as a family member."
+                    ? "Identity reached the service but is not enrolled with it."
                     : "No Tailscale identity. Is Tailscale connected on this device?"
                 append("cannot continue: \(reason)")
                 phase = .failed(reason)
@@ -329,7 +329,7 @@ struct FamilyCallSection: View {
     @State private var confirming: FamilyContact?
 
     var body: some View {
-        DisclosureGroup("Family Call (real control plane)", isExpanded: $expanded) {
+        DisclosureGroup("Control plane (service)", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Placing a call rings a real phone. Do not run this at the same time as the seam capture — the camera is shared.")
                     .font(.caption2)

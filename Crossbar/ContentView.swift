@@ -31,17 +31,17 @@ struct ContentView: View {
         Group {
             switch session.phase {
             case .loading:
-                ProgressView("Connecting to Family Call…")
+                ProgressView("Connecting…")
 
             case .needsLogin:
                 ContentUnavailableView {
-                    Label("Sign in to the family network",
+                    Label("Sign in to the network",
                           systemImage: "person.badge.key.fill")
                 } description: {
                     Text(session.tailnetLoginURL == nil
-                         ? "This app carries the family network itself, so nothing else has to be "
-                         + "installed. It is starting up, and the sign-in page will appear here "
-                         + "as soon as it is ready."
+                         ? "This app carries its own network connection, so nothing else has "
+                         + "to be installed. It is starting up, and the sign-in page will "
+                         + "appear here as soon as it is ready."
                          : "Approve this device in the page that opens. The app carries on by "
                          + "itself once it is authorised.")
                 } actions: {
@@ -58,7 +58,7 @@ struct ContentView: View {
 
             case .failed(let reason):
                 ContentUnavailableView {
-                    Label("Can't reach Family Call", systemImage: "wifi.exclamationmark")
+                    Label("Can't reach the service", systemImage: "wifi.exclamationmark")
                 } description: {
                     Text(reason)
                 } actions: {

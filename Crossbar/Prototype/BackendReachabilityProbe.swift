@@ -114,7 +114,7 @@ struct BackendReachabilitySection: View {
     @State private var expanded = false
 
     var body: some View {
-        DisclosureGroup("Backend reachability (Family Call)", isExpanded: $expanded) {
+        DisclosureGroup("Backend reachability (service)", isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 6) {
                 Button("Check /api/session") {
                     Task { await probe.check() }

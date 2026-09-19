@@ -21,6 +21,11 @@ final class CallMediaSource: ObservableObject {
     private var started = false
     private var useFrontCamera = true
 
+    /// Whether the app wants the camera running, as distinct from `started`, which only
+    /// says the SDK has confirmed one. The two differ for about a second at the start of a
+    /// capture, and a stop that lands in that second must still stop the camera.
+    private var wanted = false
+
     /// Where the outcomes go. A camera start or switch finishes after the call that asked
     /// for it has returned, so the result has to be reported rather than returned.
     var log: (String) -> Void = { _ in }
@@ -50,12 +55,23 @@ final class CallMediaSource: ObservableObject {
     /// is a claim about a camera nobody had confirmed was running.
     @discardableResult
     func startCapture() -> String {
-        guard !started, switchTask == nil else { return "capture already running" }
+        guard !wanted, switchTask == nil else { return "capture already running" }
+        wanted = true
         let position: AVCaptureDevice.Position = useFrontCamera ? .front : .back
         Task { [weak self] in
             guard let self else { return }
             let outcome = await self.start(on: position)
             self.log("capture → \(outcome.message)")
+            // A stop that arrived while the start was in flight has to win, or the camera
+            // runs on with nothing holding it. That is what left the camera light on after
+            // an outgoing call nobody answered: the call ended within the second the start
+            // took to be confirmed, the stop found no confirmed capture to stop, and the
+            // capture it had asked for arrived afterwards.
+            if !self.wanted, self.started {
+                await self.stopCaptureAwaiting()
+                self.started = false
+                self.log("capture stopped — the stop arrived before the start was confirmed")
+            }
         }
         return "capture starting on the \(name(of: position)) camera…"
     }
@@ -102,7 +118,7 @@ final class CallMediaSource: ObservableObject {
     /// switch no longer leaves the flag describing a camera that is not running.
     @discardableResult
     func switchCamera() -> String {
-        guard started else { return "no capture to switch" }
+        guard wanted else { return "no capture to switch" }
         guard switchTask == nil else { return "a camera switch is already running" }
         let position: AVCaptureDevice.Position = useFrontCamera ? .back : .front
         switchTask = Task { [weak self] in
@@ -112,11 +128,25 @@ final class CallMediaSource: ObservableObject {
             if outcome.didStart { self.useFrontCamera.toggle() }
             self.switchTask = nil
             self.log("flip → \(outcome.message)")
+            // The call can end while a flip is in flight, and the flip's start would
+            // otherwise hand back a running camera to a session that is already torn down.
+            if !self.wanted, self.started {
+                await self.stopCaptureAwaiting()
+                self.started = false
+                self.log("capture stopped — the call ended during the flip")
+            }
         }
         return "switching to the \(name(of: position)) camera…"
     }
 
+    /// Stops capture, and is authoritative about wanting it stopped.
+    ///
+    /// `wanted` is cleared first and unconditionally, so a start still in flight sees it and
+    /// stops what it started when it lands — see `startCapture`. The old version guarded on
+    /// a flag that only meant "the SDK has confirmed a capture", which is precisely what a
+    /// stop arriving early could not see.
     func stopCapture() {
+        wanted = false
         guard started else { return }
         started = false
         Task { [weak self] in

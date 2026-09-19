@@ -24,6 +24,9 @@ struct InCallView: View {
             CallVideoGrid(
                 signal: session.signal,
                 localTrack: session.media.videoTrack,
+                // A disabled track renders black, and a black tile cannot be told from a
+                // frozen one — the local preview has to be told which it is showing.
+                localCameraOff: !session.isCameraEnabled,
                 // PiP grows out of the tile the user is watching, and the session arms it
                 // while this screen is in front — which is the only time it can be armed.
                 onRemoteViewReady: { session.noteRemoteTileView($0) }
@@ -31,38 +34,60 @@ struct InCallView: View {
             .frame(maxHeight: .infinity)
 
             if session.eventsDown {
-                Text("Lost the connection to Family Call — status may be out of date.")
+                Text("Lost the connection to the service — status may be out of date.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
             }
 
-            HStack(spacing: 16) {
-                control(
-                    session.isMuted ? "mic.slash.fill" : "mic.fill",
-                    session.isMuted ? "Unmute" : "Mute",
-                    isActive: session.isMuted
-                ) { session.toggleMute() }
-
-                control(
-                    session.isCameraEnabled ? "video.fill" : "video.slash.fill",
-                    session.isCameraEnabled ? "Camera off" : "Camera on",
-                    isActive: !session.isCameraEnabled
-                ) { session.toggleCamera() }
-
-                control("camera.rotate.fill", "Flip") { session.switchCamera() }
-
-                control(
-                    "speaker.wave.2.fill",
-                    "Speaker",
-                    isActive: session.isSpeakerOn
-                ) { session.toggleSpeaker() }
-
-                control("phone.down.fill", "End", isDestructive: true) { session.end() }
-            }
-            .padding(.bottom, 16)
+            controls
+                .padding(.bottom, 16)
         }
         .padding(.horizontal)
+    }
+
+    /// The controls at whichever size fits the screen.
+    ///
+    /// Five buttons at the comfortable size want about 370 points of width, which a phone
+    /// on its side — or a small one — does not have. A control past the edge of the screen
+    /// is a control the user cannot reach, and on a call screen that is the one failure
+    /// that matters, so the row steps down to a tighter one rather than being clipped.
+    private var controls: some View {
+        ViewThatFits(in: .horizontal) {
+            controlRow(spacing: 16, diameter: 52)
+            controlRow(spacing: 8, diameter: 40)
+        }
+    }
+
+    private func controlRow(spacing: CGFloat, diameter: CGFloat) -> some View {
+        HStack(spacing: spacing) {
+            control(
+                session.isMuted ? "mic.slash.fill" : "mic.fill",
+                session.isMuted ? "Unmute" : "Mute",
+                diameter: diameter,
+                isActive: session.isMuted
+            ) { session.toggleMute() }
+
+            control(
+                session.isCameraEnabled ? "video.fill" : "video.slash.fill",
+                session.isCameraEnabled ? "Camera off" : "Camera on",
+                diameter: diameter,
+                isActive: !session.isCameraEnabled
+            ) { session.toggleCamera() }
+
+            control("camera.rotate.fill", "Flip", diameter: diameter) { session.switchCamera() }
+
+            control(
+                "speaker.wave.2.fill",
+                "Speaker",
+                diameter: diameter,
+                isActive: session.isSpeakerOn
+            ) { session.toggleSpeaker() }
+
+            control("phone.down.fill", "End", diameter: diameter, isDestructive: true) {
+                session.end()
+            }
+        }
     }
 
     /// Everyone on the call except the user. For a household call that is usually one
@@ -91,6 +116,7 @@ struct InCallView: View {
     private func control(
         _ symbol: String,
         _ label: String,
+        diameter: CGFloat,
         isActive: Bool = false,
         isDestructive: Bool = false,
         action: @escaping () -> Void
@@ -99,7 +125,7 @@ struct InCallView: View {
             VStack(spacing: 5) {
                 Image(systemName: symbol)
                     .font(.title3)
-                    .frame(width: 52, height: 52)
+                    .frame(width: diameter, height: diameter)
                     .background(
                         isDestructive ? AnyShapeStyle(.red)
                             : isActive ? AnyShapeStyle(.tint.opacity(0.25))

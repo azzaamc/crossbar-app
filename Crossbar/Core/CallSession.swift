@@ -236,7 +236,7 @@ final class CallSession: ObservableObject {
         guard TailnetNode.isEnabled, carrier != nil, node.state.isRunning else { return }
         guard await node.verifyOrRebuild(reason: "the app came forward") else { return }
 
-        log("family network rebuilt — re-dialling through the new carrier")
+        log("the network was rebuilt — re-dialling through the new carrier")
         guard let transport = try? await node.attach() else { return }
         hand(transport)
 
@@ -257,13 +257,13 @@ final class CallSession: ObservableObject {
     var tailnetRoute: String {
         guard let carrier else {
             switch tailnetState {
-            case .idle: return "Family network: not started"
-            case .starting: return "Family network: starting"
-            case .running: return "Family network: up, no carrier yet"
-            case .failed(let reason): return "Family network: \(reason)"
+            case .idle: return "Network: not started"
+            case .starting: return "Network: starting"
+            case .running: return "Network: up, no carrier yet"
+            case .failed(let reason): return "Network: \(reason)"
             }
         }
-        return "Family network: \(carrier.label)"
+        return "Network: \(carrier.label)"
     }
 
     /// Points both clients at a carrier.
@@ -354,7 +354,7 @@ final class CallSession: ObservableObject {
         do {
             hand(try await attachTransport())
         } catch {
-            log("the family network is not carrying anything: \(error.localizedDescription)")
+            log("the network is not carrying anything: \(error.localizedDescription)")
             // Waiting to be authorised is not a failure — it is a first run, and the screen
             // for it is the login page. A node that is up but carries nothing is a failure,
             // and says so. `wireTailnet` has already set `.needsLogin` when a URL exists.
@@ -368,7 +368,7 @@ final class CallSession: ObservableObject {
             guard session.authenticated, session.configured else {
                 phase = .failed(
                     session.authenticated
-                        ? "This tailnet identity is not enrolled in Family Call."
+                        ? "This tailnet identity is not enrolled with the service."
                         : "The service did not recognise this device's tailnet identity."
                 )
                 return
@@ -379,6 +379,12 @@ final class CallSession: ObservableObject {
             contacts = bootstrap.contacts
             phase = .ready
             startEvents()
+
+            // What the stream could not tell this app: an invitation that arrived while it
+            // was closed. Same path the reconnect uses, because a call that arrived while
+            // the app was shut has to ring exactly like one that arrived while the stream
+            // was down.
+            await adopt(bootstrap)
 
             #if DEBUG
             // Inside the load rather than in the view's task, because the view's task is
@@ -396,14 +402,6 @@ final class CallSession: ObservableObject {
                 runCameraSelfTest()
             }
             #endif
-
-            // A call **this device** is already in — the app was closed or the phone
-            // rang while it was suspended. Not just any active call: every instance
-            // authenticating as this person sees the same active call, and joining it
-            // is how a preview ended up in a real one.
-            if let ongoing = bootstrap.ongoingCalls.first(where: { $0.id == deviceCallID && isMine($0) && $0.isActive }) {
-                await resume(ongoing)
-            }
         } catch {
             log("load failed: \(error.localizedDescription)")
             phase = .failed(error.localizedDescription)
@@ -458,6 +456,14 @@ final class CallSession: ObservableObject {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             media.stopCapture()
             log("camera self-test: asked to stop")
+
+            // Then the race that left the camera light on after a call nobody answered: a
+            // stop landing while the start is still being confirmed. The capture must not
+            // be left running, which the status-bar indicator shows and the log explains.
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            log("camera self-test: start, then stop immediately — \(media.startCapture())")
+            media.stopCapture()
+            log("camera self-test: stop sent while that start was in flight")
         }
     }
     #endif
@@ -580,7 +586,10 @@ final class CallSession: ObservableObject {
         }
         log("room \(target.room) on \(target.origin.absoluteString)")
         signal.media = media
-        signal.originOverride = target.origin
+        // The invitation names the signalling host, which is exactly why the client and the
+        // backend cannot disagree about it. A deployment whose signalling host is not the
+        // one its invitations name can override it in Settings; empty is the normal case.
+        signal.originOverride = AppSettings.signallingOverrideURL ?? target.origin
         signal.peerName = me?.displayName
         log(media.startCapture())
         signal.connect(room: target.room)
@@ -653,24 +662,45 @@ final class CallSession: ObservableObject {
         }
     }
 
+    /// Acts on what a bootstrap says is waiting for this person.
+    ///
+    /// An invitation is delivered on the event stream **exactly once**, to whoever is
+    /// connected at that moment (`src/server.js:236-255`: no event ids, no replay). If the
+    /// app was closed, the only surviving record is `/api/bootstrap` → `calls[]` with this
+    /// reader still `invited` — which is precisely what the PWA re-reads on a cold open
+    /// (`public/app.js:530-534`). Without this the app opened onto the contacts list while
+    /// someone was still ringing: measured on a real call, 2026-09-19, where a notification
+    /// from the PWA was the only sign the call had happened. The ring died with the miss.
+    ///
+    /// A call this device is already in is resumed instead, and only when this device
+    /// joined it: identity here is a person, not a device, so every instance authenticating
+    /// as this person sees the same active call, and joining one uninvited is how an Xcode
+    /// preview ended up in a live call.
+    private func adopt(_ bootstrap: FamilyBootstrap) async {
+        guard phase.call == nil else { return }
+        contacts = bootstrap.contacts
+        if let invited = bootstrap.calls.first(where: { $0.myStatus == "invited" }) {
+            log("an invitation was waiting for this device — ringing it")
+            ring(invited)
+        } else if let ongoing = bootstrap.ongoingCalls.first(where: {
+            $0.id == deviceCallID && isMine($0) && $0.isActive
+        }) {
+            await resume(ongoing)
+        }
+    }
+
     /// Re-reads what the stream could not replay.
     ///
     /// An invitation that arrived while the stream was down is still ringing
     /// server-side, and `/api/bootstrap` is the only thing that can say so — the call's
-    /// own event was delivered once, to nobody.
+    /// own event was delivered once, to nobody. Same handling as a launch that finds one,
+    /// because the two are the same situation seen from different moments.
     private func refreshState() async {
         guard phase.call == nil else { return }
         do {
             let bootstrap = try await client.bootstrap()
-            contacts = bootstrap.contacts
             log("re-read state: \(bootstrap.calls.count) open call(s)")
-
-            if let pending = bootstrap.calls.first(where: { $0.myStatus == "invited" }) {
-                log("an invitation was waiting while the stream was down")
-                ring(pending)
-            } else if let ongoing = bootstrap.ongoingCalls.first(where: { $0.id == deviceCallID && $0.isActive }) {
-                await resume(ongoing)
-            }
+            await adopt(bootstrap)
         } catch {
             log("could not re-read state: \(error.localizedDescription)")
         }
@@ -759,7 +789,7 @@ final class CallSession: ObservableObject {
 
     func displayName(for userId: String) -> String {
         if userId == me?.id { return me?.displayName ?? "You" }
-        return contacts.first { $0.id == userId }?.displayName ?? "A family member"
+        return contacts.first { $0.id == userId }?.displayName ?? "Unknown caller"
     }
 
     private static func isTerminal(_ status: String) -> Bool {
