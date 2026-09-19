@@ -509,6 +509,8 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         inboundBytes[peerId] = nil
         remoteVideo[peerId] = nil
         remoteNames[peerId] = nil
+        // Otherwise the label keeps claiming a call that has no peers left in it.
+        if peers.isEmpty { state = "joined (no peers)" }
         append("removePeer \(peerId.prefix(8)) — connection closed")
     }
 
@@ -730,7 +732,15 @@ extension MiroTalkSignalClient: RTCPeerConnectionDelegate {
         let raw = newState.rawValue
         Task { @MainActor in
             self.append("pc state -> \(raw) [\(self.peerId(for: pc)?.prefix(8) ?? "?")]")
-            if raw == 2 { self.startStatsPolling() }
+            if raw == 2 {
+                // The screen said "join sent — awaiting addPeer/serverInfo" for a whole
+                // call, because `state` was last written during the join and nothing
+                // moved it afterwards. A label that describes the join rather than the
+                // call is the same family of lie as a log line that reports a failure
+                // without saying what failed.
+                self.state = "in a call"
+                self.startStatsPolling()
+            }
         }
     }
 
