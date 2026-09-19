@@ -107,21 +107,35 @@ matters when a run produces nothing:
 
 `PROBE_AUTOSHOW` presents the probe screen over whatever the product is showing, because
 the screen is otherwise reached by a toolbar tap in the contacts list and none of the
-gates above can fire from a screen that was never mounted.
+gates above can fire from a screen that was never mounted. It is set from `onAppear` — a
+`fullScreenCover` whose binding is already true when the view is inserted is never
+presented at all — and not from the root view's `.task`, which is cancelled when the phase
+switch changes the view's identity.
 
-**Its mechanism has been wrong three ways, and it is still not dependable.** It was first
-set from the root view's `.task`, which is cancelled when the phase switch changes the
-view's identity; then from a `@State` initialiser, where a `fullScreenCover` whose binding
-is already true at insertion is simply never presented; and now from `onAppear`, which is at
-least mechanically sound. Measured on the device, 2026-09-19: `{"CROSSBAR_PROBE_AUTOSHOW":
-"1"}` alone presents the screen, and so does `PROBE_AUTOSHOW` with `CROSSBAR_BACKEND_URL` —
-but **every payload that also carried `CROSSBAR_SIGNAL_AUTOROOM` presented nothing, seven
-runs in a row**, whatever value that variable had, while `devicectl` reported the launch as
-successful either way and the app itself started and loaded normally in those runs. That
-correlation is the whole of what is known: the auto-join gate could not be driven through
-the launch environment on this build, so a signalling run still needs a hand on the screen.
-Nothing here shows which side of the boundary the failure is on, so do not record it as the
-variable being delivered and ignored.
+**Put `-e` before the bundle identifier.** It is an option of `devicectl`, not an argument
+to the app, and `device process launch` takes a variadic list of arguments for the app: a
+payload placed *after* the bundle identifier is handed to the app as `argv`, never as
+environment, so every gate inside it silently does nothing. That cost seven runs on
+2026-09-19, in which the same payload presented the screen in one run and nothing in the
+next — which reads as a flaky presentation, or as a variable that arrives and is ignored,
+and was neither:
+
+```
+xcrun devicectl device process launch --device <id> -e '{"CROSSBAR_PROBE_AUTOSHOW":"1"}' \
+  com.abdullahchaudhry.Crossbar          # ✓ the gates see it
+xcrun devicectl device process launch --device <id> com.abdullahchaudhry.Crossbar \
+  -e '{"CROSSBAR_PROBE_AUTOSHOW":"1"}'   # ✗ arrives as an argument, changes nothing
+```
+
+Two more `devicectl` facts from the same session, each of which looks like something else:
+
+  - `device process terminate` requires `--pid <pid>`; a bundle identifier alone fails, and
+    with output redirected that failure is invisible. An app that was never terminated
+    makes every later launch a no-op — it is re-activated with its old environment and its
+    old node — which reads as a sticky environment or as a gate that does not work.
+  - A Debug build's `Crossbar.app/Crossbar` is a ~90 KB stub; the code lives in
+    `Crossbar.debug.dylib`. Grepping the stub for a gate's string finds nothing, and says
+    nothing about what was installed.
 
 `VIANODE` routes the signalling sockets through the embedded Tailscale node's
 SOCKS loopback instead of the system's route, and logs which carrier each socket took plus

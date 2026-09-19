@@ -218,6 +218,44 @@ its entries have since been built; what follows is what is actually absent now.
 - **Media over the overlay.** Not absent by omission: an embedded node structurally cannot
   carry it. A call's media is peer-to-peer over the device's own interfaces.
 
+## Fixed after the first real call (2026-09-19)
+
+The first real 1:1 call between this app and the family PWA worked — the app carried its
+own tailnet, the call connected, and media crossed both ways — and the camera switch
+crashed the app.
+
+Two `EXC_CRASH` reports, both `SIGABRT` / `Abort trap: 6`, both faulting on
+`org.webrtc.RTCDispatcherCaptureSession` and throwing from
+`-[AVCaptureVideoDataOutput setVideoSettings:]`: an Objective-C exception, which Swift
+cannot catch, so the process aborted the moment the camera was flipped.
+
+Cause, from the SDK's own headers: `stopCapture` and `startCapture` are both
+**asynchronous**, and the switch called them back to back, so the start reconfigured the
+same video data output while the previous session was still being dismantled. A second
+hazard sat in the same expression — the format passed was
+`supportedFormats(for: device).last`, and the tail of an iPhone's format list is where the
+high-frame-rate and semi-compressed formats live, while WebRTC derives `videoSettings` from
+whatever format it is handed.
+
+`CallMediaSource` now waits for the stop's completion handler before starting, flips its
+position flag only once a start has actually succeeded, and chooses a format deliberately:
+the SDK's `preferredOutputPixelFormat`, a frame rate inside that format's own range, and
+720p preferred over the largest available.
+
+Verified on the device with `CROSSBAR_CAMERA_SELFTEST=1`, which drives a start and two
+switches with no call and no peer — the only way to reach that path without a live 1:1 call
+and a finger on the button, which is why it reached a phone before it reached a probe:
+
+```
+camera self-test: capture starting on the front camera…
+media: capture → Front Camera 1280x720@30
+media: flip → Back Camera 1280x720@30
+media: flip → Front Camera 1280x720@30
+media: capture stopped
+```
+
+No crash report followed that run.
+
 ## Verification record
 
 ### Source checkpoint experiments (2026-09-16)
@@ -318,6 +356,7 @@ marked as such there.
 | Two-device call | Yes | — | **Yes, with MiroTalk's own browser client** — a native peer and Safari on a second tailnet device negotiated, the browser answered the native offer and then renegotiated a data channel which the native client answered, ICE completed, and media crossed both ways with the phone's camera rendering in Safari |
 | MiroTalk signalling through the embedded Tailscale node | Yes | — | **Yes** — a full two-peer call (admission, `addPeer`, SDP and ICE relay, negotiation to `pc state 2`, ~33 MB of video each way) ran with both sockets dialled through the node's SOCKS loopback. The node's own peer counters went 0 → ~86 KB at the moment the socket connected, which is what separates the node from the system Tailscale app that is also installed on the phone. Branch `tailscale-kit`; see `TAILSCALE_KIT_PROBE.md` |
 | Embedded node as the app's transport | Yes | — | **Yes** — the product starts the node itself and dials both clients through it: `carried by the embedded node — node 127.0.0.1:61174`, then `GET api/session -> HTTP 200 authenticated=true name=Azzaam Chaudhry`, `GET api/bootstrap -> HTTP 200` (2 contacts) and `GET api/events -> HTTP 200`, measured from the app's own log pulled off the device on 2026-09-19. No Tailscale app involved; the tailnet lists the node as `crossbar-ios` (100.121.218.110). A carrier that answers nothing is reported as a failure rather than retried on the system route |
+| Signalling through the node, by the product's own carrier | Yes | — | **Yes, 2026-09-19** — with `CROSSBAR_TAILNET_NODE` left at its default, two peers joined one MiroTalk room through `TailnetNode.attach()`, the same carrier `CallSession` hands to both clients: `connecting wss://… via node 127.0.0.1:61719` for both, then `pc state -> 2`, `ICE path … state=succeeded`, and media both ways (`bytesSent=177169`, `media IN … audio`). The instrument's route toggle now defaults to the node, since that is the product's route |
 | Media over the overlay from an embedded node | Yes | — | **No, and structurally so** — a userspace tsnet node has no network interface (`"TUN":false`, `using fake (no-op) tun device`), so libwebrtc cannot gather a candidate on the overlay: the node's own address never appeared among the 55 candidates gathered during a node-carried call, while the system Tailscale tunnel's address did. Media rode the phone's Wi-Fi host pair, as it does today |
 | Native peer ↔ MiroTalk browser client, over the embedded node | Yes | — | **Yes** — the phone's app signalling through the node with its Tailscale app *disconnected* called MiroTalk's own web client in Chromium on the Mac: the browser offered 3 m-lines (audio, video, data channel), the native client answered, `pc state 2` / `ice state 2`, and media crossed both ways over the LAN pair (phone `192.168.1.120` ↔ Mac `192.168.1.127`), ~18 MB of the phone's camera to the browser and the browser's pattern back, seen on both screens. Every pair to the Mac's tailnet address sat `in-progress sent=0 recv=0`. Branch `tailscale-kit` |
 | Three-/four-person mesh | Yes | — | **Spike (B) three peers** — three native peers formed three links with two connections each; every link reached `pc state 2` and carried media both ways, with one shared capture feeding all senders. Four peers untested |
