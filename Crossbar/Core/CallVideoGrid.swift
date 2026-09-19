@@ -16,12 +16,30 @@ struct VideoTile: View {
     let track: RTCVideoTrack?
     let caption: String
 
+    /// Set when the peer's camera is off: the tile says so instead of drawing the last
+    /// frame it received, which would look like a working call with a frozen picture —
+    /// the exact confusion this project has paid for twice.
+    var cameraOff = false
+
+    /// The remote tile's view, for a caller that needs one to animate PiP out of.
+    var onViewReady: ((RTCMTLVideoView) -> Void)?
+
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            RTCVideoSurface(track: track)
+            if cameraOff {
+                ZStack {
+                    Rectangle().fill(.black)
+                    Image(systemName: "video.slash.fill")
+                        .font(.title3)
+                        .foregroundStyle(.white.opacity(0.7))
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                RTCVideoSurface(track: track, onViewReady: onViewReady)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
 
-            Text(caption)
+            Text(cameraOff ? "\(caption) · camera off" : caption)
                 .font(.caption2.weight(.medium))
                 .lineLimit(1)
                 .padding(.horizontal, 6)
@@ -45,6 +63,10 @@ struct CallVideoGrid: View {
     @ObservedObject var signal: MiroTalkSignalClient
     let localTrack: RTCVideoTrack?
 
+    /// The remote tile's view, handed to whoever starts Picture-in-Picture: the window
+    /// animates out of the tile the user was watching, so it has to be a real view.
+    var onRemoteViewReady: ((RTCMTLVideoView) -> Void)?
+
     private var peerIDs: [String] { signal.remoteVideo.keys.sorted() }
 
     private var columns: [GridItem] {
@@ -65,7 +87,9 @@ struct CallVideoGrid: View {
                     // call, so it is only ever the fallback.
                     VideoTile(
                         track: signal.remoteVideo[peerID],
-                        caption: signal.remoteNames[peerID] ?? String(peerID.prefix(6))
+                        caption: signal.remoteNames[peerID] ?? String(peerID.prefix(6)),
+                        cameraOff: signal.remoteVideoOff.contains(peerID),
+                        onViewReady: onRemoteViewReady
                     )
                     .aspectRatio(3.0 / 4.0, contentMode: .fit)
                 }

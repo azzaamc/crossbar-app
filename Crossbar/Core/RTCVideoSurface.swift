@@ -16,12 +16,17 @@ import WebRTC
 struct RTCVideoSurface: UIViewRepresentable {
     let track: RTCVideoTrack?
 
+    /// The view that was built, for callers that need one — PiP animates out of a real
+    /// view in the hierarchy, and this is the one the user is watching.
+    var onViewReady: ((RTCMTLVideoView) -> Void)?
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> RTCMTLVideoView {
         let view = RTCMTLVideoView()
         view.videoContentMode = .scaleAspectFill
         view.backgroundColor = .black
+        onViewReady?(view)
         return view
     }
 

@@ -69,6 +69,21 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     /// is on the call, and the name is already arriving on the wire.
     @Published private(set) var remoteNames: [String: String] = [:]
 
+    /// Peers whose camera is off, from their `peerStatus`.
+    ///
+    /// Needed because a peer that stops sending video leaves its last frame drawn on
+    /// this device — the surface keeps it — so "camera off" and "call broken" look
+    /// identical without this. MiroTalk's own client hides the peer's video element and
+    /// shows the avatar on the same message; this is the same fact, kept where a tile
+    /// can read it.
+    @Published private(set) var remoteVideoOff: Set<String> = []
+
+    /// This client's own Socket.IO id, which is the `peer_id` the room knows it by.
+    ///
+    /// Needed for `peerStatus`, whose payload names the peer making the claim. Taken
+    /// from the namespace connect frame, which is the only place the server says it.
+    private(set) var myPeerId = ""
+
     private var statsTimer: Timer?
     private var inboundBytes: [String: [String: Int]] = [:]
     private var outboundBytes: [String: [String: Int]] = [:]
@@ -259,6 +274,13 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         switch type {
         case "0":
             append("socket.io connected \(rest)")
+            // `rest` is the namespace connect payload; its sid is how the room names
+            // this peer, and `peerStatus` has to name it.
+            if let data = rest.data(using: .utf8),
+               let shape = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let sid = shape["sid"] as? String {
+                myPeerId = sid
+            }
             state = "joined-namespace"
             emitJoin()
         case "2":
@@ -292,6 +314,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         case "addPeer": if let argument { handleAddPeer(argument) }
         case "sessionDescription": if let argument { handleSessionDescription(argument) }
         case "iceCandidate": if let argument { handleIceCandidate(argument) }
+        case "peerStatus": if let argument { handlePeerStatus(argument) }
         case "removePeer": if let argument, let id = argument["peer_id"] as? String { removePeer(id) }
         default: break
         }
@@ -336,6 +359,57 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         append("emit join channel=\(roomId)")
         emit("join", payload)
         state = "join sent — awaiting addPeer/serverInfo"
+    }
+
+    // MARK: - Camera status
+
+    /// Tells the room whether this peer's camera is on, and starts or stops the camera.
+    ///
+    /// The wire shape is MiroTalk's, read from the deployed client rather than guessed:
+    /// `emitPeerStatus('video', myVideoStatus)` sends `peerStatus` with
+    /// `{room_id, peer_name, peer_id, element: "video", status, extras}`, and the receive
+    /// side hides that peer's video element and shows their avatar. It matters here
+    /// because a peer that stops sending leaves its last frame drawn on the other device
+    /// — so without this, "camera off" and "call broken" look identical to the far end.
+    ///
+    /// No renegotiation is involved, which is also true of MiroTalk's own camera path.
+    @discardableResult
+    func setVideoEnabled(_ enabled: Bool) -> String {
+        guard !myPeerId.isEmpty else { return "camera not signalled: not in a room yet" }
+
+        if enabled {
+            media?.startCapture()
+        } else {
+            media?.stopCapture()
+        }
+        emit("peerStatus", [
+            "room_id": roomId,
+            "peer_name": peerName ?? "Crossbar \(label)",
+            "peer_id": myPeerId,
+            "element": "video",
+            "status": enabled,
+            "extras": [String: Any](),
+        ])
+        let line = "camera \(enabled ? "back on" : "off") — peerStatus video=\(enabled)"
+        append(line)
+        return line
+    }
+
+    /// The far end's camera status, which tiles read to stop drawing a stale frame.
+    private func handlePeerStatus(_ payload: [String: Any]) {
+        guard
+            let peerId = payload["peer_id"] as? String,
+            let element = payload["element"] as? String,
+            let status = payload["status"] as? Bool,
+            element == "video"
+        else { return }
+
+        if status {
+            remoteVideoOff.remove(peerId)
+        } else {
+            remoteVideoOff.insert(peerId)
+        }
+        append("peerStatus \(peerId.prefix(8)) video=\(status ? "on" : "off")")
     }
 
     // MARK: - Peering

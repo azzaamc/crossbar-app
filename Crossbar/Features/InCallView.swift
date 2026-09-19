@@ -21,8 +21,14 @@ struct InCallView: View {
             }
             .padding(.top, 12)
 
-            CallVideoGrid(signal: session.signal, localTrack: session.media.videoTrack)
-                .frame(maxHeight: .infinity)
+            CallVideoGrid(
+                signal: session.signal,
+                localTrack: session.media.videoTrack,
+                // PiP grows out of the tile the user is watching, and the session arms it
+                // while this screen is in front — which is the only time it can be armed.
+                onRemoteViewReady: { session.noteRemoteTileView($0) }
+            )
+            .frame(maxHeight: .infinity)
 
             if session.eventsDown {
                 Text("Lost the connection to Family Call — status may be out of date.")

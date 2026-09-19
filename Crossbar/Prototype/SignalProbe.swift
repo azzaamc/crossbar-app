@@ -16,6 +16,19 @@ struct SignalProbeSection: View {
     @State private var room = "crosstest"
     @State private var ignoreStun = false
     @State private var viaNode = false
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var pip = CallPiPController()
+    @State private var pipBox = ViewBox()
+
+    /// Holds the tile's view across view updates.
+    ///
+    /// A class rather than `@State`: the view is handed over from inside
+    /// `makeUIView`, which runs during a SwiftUI update, and mutating state there is not
+    /// allowed — the change can be dropped without complaint, which is exactly how the
+    /// first attempt at this armed no window at all.
+    @MainActor final class ViewBox {
+        var view: RTCMTLVideoView?
+    }
 
     var body: some View {
         DisclosureGroup("MiroTalk signalling (native Socket.IO)", isExpanded: $expanded) {
@@ -110,7 +123,64 @@ struct SignalProbeSection: View {
             join(peerA, roomOverride: auto)
             if count >= 2 { join(peerB, roomOverride: auto) }
             if count >= 3 { join(peerC, roomOverride: auto) }
+            // PiP's outcome is only visible in the client's log, and a window that never
+            // appeared is indistinguishable from one never asked for.
+            pip.onLog = { [peerA] line in peerA.record("PiP: \(line)") }
         }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .background:
+                // iOS takes the camera from a backgrounded app. Saying so, and stopping
+                // capture deliberately rather than leaving it to the system, is what turns
+                // "the far end is staring at a frozen frame" into "this peer is on audio
+                // only" — the far end's client hides the video and shows the avatar.
+                for client in [peerA, peerB, peerC] where client.myPeerId.isEmpty == false {
+                    client.setVideoEnabled(false)
+                }
+                // PiP is not started here on purpose: it was armed while this app was in
+                // front, and the system starts it from the armed source view. The line is
+                // the evidence that it was armed at the moment it mattered.
+                peerA.record("left the app — PiP armed=\(pip.isArmed) active=\(pip.isActive)")
+            case .active:
+                for client in [peerA, peerB, peerC] where client.myPeerId.isEmpty == false {
+                    client.setVideoEnabled(true)
+                }
+                // Whether it *was* active: `stopPictureInPicture()` is asynchronous, so
+                // reading the flag after asking would report `true` for a window that is
+                // already going away — the same kind of lie as a state label that
+                // describes the request rather than the outcome.
+                let wasActive = pip.isActive
+                pip.closeWindow()
+                peerA.record("returned to the app — PiP was active=\(wasActive)")
+            default:
+                break
+            }
+        }
+        // The remote track and the tile's view arrive in either order, and neither moment
+        // is guaranteed to be after the other — so this both waits and reacts. Nothing here
+        // touches SwiftUI state (the tile's view lives in a class box precisely because the
+        // view update may not be mutated), so it is safe from either side.
+        .onChange(of: peerA.remoteVideo.count) { _, _ in armPiPIfPossible() }
+        .task {
+            for _ in 0..<180 {
+                if pip.isArmed { break }
+                armPiPIfPossible()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            if !pip.isArmed {
+                peerA.record("PiP was never armed: remoteVideo=\(peerA.remoteVideo.count) tileView=\(pipBox.view != nil) supported=\(pip.isSupported)")
+            }
+        }
+    }
+
+    /// Arms Picture-in-Picture once there is both a remote picture and a tile to grow out
+    /// of. Harmless to call repeatedly.
+    private func armPiPIfPossible() {
+        guard !pip.isArmed,
+              let track = peerA.remoteVideo.values.first,
+              let view = pipBox.view
+        else { return }
+        pip.arm(track: track, sourceView: view)
     }
 
     /// Local capture beside each peer's decoded video.
@@ -123,14 +193,32 @@ struct SignalProbeSection: View {
     private var videoGrid: some View {
         HStack(spacing: 6) {
             tile(media.videoTrack, "local")
-            tile(peerA.remoteVideo.values.first, "A")
-            tile(peerB.remoteVideo.values.first, "B")
-            tile(peerC.remoteVideo.values.first, "C")
+            tile(peerA.remoteVideo.values.first, "A", cameraOff: cameraOff(peerA), onViewReady: { view in
+                // Kept because PiP has to animate out of the tile the user is watching.
+                // Arming happens elsewhere: this runs during a SwiftUI update.
+                pipBox.view = view
+            })
+            tile(peerB.remoteVideo.values.first, "B", cameraOff: cameraOff(peerB))
+            tile(peerC.remoteVideo.values.first, "C", cameraOff: cameraOff(peerC))
         }
     }
 
-    private func tile(_ track: RTCVideoTrack?, _ caption: String) -> some View {
-        VideoTile(track: track, caption: caption)
+    /// Whether this client's one remote peer has said its camera is off.
+    ///
+    /// The tile then says so rather than drawing the last frame it received, which is
+    /// indistinguishable from a working call.
+    private func cameraOff(_ client: MiroTalkSignalClient) -> Bool {
+        guard let peerID = client.remoteVideo.keys.first else { return false }
+        return client.remoteVideoOff.contains(peerID)
+    }
+
+    private func tile(
+        _ track: RTCVideoTrack?,
+        _ caption: String,
+        cameraOff: Bool = false,
+        onViewReady: ((RTCMTLVideoView) -> Void)? = nil
+    ) -> some View {
+        VideoTile(track: track, caption: caption, cameraOff: cameraOff, onViewReady: onViewReady)
             .frame(height: 96)
     }
 
@@ -167,6 +255,7 @@ struct SignalProbeSection: View {
     }
 
     private func disconnectAll() {
+        pip.disarm()
         peerA.disconnect()
         peerB.disconnect()
         peerC.disconnect()

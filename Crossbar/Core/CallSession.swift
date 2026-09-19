@@ -52,6 +52,11 @@ final class CallSession: ObservableObject {
     private var eventsTask: Task<Void, Never>?
     private var callKitCallID: UUID?
 
+    /// The Picture-in-Picture window, armed while a call has video worth showing.
+    let pip = CallPiPController()
+    private var pipSourceView: UIView?
+    private var cancellables = Set<AnyCancellable>()
+
     /// Whether the call in progress was placed from here.
     ///
     /// Needed because CallKit's two directions are told apart by which API reports the
@@ -88,7 +93,59 @@ final class CallSession: ObservableObject {
     init() {
         client.log = { [weak self] in self?.log($0) }
         wireCallKit()
+        wireSystemCamera()
         media.prepareAudioSession()
+        pip.onLog = { [weak self] line in self?.log("PiP: \(line)") }
+        // The remote track and the in-call tile arrive at different moments, and PiP needs
+        // both, so arming is attempted whenever the tracks change.
+        signal.$remoteVideo
+            .sink { [weak self] tracks in
+                guard let self, !tracks.isEmpty else { return }
+                self.armPiP()
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Reports the camera state the **system** allows, without touching what the user chose.
+    ///
+    /// iOS takes the camera from a backgrounded app, so a call that survives being left is
+    /// already audio-only *here* — but the far end keeps drawing its last frame unless it
+    /// is told, and "frozen picture" and "call broken" look identical there. So the camera
+    /// status goes on the wire when the app leaves and again when it returns.
+    ///
+    /// `isCameraEnabled` is deliberately untouched: returning must restore what the user
+    /// chose, not what the system permitted while they were away.
+    private func wireSystemCamera() {
+        let center = NotificationCenter.default
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reportCameraToRoom() }
+        }
+        center.addObserver(forName: UIApplication.didBecomeActiveNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reportCameraToRoom() }
+        }
+    }
+
+    private func reportCameraToRoom() {
+        guard !signal.myPeerId.isEmpty else { return }
+        let appIsInFront = UIApplication.shared.applicationState == .active
+        signal.setVideoEnabled(appIsInFront && isCameraEnabled)
+        // The window is not dismissed for us when the call screen comes back, and leaving
+        // it up would draw the same call twice. The arrangement stays armed, so the next
+        // trip to the background opens it again.
+        if appIsInFront { pip.closeWindow() }
+    }
+
+    /// The in-call screen's remote tile, which the PiP window grows out of.
+    func noteRemoteTileView(_ view: UIView) {
+        pipSourceView = view
+        armPiP()
+    }
+
+    private func armPiP() {
+        guard let view = pipSourceView, let track = signal.remoteVideo.values.first else { return }
+        pip.arm(track: track, sourceView: view)
     }
 
     // MARK: - CallKit wiring
@@ -283,6 +340,7 @@ final class CallSession: ObservableObject {
     private func tearDown() async {
         signal.disconnect()
         media.stopCapture()
+        pip.disarm()
         callKitCallID = nil
         deviceCallID = nil
         isOutgoingCall = false
@@ -346,6 +404,10 @@ final class CallSession: ObservableObject {
     func toggleCamera() {
         isCameraEnabled.toggle()
         media.videoTrack.isEnabled = isCameraEnabled
+        // The far end cannot tell a disabled track from a stalled one, so the user's own
+        // camera button reports itself on the same wire MiroTalk's client uses — otherwise
+        // turning the camera off leaves the other side drawing its last frame.
+        signal.setVideoEnabled(isCameraEnabled)
     }
 
     func switchCamera() {
