@@ -478,6 +478,59 @@ connected`) and the call's peer connections went with it. A product rebuilds the
 **and** re-establishes what was riding on it, which a call has to do anyway after a
 screen lock.
 
+**A real call to MiroTalk's own browser client, over the node (2026-09-19).** Everything
+above put two peers in one process on one phone, which answers "can the node carry a
+call" but not "will it carry a call to somebody else's client". This one does: the
+phone's app, signalling through the node with its Tailscale app **disconnected**, against
+MiroTalk's own web client in Chromium on the Mac, on the same LAN.
+
+```
+connecting wss://qatar-vpn.tailea67b0.ts.net/socket.io/… via embedded node 127.0.0.1:60182
+addPeer 6Bab4be4 should_create_offer=false iceServers=1
+policy: awaiting an offer from 6Bab4be4
+offer <- 6Bab4be4 (6062 chars, 3 m-lines (video,audio,application))
+answer -> 6Bab4be4 (3791 chars, 3 m-lines (video,audio,application))
+pc state -> 2   ice state -> 2
+ICE path [T01] local=host 192.168.1.120:60601/udp remote=host 192.168.1.127:55214/udp state=succeeded bytesSent=18209062
+media IN <- 6Bab4be4 video delta=263352 energy=0.000
+media IN <- 6Bab4be4 audio delta=5534 energy=0.000
+node traffic [during call] — qatar-vpn rx=39436(+20096) tx=24916(+12112)
+```
+
+The browser offered three m-lines — a real client adds a data channel to the two media
+lines — the native client answered, ICE nominated the LAN pair (phone `192.168.1.120` to
+Mac `192.168.1.127`), and ~18 MB of the phone's camera crossed to the browser while the
+browser's camera came back. Both directions, two devices, one of which had no Tailscale
+app at all. Confirmed on both screens rather than inferred from byte counts: the
+browser's page drew the phone's room beside its own test pattern, and the phone's `A` tile
+drew the browser's pattern beside its own camera.
+
+Two details worth keeping:
+
+- **The Mac does advertise tailnet candidates** — it runs the Tailscale app, so
+  `100.80.10.12` and its `fd7a:115c:a1e0::b635:a0c` appear in the browser's offer. Every
+  pair against them sat `in-progress sent=0 recv=0` for the whole call, because the phone
+  has no interface that can reach `100.64/10`. So "the overlay is not the media path" holds
+  in a two-device call too, and this time it holds *visibly* — the dead pairs and the live
+  one are in the same report.
+- **The node carried the exchange**: ~20 KB in and ~12 KB out during the SDP and ICE
+  relay, against a few hundred bytes of housekeeping before it. The phone's system client
+  stayed offline throughout — `iphone181 … offline, last seen 15h ago` on the Mac's peer
+  list while the call ran.
+
+Two traps the harness set, both worth knowing before repeating it:
+
+- **A browser with no camera is not a media peer.** The first attempt joined with a
+  synthetic-data-channel-only offer — `1 m-lines (application)` — and negotiated
+  successfully, ICE and all, with no media anywhere. It looked like a working call
+  everywhere except the m-line count and the byte counts. Chromium needs
+  `--use-fake-device-for-media-stream` (and `--use-fake-ui-for-media-stream` to skip a
+  permission prompt nobody is there to click) before it is a peer worth testing against.
+- MiroTalk's page carries "Connection lost / Reconnecting to signaling server…" elements
+  in its DOM. They are not visible in the rendered frame, and the call negotiated and
+  carried media throughout, so this reads as that client's own UI state rather than
+  anything about the transport — recorded rather than chased.
+
 **Getting a login URL requires the IPN bus, not the status document.** `statusJSON()`
 has an `AuthURL` field and it read `""` on every poll while the node sat at
 `NeedsLogin` — including a raw dump of the whole document, which showed the field
@@ -617,10 +670,10 @@ and it is the dependency this branch exists to remove.
   host through the node. That is a wiring task against the same `NodeSession`, not an
   open question — but nothing about the product path is proven until it is done.
 - Whether any of this holds for a call between **two devices on different networks**, one
-  or both without the system Tailscale app. Every call here put two peers in one process
-  on one phone, where the media path is the device's own Wi-Fi address. The
-  two-household case is where the STUN-versus-TURN question actually bites, and it needs
-  two phones.
+  or both without the system Tailscale app. Two real devices have now been measured — the
+  phone with no Tailscale app at all calling MiroTalk's own client on the Mac — but on one
+  LAN, where ICE nominated a host pair. The two-household case is where the
+  STUN-versus-TURN question bites, and it needs two phones on two networks.
 - **What to do about media over the overlay.** This branch answers that it cannot ride
   the node as built, and the audit's STUN/TURN decision is unmoved by it: media still
   takes whatever ICE finds. Nothing here says which of a relay, TURN, or accepting the
