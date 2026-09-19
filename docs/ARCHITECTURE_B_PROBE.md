@@ -122,14 +122,18 @@ Two operational facts that caused wasted runs:
 - The Mac reaches the phone over the **network, not USB**. Turning the phone's Wi-Fi
   off also cuts `devicectl`, so a log cannot be pulled until it is back on. The log
   persists regardless.
-- A suspended app's WebSocket **dies silently while the app is frozen** — no close frame,
-  no error is delivered during the freeze. Leaving the app during a signalling test
-  therefore loses the call with nothing in the log to say so. What arrives afterwards
-  depends on the client: on the next receive after a 600 s freeze the node-carried
-  instrument reported `receive failed: … Socket is not connected`, alongside
-  `ice state -> 4` and `pc state -> 4`, so the loss becomes visible on resume rather than
-  at the moment it happens. Either way the socket does not come back by itself, and
-  nothing reconnects it.
+- A suspended app's WebSocket **dies while the app is frozen** — no close frame, no error is
+  delivered during the freeze. Leaving the app during a signalling test therefore loses the
+  call with nothing in the log to say so. What arrives afterwards depends on the client: on
+  the next receive after a 600 s freeze the node-carried instrument reported
+  `receive failed: … Socket is not connected`, alongside `ice state -> 4` and
+  `pc_state -> 4`, so the loss becomes visible on resume rather than at the moment it
+  happens. Either way the socket does not come back by itself, and nothing reconnects it.
+  **But "backgrounded" and "suspended" are not the same thing**, which is worth knowing
+  before designing around this: on 2026-09-19 a call whose audio was actually running, in an
+  app declaring the `audio` background mode, kept its socket alive through 100 s in the
+  background — six engine.io pings, no close, no error — because iOS never froze the
+  process. The freeze is what kills the socket, not leaving the app.
 
 `CROSSBAR_BACKEND_URL` and `CROSSBAR_MIROTALK_ORIGIN` override the endpoints used by
 the backend and signal probes, so no deployment detail is baked into the source.
@@ -270,8 +274,15 @@ Stated so the next session does not inherit an overclaim:
   history, no settings, no audio-route selection and no call duration — and the
   multiparty path is unbuilt. The instruments remain where most of the measurement
   happened; the shell is what those measurements now support.
-- **The signalling socket does not survive backgrounding** — no background mode is
-  configured. A call that outlives the screen needs one.
+- **The signalling socket survives backgrounding *when the app is not suspended*, and that
+  is a configuration, not a given.** Measured 2026-09-19: with audio actually running and
+  the `audio` background mode declared, a backgrounded call kept its socket, its audio both
+  ways and its place in the room for 100 s; with WebRTC's manual-audio gate left closed, the
+  same app was frozen within seconds and lost everything. The `voip` mode the app declared
+  was not enough on its own, because there was no audio running for a background mode to
+  justify. What the app does on *resume* is still unbuilt: nothing reconnects a socket that
+  was genuinely killed, and nothing re-acquires the camera or tells the peer that video
+  stopped.
 - **Video renders, but nothing about its quality is measured.** A remote track from
   MiroTalk's own browser client is decoded and drawn natively — verified by two
   visibly different scenes on screen at once, the phone's own camera beside the Mac's —

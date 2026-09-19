@@ -478,6 +478,62 @@ connected`) and the call's peer connections went with it. A product rebuilds the
 **and** re-establishes what was riding on it, which a call has to do anyway after a
 screen lock.
 
+**A call can survive the app being left — and what it needs is audio, not a background
+mode (2026-09-19).** This was asked as a product question — swipe away mid-call, and does
+everything drop? Measured with the far end as the observer, in three configurations:
+
+| Configuration | Result |
+| --- | --- |
+| audio gated, `UIBackgroundModes = [voip]` | process frozen within seconds |
+| audio gated, `+ audio` | identical — declaring the mode changed nothing |
+| **audio running, `+ audio`** | **call survives; audio keeps flowing, video stops** |
+
+The first two look the same from the phone and from the far end: the stats timer stops
+writing mid-line with a non-zero byte delta (14–16 polls, then silence), the far end's
+video time freezes, and MiroTalk removes the peer by about +65 s. Nothing is logged as a
+failure, because a frozen process logs nothing — which is why the far end is the only
+useful observer here.
+
+The third is a different process. Backgrounded for 100 s and sampled throughout:
+
+```
+media OUT -> LwJUiwUX audio bytes=266941 delta=6129      ← still sending, ~6 KB per 3 s
+media IN  <- LwJUiwUX audio bytes=231210 delta=5620 energy=0.006
+media OUT -> LwJUiwUX video bytes=5836421 delta=0        ← camera gone, as iOS intends
+                    …41 polls, 6 engine.io pings, no receive failure…
+```
+
+Audio crossed both ways for the whole background period, `totalAudioEnergy` was non-zero
+for the first time in any of these runs, the signalling socket never dropped, and the peer
+stayed in the room. **Video stopped on its own** — iOS takes the camera away from a
+backgrounded app — so leaving the app already *is* the audio-only switch, without the call
+ending.
+
+The mechanism was a gate nobody had opened. `CallMediaSource.prepareAudioSession()` puts
+WebRTC into **manual audio**, so nothing is recorded or played until `isAudioEnabled` is
+set — and the probe path never set it, because in the product that is CallKit's job in
+`didActivate`. A process that is neither recording nor playing audio has no claim on
+background execution, so iOS suspended it: the background mode was never the missing
+piece, the audio was. `CallMediaSource.enableAudio()` is that gate opened explicitly, for
+a caller with no CallKit call to wait for.
+
+Two gaps this leaves, both worth knowing before the product relies on it:
+
+- **The far end is left staring at a frozen frame.** The phone stops sending video, but
+  nothing tells the peer, so the browser's tile kept its last picture and the call looked
+  alive-but-broken rather than audio-only. MiroTalk has the messages for it — the audit
+  catalogues the two camera-off paths — and this is the case that needs them.
+- **The product path opens the gate through CallKit**, which this probe run did not
+  exercise: `didActivate` → `adoptAudioSession` → the forced `canPlayOrRecord` transition.
+  So the same survival is expected there and is *not* measured; what is measured is that
+  the ingredients it depends on — the `audio` background mode and running audio I/O — are
+  what make the difference.
+
+Neither configuration was tested for the converse (audio running *without* the `audio`
+mode), so how much of the effect belongs to the mode rather than to the audio itself is
+not separated here.
+
+
 **A real call to MiroTalk's own browser client, over the node (2026-09-19).** Everything
 above put two peers in one process on one phone, which answers "can the node carry a
 call" but not "will it carry a call to somebody else's client". This one does: the
