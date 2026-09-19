@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<mask id="vcut" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+<rect x="0" y="0" width="1024" height="1024" fill="#FFFFFF"/>
+<circle cx="276.35" cy="297.19" r="100.14" fill="#000"/>
+<circle cx="512" cy="512" r="100.14" fill="#000"/>
+<circle cx="747.65" cy="726.81" r="100.14" fill="#000"/>
+</mask>
+<g mask="url(#vcut)">
+<rect x="250.51" y="100.87" width="51.68" height="822.27" rx="25.84" ry="25.84" fill="#1B2A23"/>
+<rect x="486.16" y="100.87" width="51.68" height="822.27" rx="25.84" ry="25.84" fill="#1B2A23"/>
+<rect x="721.81" y="100.87" width="51.68" height="822.27" rx="25.84" ry="25.84" fill="#1B2A23"/>
+</g>
+</svg>

@@ -1,0 +1,76 @@
+{
+  "fill" : {
+    "solid" : "display-p3:0.99544,0.99228,0.97786,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill" : {
+            "solid" : "display-p3:0.83318,0.66600,0.00000,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "04-nodes.svg",
+          "name" : "Ring Nodes",
+          "opacity" : 0.75
+        },
+        {
+          "fill-specializations" : [
+            {
+              "value" : "none"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "system-light"
+            }
+          ],
+          "glass" : false,
+          "image-name" : "03-vertical.svg",
+          "name" : "Vertical Strokes"
+        },
+        {
+          "blend-mode" : "normal",
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "system-light"
+            }
+          ],
+          "glass" : false,
+          "image-name" : "02-horizontal.svg",
+          "name" : "Horizontal Strokes"
+        },
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : "system-dark"
+            }
+          ],
+          "glass" : true,
+          "image-name" : "01-background.svg",
+          "name" : "Background"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.3
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
