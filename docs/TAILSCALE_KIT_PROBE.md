@@ -534,6 +534,69 @@ mode), so how much of the effect belongs to the mode rather than to the audio it
 not separated here.
 
 
+**Leaving the app is now a decision rather than an accident (2026-09-19).** A call that
+survives backgrounding leaves two things to fix, and both are built:
+
+- **The far end was never told the camera went away**, so it kept drawing the last frame
+  it received — a frozen picture that looks like a working call. MiroTalk's contract for
+  this is `peerStatus`, read from the *deployed* client because no MiroTalk checkout
+  exists on this machine: `emitPeerStatus('video', myVideoStatus)` sends
+  `{room_id, peer_name, peer_id, element: "video", status, extras}`, and its receive side
+  (`setPeerVideoStatus`) hides that peer's video element and shows their avatar. Sent on
+  leaving, and again on return, by both the probe path and the product's camera button.
+- **The remote picture should not just disappear** when the app is left during a video
+  call. `AVPictureInPictureVideoCallViewController` is the surface Apple provides for
+  calls, and it is *armed while the app is in front* — the system watches the source
+  view's frame and starts the window itself when the app backgrounds; asking for it from
+  inside the background transition is the unreliable version of the same request.
+
+```
+PiP: PiP armed (supported=true, possible=true)     ← while the call screen was in front
+PiP: PiP started                                    ← the system opened it on backgrounding
+camera off — peerStatus video=false
+left the app — PiP armed=true active=true
+camera back on — peerStatus video=true
+PiP: PiP window closed on return to the app
+PiP: PiP stopped
+```
+
+The far end is the honest observer of all of that, and it changed state twice:
+
+```
+foreground  display=block  playing=true  t=24.5  avatar shown=false
+away        display=none   playing=true  t=25.0  avatar shown=true     ← told, not frozen
+returned    display=block  playing=true  t=47.4  avatar shown=false
+```
+
+The window itself was confirmed on the phone's screen while the app was away, floating
+over **Safari** — which is what makes it the system's window rather than an overlay of
+ours — and gone after returning, with the remote video drawing again.
+
+Four things this cost, all worth keeping:
+
+- **`@State` written from `makeUIView` is dropped, silently.** The tile's view is handed
+  over during a SwiftUI update, and assigning it to `@State` there produced no error and
+  no value — the first attempt armed nothing and reported `tileView=false`. It lives in a
+  class box now, and arming happens outside the update.
+- **Arming has to react, not just wait.** The first version polled for 40 seconds and gave
+  up; in this harness the browser joins about 50 seconds after launch, so it timed out
+  before there was anything to show. It now arms on the track arriving as well as on the
+  wait.
+- **AVKit does not close the window when the app returns.** Left alone it floats over the
+  call screen showing the same call twice — measured, then fixed by closing it on
+  foreground while keeping the arrangement armed, so the next trip to the background
+  opens it again.
+- **The obvious log line lied.** Reading `isPictureInPictureActive` immediately after
+  asking for a stop reports `true` for a window that is already going away, so the line
+  now records whether it *was* active. Same family as the peer state label that described
+  the join rather than the call.
+
+Not built, and deliberately so: **PiP for an audio-only call**, where the system's own
+surface (CallKit's lock screen and banner) is the right one and a window would be noise.
+The other gap is unchanged and now matters more: the *product* path is wired the same way
+but still has no measured real call behind it, so what is verified here is the mechanism
+both paths share, exercised through the probe.
+
 **A real call to MiroTalk's own browser client, over the node (2026-09-19).** Everything
 above put two peers in one process on one phone, which answers "can the node carry a
 call" but not "will it carry a call to somebody else's client". This one does: the
