@@ -71,6 +71,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
 
     private var statsTimer: Timer?
     private var inboundBytes: [String: [String: Int]] = [:]
+    private var outboundBytes: [String: [String: Int]] = [:]
     private var reportedPath: [String: String] = [:]
     private var reportedTailnetPairs: Set<String> = []
 
@@ -167,6 +168,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         peers.removeAll()
         pendingCandidates.removeAll()
         inboundBytes.removeAll()
+        outboundBytes.removeAll()
         remoteVideo.removeAll()
         remoteNames.removeAll()
 
@@ -507,6 +509,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         pc.close()
         pendingCandidates[peerId] = nil
         inboundBytes[peerId] = nil
+        outboundBytes[peerId] = nil
         remoteVideo[peerId] = nil
         remoteNames[peerId] = nil
         // Otherwise the label keeps claiming a call that has no peers left in it.
@@ -546,6 +549,18 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
                     let energy = (stat.values["totalAudioEnergy"] as? NSNumber)?.doubleValue ?? 0
                     inbound[kind] = (bytes, energy)
                 }
+                // What this device is *sending*, which is the other half of a question
+                // inbound bytes cannot answer: whether audio keeps flowing when the app
+                // is in the background and the camera has been taken away. Video going
+                // flat there is expected; audio going flat is a dropped call.
+                var outbound: [String: Int] = [:]
+                for (_, stat) in report.statistics {
+                    guard stat.type == "outbound-rtp",
+                          let kind = stat.values["kind"] as? String,
+                          outbound[kind] == nil
+                    else { continue }
+                    outbound[kind] = (stat.values["bytesSent"] as? NSNumber)?.intValue ?? 0
+                }
                 let path = Self.selectedPairDescription(report)
                 let tailnet = Self.tailnetPairs(report)
                 Task { @MainActor in
@@ -567,6 +582,13 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
                         self.inboundBytes[peerId, default: [:]][kind] = stat.bytes
                         let energy = String(format: "%.3f", stat.energy)
                         self.append("media IN <- \(peerId.prefix(8)) \(kind) bytes=\(stat.bytes) delta=\(delta) energy=\(energy)")
+                    }
+                    for kind in outbound.keys.sorted() {
+                        guard let bytes = outbound[kind] else { continue }
+                        let previous = self.outboundBytes[peerId]?[kind] ?? bytes
+                        let delta = bytes - previous
+                        self.outboundBytes[peerId, default: [:]][kind] = bytes
+                        self.append("media OUT -> \(peerId.prefix(8)) \(kind) bytes=\(bytes) delta=\(delta)")
                     }
                 }
             }

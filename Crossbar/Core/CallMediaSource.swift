@@ -75,6 +75,26 @@ final class CallMediaSource: ObservableObject {
         started = false
     }
 
+    /// Ungates WebRTC's audio, for a caller that has no CallKit call to do it.
+    ///
+    /// `prepareAudioSession()` puts the framework into manual-audio mode, so on its own
+    /// **nothing is recorded or played** until this runs — the ADM sits idle. A process
+    /// that is neither recording nor playing audio has no claim on background execution,
+    /// which is what a call actually loses when the user leaves the app.
+    ///
+    /// Measured on 2026-09-19: with the probe's call up and audio still gated, leaving
+    /// the app froze the process within seconds — the stats timer stopped writing, the
+    /// far end saw the video stop, and MiroTalk removed the peer — and declaring `audio`
+    /// in `UIBackgroundModes` changed none of it, because there was no audio running to
+    /// justify the mode. CallKit sets this in `didActivate` (see `adoptAudioSession`);
+    /// this is the same gate, opened by a caller that has no CallKit call to wait for.
+    @discardableResult
+    func enableAudio() -> String {
+        let rtc = RTCAudioSession.sharedInstance()
+        rtc.isAudioEnabled = true
+        return "isAudioEnabled = true (media wants audio)"
+    }
+
     // MARK: - Audio session
 
     /// Puts WebRTC in manual-audio mode, so **CallKit owns the audio session and

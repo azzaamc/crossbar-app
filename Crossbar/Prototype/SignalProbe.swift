@@ -139,6 +139,10 @@ struct SignalProbeSection: View {
         client.media = media
         client.ignoreServerIceServers = ignoreStun
         media.startCapture()
+        // Audio is gated until something opens it, and CallKit is not in this path —
+        // without this the probe joins a call that records and plays nothing, which is
+        // also why the process had no claim on background execution.
+        client.record(media.enableAudio())
         guard viaNode else {
             client.connect(room: room)
             return
