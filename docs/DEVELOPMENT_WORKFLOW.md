@@ -71,11 +71,41 @@ bridge first, but the CLI commands below are reproducible fallbacks.
 - Bundle ID: `com.abdullahchaudhry.Crossbar`.
 - Minimum target: iOS 27.0.
 - Signing: automatic; a Personal Team/development team is selected.
-- No entitlements/capabilities/packages/third-party frameworks.
+- Third-party code: WebRTC via Swift Package (`stasel/WebRTC`), and on branch
+  `tailscale-kit` the `TailscaleKit.xcframework` from `Vendor/` (gitignored;
+  see `Scripts/build-tailscale-kit.sh`).
 - Camera/microphone purpose strings are generated from build settings.
 
 Do not document or commit certificates, provisioning profiles, signing keys, or
 account credentials.
+
+## App icon
+
+The icon is an **Icon Composer document**, `Crossbar/Crossbar.icon`, wired with
+`ASSETCATALOG_COMPILER_APPICON_NAME = Crossbar` (the document's name without the
+extension — that name has to match). Xcode generates every appearance and size
+from it at build time, the system applies the corner mask and the tinted/clear
+treatments, and the app icon builds into `Assets.car` as `Crossbar` with the Any,
+Dark and Tintable appearances plus a MultiSized entry. Verified 2026-09-19 by a
+clean build and a device install.
+
+`Crossbar/Crossbar.icon` is the **shipping** copy. The design workspace lives
+outside this repository in `iconwork/`, alongside the SVG layers
+(`IconLayers/01-background.svg` … `04-nodes.svg`), the tooling that writes the
+document, and Icon Composer's exports. Those exports are **preview renders**: the
+mask is already applied (transparent corners) and the tinted appearances carry a
+sample tint. Apple's guidance is explicit that the mask is the system's job —
+"Don't export the canvas mask because the system applies that automatically" —
+so exports are not catalog artwork and were never meant to be.
+
+Edit the copy in `Crossbar/` (or re-copy it after editing `iconwork/`), so the two
+cannot drift.
+
+There is **no app icon asset catalog**. `AppIcon.appiconset` was retired on
+2026-09-19 in favour of the document, and `Assets.xcassets` now holds only
+`AccentColor` — which is still empty, so the app uses the system accent colour
+(blue) rather than anything from the icon. The mark's only saturated colour is
+the rings' gold, `#e5be12`, if that is wanted.
 
 ## Simulator procedure
 
