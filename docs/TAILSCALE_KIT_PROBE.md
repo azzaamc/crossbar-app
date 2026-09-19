@@ -593,6 +593,47 @@ Four things this cost, all worth keeping:
 
 Not built, and deliberately so: **PiP for an audio-only call**, where the system's own
 surface (CallKit's lock screen and banner) is the right one and a window would be noise.
+
+**Two ways the first version was wrong, both visible on the phone (2026-09-19).** It
+opened a window and took the call's video away:
+
+- **The window showed a still picture.** It hosted the same `RTCMTLVideoView` the call
+  screen uses, and Metal rendering is not driven while an app is in the background — so the
+  window showed the last frame drawn before the app left and looked frozen until the user
+  came back. Apple's guidance for video-call PiP names the fix: *"Video-calling apps need
+  to display the remote view, so use `AVSampleBufferDisplayLayer` to do so."* The window now
+  renders into a sample-buffer layer fed by a frame renderer, which is the system's own
+  path and keeps presenting with the app behind.
+- **The camera stopped, so the call silently went audio-only.** iOS 16 moved camera access
+  in PiP behind a per-session flag — `AVCaptureSession.isMultitaskingCameraAccessEnabled` —
+  and until it is set, going to PiP costs the camera. That is why the far end's video
+  froze, and why "my video should still be transmitting in PiP" was exactly right. The
+  session opts in when PiP is armed, and a call that is *in* PiP now keeps its camera; only
+  a call with no window (audio only, or a device that cannot) falls back to audio, and that
+  is when `peerStatus video=false` goes out.
+
+Measured on the next run, with the browser watching our camera and the renderer counting
+its own frames:
+
+```
+PiP: PiP renderer: 698 frames total (20.0 fps over 5 s, 0 dropped)
+PiP: PiP renderer: 899 frames total (20.0 fps over 5 s, 0 dropped)
+far end while away:  display=block  playing=true  t=26.3 → 41.7 → 51.5
+far end on return:   display=block  playing=true  t=63.7
+PiP: PiP window closed on return → PiP stopped
+```
+
+Two screenshots nine seconds apart differed, and the picture in the window was the far
+end's own green test pattern rather than a corrupted image — which is the check that
+matters after a colour conversion (I420 interleaved into NV12), because a wrong conversion
+still counts frames.
+
+Two smaller corrections from the same run, both the same family as the rest of this
+document: the frame line divided a *cumulative* count by one interval and printed "140 fps"
+for a 20 fps stream, and the frames on this device arrive as **I420** rather than the decoded
+pixel buffers the first attempt assumed — which the renderer reported once in the log
+instead of dropping silently.
+
 The other gap is unchanged and now matters more: the *product* path is wired the same way
 but still has no measured real call behind it, so what is verified here is the mechanism
 both paths share, exercised through the probe.
