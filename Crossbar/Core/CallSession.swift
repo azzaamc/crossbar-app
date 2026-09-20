@@ -127,6 +127,7 @@ final class CallSession: ObservableObject {
         media.log = { [weak self] in self?.log("media: \($0)") }
         wireCallKit()
         wireSystemCamera()
+        wireDeviceLock()
         wireTailnet()
         wireTailnetLifecycle()
         media.prepareAudioSession()
@@ -154,12 +155,54 @@ final class CallSession: ObservableObject {
         let center = NotificationCenter.default
         center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
                            object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reportCameraToRoom() }
+            MainActor.assumeIsolated {
+                self?.logLifecycle("backgrounded")
+                self?.reportCameraToRoom()
+            }
         }
         center.addObserver(forName: UIApplication.didBecomeActiveNotification,
                            object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reportCameraToRoom() }
+            MainActor.assumeIsolated {
+                self?.logLifecycle("active")
+                self?.reportCameraToRoom()
+            }
         }
+    }
+
+    /// The device locking is **not** the same event as being backgrounded, and the
+    /// difference is the whole point: backgrounding leaves the app running, and locking
+    /// is where a call was ending with nothing in the log to say why. `protectedData`
+    /// becoming unavailable is the system's own signal for a lock.
+    private func wireDeviceLock() {
+        let center = NotificationCenter.default
+        center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logLifecycle("device locked") }
+        }
+        center.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logLifecycle("device unlocked") }
+        }
+    }
+
+    /// A short name for the phase, for a log line.
+    private var phaseLabel: String {
+        switch phase {
+        case .loading: return "loading"
+        case .needsLogin: return "needsLogin"
+        case .ready: return "ready"
+        case .outgoing: return "outgoing"
+        case .ringing: return "ringing"
+        case .inCall: return "inCall"
+        case .failed: return "failed"
+        }
+    }
+
+    private func logLifecycle(_ event: String) {
+        let audio = AVAudioSession.sharedInstance()
+        log("\(event) — phase=\(phaseLabel) socketOpen=\(signal.isSocketOpen) pipArmed=\(pip.isArmed) "
+            + "category=\(audio.category.rawValue) mode=\(audio.mode.rawValue) "
+            + "silenced=\(audio.secondaryAudioShouldBeSilencedHint) otherAudio=\(audio.isOtherAudioPlaying)")
     }
 
     private func reportCameraToRoom() {
@@ -293,6 +336,7 @@ final class CallSession: ObservableObject {
     // MARK: - CallKit wiring
 
     private func wireCallKit() {
+        callKit.onLog = { [weak self] line in self?.log("callkit: \(line)") }
         callKit.onStart = { [weak self] callID, handle in
             guard let self else { return }
             self.isOutgoingCall = true
@@ -304,8 +348,12 @@ final class CallSession: ObservableObject {
             Task { await self?.accept() }
         }
         callKit.onEnd = { [weak self] _ in
-            self?.log("CallKit ended the call")
-            Task { await self?.endFromCallKit() }
+            guard let self else { return }
+            // The state at this moment is the whole diagnosis: an end that arrives
+            // while the app is alive and the socket is open came from the system, and
+            // nothing else in the log says so.
+            self.log("CallKit ended the call — phase=\(self.phaseLabel) socketOpen=\(self.signal.isSocketOpen) pipArmed=\(self.pip.isArmed)")
+            Task { await self.endFromCallKit() }
         }
         callKit.onMute = { [weak self] _, muted in
             self?.setMuted(muted)

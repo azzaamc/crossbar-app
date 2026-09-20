@@ -22,6 +22,12 @@ final class CallKitController: NSObject, CXProviderDelegate {
     var onAudioDeactivated: ((AVAudioSession) -> Void)?
     var onError: ((String) -> Void)?
 
+    /// A line about what CallKit did. Separate from `onError`, because an action
+    /// arriving is not a failure — and it is the only record of *who* ended a call.
+    /// An end that arrives with no preceding "app asked to end" line came from the
+    /// system, which is otherwise indistinguishable in a log.
+    var onLog: ((String) -> Void)?
+
     private let callController = CXCallController()
     private lazy var provider: CXProvider = {
         let configuration = CXProviderConfiguration()
@@ -80,6 +86,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
     }
 
     func end(callID: UUID) {
+        onLog?("app asked to end the call")
         request(CXTransaction(action: CXEndCallAction(call: callID)))
     }
 
@@ -99,26 +106,38 @@ final class CallKitController: NSObject, CXProviderDelegate {
     // MARK: - CXProviderDelegate
 
     func providerDidReset(_ provider: CXProvider) {
+        onLog?("provider reset — every call is gone")
         onReset?()
     }
 
+    /// CallKit gives an app a few seconds to perform an action; not performing one in
+    /// time is silent unless it is written down, and it can end a call.
+    func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
+        onLog?("timed out performing \(type(of: action))")
+        onError?("CallKit timed out waiting for the call to be handled.")
+    }
+
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        onLog?("performing start")
         action.fulfill()
         provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
         onStart?(action.callUUID, action.handle.value)
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        onLog?("performing answer")
         onAnswer?(action.callUUID)
         action.fulfill()
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        onLog?("performing end")
         onEnd?(action.callUUID)
         action.fulfill()
     }
 
     func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        onLog?("performing mute=\(action.isMuted)")
         onMute?(action.callUUID, action.isMuted)
         action.fulfill()
     }
@@ -127,10 +146,12 @@ final class CallKitController: NSObject, CXProviderDelegate {
     /// rather than activating its own. See `CallMediaSource.adoptAudioSession`, and
     /// note that adopting it is only half the job — the gate has to be re-armed too.
     func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+        onLog?("activated the audio session")
         onAudioActivated?(audioSession)
     }
 
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        onLog?("deactivated the audio session")
         onAudioDeactivated?(audioSession)
     }
 }
