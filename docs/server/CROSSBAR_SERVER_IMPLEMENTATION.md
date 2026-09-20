@@ -139,14 +139,18 @@ Then, in the same call:
 
 ### Not yet verified
 
-- **The native iOS client against this server.** The framing contract is what the
-  tests speak (the test client mirrors `MiroTalkSignalClient` frame for frame),
-  but no phone has connected to it. That is Stage 2, and it is the next real
-  milestone.
-- **Through Tailscale Serve.** Everything above ran on loopback HTTP. The claim
-  that the upgrade request carries injected identity headers is `[INFERENCE]`
-  from Serve's documented behaviour plus the fact that an upgrade is an HTTP
-  request — it is the first thing to confirm at Stage 1.
+- **Media between the native client and another peer.** The app *has* connected to
+  the development server and placed a call (reported 2026-09-20), which proves the
+  identity path through Serve, bootstrap, call creation, `joinUrl` parsing, the
+  socket upgrade and admission. The answering peer was the PWA, and the PWA's call
+  frame was blocked by bug 8 below, so no media crossed. That is the step to
+  repeat now that the frame works — and the phone is the only client in this system
+  whose media path has not been carried end to end.
+- **Through Tailscale Serve, on the socket.** The frame and media tests ran on
+  loopback and HTTP. Identity on the HTTP routes is proven on the Pi; the claim
+  that the *upgrade* request carries the same headers rests on an upgrade being an
+  HTTP request, and the native call above is consistent with it without yet being
+  independent proof of it.
 - **Web Push delivery.** The code path exists and reports itself disabled without
   VAPID keys; no notification has been delivered.
 - **Four-participant calls**, backgrounding, and network changes.
@@ -177,8 +181,25 @@ Recorded because each one is a thing the design had wrong:
 7. **Declining could leave a 1:1 call ringing forever**, because the caller's own
    acceptance counted as somebody being in the call.
 
-The last two were product bugs, not code bugs: they were decided in the state
-machine and would have shipped as behaviour.
+8. **The PWA could not frame the call client.** The call page was served with
+   `frame-ancestors 'none'` and `X-Frame-Options: DENY` — headers inherited from
+   the standalone PWA, where they are right, and exactly wrong for a page whose
+   entire purpose is to be that PWA's call frame. Firefox refused with an explicit
+   message; Safari rendered a blank frame and explained nothing, which is the worse
+   failure of the two. Both now say `'self'` / `SAMEORIGIN`, verified by running a
+   call through the frame with media crossing both ways.
+9. **Two deployment-hygiene faults**, found by deploying rather than by testing:
+   the committed lockfile named the package by its pre-rename name, so every
+   `npm install` on the Pi rewrote it; and the household file was tracked, so the
+   deployment's real copy — the one naming actual people — showed up as a
+   modification. The lock is regenerated, `npm ci` is used, and the household file
+   is now untracked with a committed example beside it.
+
+Of these, 6 and 7 were product bugs rather than code bugs: they were decided in
+the state machine and would have shipped as behaviour. 8 and 9 were found by
+running the deployment rather than the tests — a frame bug only appears when one
+served page embeds another, and hygiene faults only appear when a real host
+installs the thing.
 
 ---
 
