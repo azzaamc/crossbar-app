@@ -91,11 +91,11 @@ it; identity then comes from the proxy's injected headers, as it does today.
 
 ## 4. Verified
 
-### Automated — 38 tests, all passing
+### Automated — 39 tests, all passing
 
 ```text
 node --test --test-timeout=15000
-# tests 38   pass 38   fail 0
+# tests 39   pass 39   fail 0
 ```
 
 Covering, with the ones that found real bugs called out:
@@ -116,6 +116,33 @@ Covering, with the ones that found real bugs called out:
   the server down** (`peer_id: "constructor"`, the exact message that crashed the
   old server), heartbeat pings, the participant ceiling, **a reconnecting device
   replacing its own connection**, and departure announced to those left behind.
+
+### End-to-end — the first real call, phone to browser (2026-09-20)
+
+A native app and a browser in one room, on the deployed development server, with
+the owner seeing and hearing both ends. The server's own log of it, in order:
+
+```text
+call_created    callId 37d15042…  callerId abdullah  inviteeIds ["dad"]
+signal_admitted peerId NG8KnWqN…  userId abdullah  deviceId null              peers 1
+call_joined     userId abdullah   deviceId null
+call_joined     userId abdullah   deviceId web-d5f6f358-…
+signal_admitted peerId xkqD2f6cW… userId abdullah  deviceId web-d5f6f358-…    peers 2
+call_ended      status ended
+peer_left / call_left   ×2, reason socket_closed
+```
+
+The `deviceId` column is what makes this worth reading: `null` is the native
+client, which does not send one yet, and `web-…` is the browser. One room, two
+peers, one identified device, and a clean teardown where each departure was logged
+with its reason.
+
+This is the last piece of the native path to be proven end to end: identity through
+Serve, bootstrap and the directory, call creation, `joinUrl` parsing, the socket
+upgrade and admission, offer/answer, ICE, and media in both directions.
+
+The same log also carried the one malformed message the server has ever seen, which
+was a bug worth having: see 10 below.
 
 ### End-to-end — a real call between two browsers
 
@@ -139,21 +166,16 @@ Then, in the same call:
 
 ### Not yet verified
 
-- **Media between the native client and another peer.** The app *has* connected to
-  the development server and placed a call (reported 2026-09-20), which proves the
-  identity path through Serve, bootstrap, call creation, `joinUrl` parsing, the
-  socket upgrade and admission. The answering peer was the PWA, and the PWA's call
-  frame was blocked by bug 8 below, so no media crossed. That is the step to
-  repeat now that the frame works — and the phone is the only client in this system
-  whose media path has not been carried end to end.
-- **Through Tailscale Serve, on the socket.** The frame and media tests ran on
-  loopback and HTTP. Identity on the HTTP routes is proven on the Pi; the claim
-  that the *upgrade* request carries the same headers rests on an upgrade being an
-  HTTP request, and the native call above is consistent with it without yet being
-  independent proof of it.
+- **A call between two native devices**, and three- or four-way calls. The mesh is
+  proven between native peers in the earlier Architecture B spike and between
+  native and browser here, but not with two phones.
+- **Backgrounding and locking the phone mid-call**, and what the far end sees.
+- **Reconnection**, including a network change: nothing in this system restarts ICE,
+  and that is a media-plane gap rather than a server one.
 - **Web Push delivery.** The code path exists and reports itself disabled without
   VAPID keys; no notification has been delivered.
-- **Four-participant calls**, backgrounding, and network changes.
+- **APNs**, which the developer programme unlocks and which is what makes a locked
+  phone ring at all.
 
 ---
 
@@ -195,11 +217,20 @@ Recorded because each one is a thing the design had wrong:
    modification. The lock is regenerated, `npm ci` is used, and the household file
    is now untracked with a committed example beside it.
 
+10. **Safari's end-of-candidates looked malformed.** WebKit marks the end of its ICE
+    candidates with an `RTCIceCandidate` whose `candidate` string is empty, where
+    Chrome sends a null candidate. The relay rejected it as a malformed message and
+    counted it — and ten malformed messages close the connection. So a working
+    Safari call could have been dropped by a message that means nothing, and the
+    web client had the same blind spot when sending. Found by reading the first
+    real call's log, which is what the positive-path telemetry exists for.
+
 Of these, 6 and 7 were product bugs rather than code bugs: they were decided in
-the state machine and would have shipped as behaviour. 8 and 9 were found by
+the state machine and would have shipped as behaviour. 8, 9 and 10 were found by
 running the deployment rather than the tests — a frame bug only appears when one
-served page embeds another, and hygiene faults only appear when a real host
-installs the thing.
+served page embeds another, hygiene faults only when a real host installs the
+thing, and this one only when a browser other than the one used for development
+joins a call.
 
 ---
 

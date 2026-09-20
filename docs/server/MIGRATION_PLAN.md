@@ -4,11 +4,11 @@ How to get from today's two production services to a Crossbar-owned server
 without a flag day, without breaking the Family Call PWA, and with a rollback at
 every step.
 
-**Status.** Stage 0 is **done**, and so is the part of Stage 4 that concerns the
-PWA: the server exists at `/crossbar/server`, is served by its own browser call
-client, and both the shipped native client and the unmodified PWA work against it
-by URL alone. Everything that touches `qatar-vpn` is still ahead and still
-requires explicit approval for each exact operation.
+**Status.** Stages 0 and 1 are **done**, and so is the native half of Stage 2: the
+development server runs on `qatar-vpn` as `crossbar.service` behind its own Serve
+port, and on 2026-09-20 the iPhone app and a browser on the Mac carried a real call
+through it — audio and video both ways. What remains of Stage 2 and 3 is in the
+implementation record's "Not yet verified" list.
 
 Any step that touches `qatar-vpn` requires explicit approval for that exact
 operation.
@@ -201,6 +201,13 @@ opens the PWA or the app it becomes a member and appears in everyone's directory
 ---
 
 ## 4. Stage 2 — one-to-one validation with a real device
+
+**Done for native ↔ browser, 2026-09-20.** The owner placed a call from the iPhone
+app on the development server, joined it from a browser on the Mac, and saw and
+heard both ends. The server's log of that call is quoted in
+[`CROSSBAR_SERVER_IMPLEMENTATION.md`](CROSSBAR_SERVER_IMPLEMENTATION.md); what it
+proves is listed under "Not yet verified", where the remaining gaps are now honest
+and short.
 
 - Point **one** device at the new backend using Settings (service address +
   signalling origin). The other family devices stay on the current stack.
