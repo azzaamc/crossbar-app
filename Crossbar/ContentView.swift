@@ -5,8 +5,24 @@ import SwiftUI
 /// Owns the one call session and shows whichever screen that state calls for, so no
 /// screen has to know how another is reached — and so there is exactly one place that
 /// decides what "in a call" looks like.
+///
+/// It also decides whether there is anything to show at all: until someone has said
+/// whether this device belongs to a household's own network or to a server at a hostname,
+/// the app has no route to dial and asks. That answer is read here rather than through the
+/// session, because it is the thing that decides whether the session has anything to load.
 struct ContentView: View {
     @StateObject private var session = CallSession()
+
+    /// Seeded from what is stored, then kept here: the onboarding screen is the only thing
+    /// that changes it while this view is on screen, and it says so through `onChoose`.
+    @State private var mode = AppSettings.connectionMode
+
+    /// Whether Settings is up, from the failure screen.
+    ///
+    /// Everywhere else Settings is reached from the contacts toolbar, which exists only once
+    /// the session is up. When it is not, this is the only route to the screen holding the
+    /// address and the enrolment code — which is where the refusal message points.
+    @State private var showSettings = false
 
     #if DEBUG
     /// Set by `CROSSBAR_PROBE_AUTOSHOW=1`.
@@ -28,6 +44,33 @@ struct ContentView: View {
     #endif
 
     var body: some View {
+        Group {
+            if mode == nil {
+                // Nothing is dialled before this choice is made. The mode is what decides
+                // whether this app carries its own network, so a load that ran first would be
+                // choosing one of the two deployments on the person's behalf — the guess this
+                // screen exists to avoid.
+                OnboardingView { mode = $0 }
+            } else {
+                product
+            }
+        }
+        #if DEBUG
+        // The instruments, presented over whatever is on screen — the product or the
+        // question above it. A debug screen reachable only by tapping a toolbar item cannot
+        // be reached at all when the phone is on a desk, and this gate in particular has to
+        // fire whether or not anyone has answered that question yet.
+        .onAppear {
+            if ProcessInfo.processInfo.environment["CROSSBAR_PROBE_AUTOSHOW"] == "1" {
+                showProbe = true
+            }
+        }
+        .fullScreenCover(isPresented: $showProbe) { ProbeView() }
+        #endif
+    }
+
+    /// What the product shows, once there is a route to reach it by.
+    private var product: some View {
         Group {
             switch session.phase {
             case .loading:
@@ -64,6 +107,16 @@ struct ContentView: View {
                 } actions: {
                     Button("Try again") { Task { await session.load() } }
                         .buttonStyle(.borderedProminent)
+                    // The way out of a state this screen cannot fix by retrying.
+                    //
+                    // A device that holds an address but no key gets a refusal from the
+                    // server, and the refusal tells it to paste an enrolment code in
+                    // Settings — which, without this button, was a screen the message named
+                    // and the app offered no route to. Retrying cannot help: the answer will
+                    // be the same until the address or the device changes, and both of those
+                    // live in Settings. Measured 2026-09-21, on the way into the first public
+                    // deployment, by doing exactly that.
+                    Button("Settings") { showSettings = true }
                 }
 
             case .ringing(let call):
@@ -76,23 +129,16 @@ struct ContentView: View {
                 ContactsView(session: session)
             }
         }
-        // Loaded once per launch. A call that arrives while this is in flight is not
-        // lost: the stream carries it, and `/api/bootstrap` re-reports anything already
-        // ringing.
-        .task {
+        // Loaded once per launch, and again whenever the connection changes — which is why
+        // the mode is the key rather than something read inside. A load is how a route is
+        // taken: a node brought up for the private mode, a direct dial for a server, and
+        // switching between them has to re-dial everything either way. A call that arrives
+        // while this is in flight is not lost: the stream carries it, and `/api/bootstrap`
+        // re-reports anything already ringing.
+        .task(id: mode) {
             await session.load()
         }
-        #if DEBUG
-        // The instruments, presented over whatever the product is showing. A debug
-        // screen reachable only by tapping a toolbar item cannot be reached at all
-        // when the phone is on a desk.
-        .onAppear {
-            if ProcessInfo.processInfo.environment["CROSSBAR_PROBE_AUTOSHOW"] == "1" {
-                showProbe = true
-            }
-        }
-        .fullScreenCover(isPresented: $showProbe) { ProbeView() }
-        #endif
+        .sheet(isPresented: $showSettings) { SettingsView(session: session) }
     }
 }
 
