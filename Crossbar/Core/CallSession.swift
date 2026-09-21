@@ -170,11 +170,33 @@ final class CallSession: ObservableObject {
     }
 
     /// The device locking is **not** the same event as being backgrounded, and the
-    /// difference is the whole point: backgrounding leaves the app running, and locking
-    /// is where a call was ending with nothing in the log to say why. `protectedData`
-    /// becoming unavailable is the system's own signal for a lock.
+    /// difference matters: a lock is not a reason for a call to end.
+    ///
+    /// Every one of these fires on an ordinary lock. Measured on 2026-09-20 with a live
+    /// call in this app: locking produced `device locked`, `resigning active` and
+    /// `entered the background`, and unlocking produced `returning to the foreground`
+    /// and `device unlocked`, all of them with the app still `phase=inCall`. The call
+    /// survived the lock — the signalling socket dropped and re-dialled, the camera
+    /// stopped, and the call stayed up.
+    ///
+    /// They are all logged here because of the run that did not: with a CallKit call up,
+    /// locking ended the call and delivered **none** of these first. That silence is the
+    /// whole difference between "the system told us we were losing the foreground" and
+    /// "the system took the call away while it still considered this app frontmost".
     private func wireDeviceLock() {
         let center = NotificationCenter.default
+        center.addObserver(forName: UIApplication.willResignActiveNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logLifecycle("resigning active (lock, or a system interruption)") }
+        }
+        center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logLifecycle("entered the background") }
+        }
+        center.addObserver(forName: UIApplication.willEnterForegroundNotification,
+                           object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logLifecycle("returning to the foreground") }
+        }
         center.addObserver(forName: UIApplication.protectedDataWillBecomeUnavailableNotification,
                            object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.logLifecycle("device locked") }
@@ -318,14 +340,24 @@ final class CallSession: ObservableObject {
 
     /// The carrier everything in this app dials through.
     ///
-    /// The node is the route, not an optimisation: Family Call answers only on the tailnet,
-    /// so a client without one cannot reach it at all. `CROSSBAR_TAILNET_NODE=off` dials
-    /// direct for an instrument that needs the other route — an override rather than a
-    /// fallback, because nothing selects it silently. A run that took the system's route
-    /// while the screen said otherwise is the failure this project keeps finding.
+    /// The node is the route a **private deployment** needs, not a thing this app does:
+    /// Family Call over a tailnet answers through Serve and nowhere else, so a client
+    /// without a node cannot reach it — while a server at a hostname has no network to
+    /// carry and is reached the ordinary way. Which of those this device is in comes from
+    /// `ConnectionMode`, and `TailnetNode.isEnabled` is where the two questions meet. A
+    /// run that took one route while the screen said the other is the failure this project
+    /// keeps finding, which is why each route says out loud that it is the one being taken.
     private func attachTransport() async throws -> CallTransport {
         guard TailnetNode.isEnabled else {
-            log("the embedded node is switched off — dialling direct")
+            // Changing the mode does not restart the app, so a node left over from the
+            // private mode is still up and still logging. Nothing else will close it — this
+            // is the only place that decides the route — so it goes down here rather than
+            // being left as a second network this app is no longer supposed to have.
+            if node.state != .idle {
+                log("the mode is not a private network — closing the node")
+                await node.stop()
+            }
+            log("dialling direct — \(AppSettings.connectionMode?.title ?? "no connection mode")")
             return .direct
         }
         let transport = try await node.attach()
@@ -391,35 +423,101 @@ final class CallSession: ObservableObject {
 
     // MARK: - Load
 
+    /// How many times a load is tried before anything is said about failing.
+    ///
+    /// One attempt is not a verdict. A phone waking up, a network still coming up, and a
+    /// request this app itself replaced all look like failure to a single try — and putting
+    /// a screen up for them asks someone to solve a problem that is already solving itself.
+    /// Three tries over about eight seconds covers what resolves on its own; the screen
+    /// afterwards covers what does not, and now carries a way into Settings besides.
+    private static let loadAttempts = 3
+    private static let loadRetryDelay = Duration.seconds(4)
+
     func load() async {
         phase = .loading
         notice = nil
         eventsDown = false
         eventsTask?.cancel()
 
+        var lastReason = "The service did not answer."
+        for attempt in 1...Self.loadAttempts {
+            switch await attemptLoad() {
+            case .settled, .cancelled:
+                // Done — or no longer this load's business. Whatever cancelled it owns the
+                // state now, and a cancelled request is not a service that cannot be
+                // reached: reporting it as one is how a pull-to-refresh came to show
+                // "Can't reach the service: cancelled" before the refresh had finished.
+                return
+            case .retry(let reason):
+                lastReason = reason
+            }
+
+            guard attempt < Self.loadAttempts else { break }
+            log("load attempt \(attempt) of \(Self.loadAttempts) did not get through — retrying")
+            // A sleep that is cancelled throws, and that is the signal to stop quietly
+            // rather than to say anything.
+            if (try? await Task.sleep(for: Self.loadRetryDelay)) == nil { return }
+        }
+
+        phase = .failed(lastReason)
+    }
+
+    /// A load the person asked for, from the screen they asked it on.
+    ///
+    /// Deliberately not `load()`. That one puts the app into the connecting state, which
+    /// replaces the view the pull came from — taking the refresh spinner's owner with it and
+    /// cancelling the task doing the work, so the spinner had nothing left that could end it.
+    /// The screen it replaced had already loaded the contacts the pull was meant to refresh.
+    /// Measured 2026-09-21, on the first public deployment, by pulling down.
+    ///
+    /// A refusal still replaces everything: that is a different device or a different
+    /// address, and it needs the screen that says so. Anything else is reported where the
+    /// person already is — the list stays, and the connection is called out for what it is,
+    /// the same way a dropped event stream is.
+    func refresh() async {
+        switch await attemptLoad() {
+        case .settled, .cancelled:
+            return
+        case .retry:
+            eventsDown = true
+        }
+    }
+
+    /// What one attempt did, and whether another is worth making.
+    private enum LoadOutcome {
+        case settled
+        /// Replaced or torn down: neither a success nor a failure, and not reported as one.
+        case cancelled
+        /// A reason that may not still be true in a moment.
+        case retry(String)
+    }
+
+    private func attemptLoad() async -> LoadOutcome {
         // The family network comes first, because everything below it is tailnet-only and
         // the carrier is now the app's own node rather than another app's tunnel.
         do {
             hand(try await attachTransport())
         } catch {
+            if Self.isCancellation(error) { return .cancelled }
             log("the network is not carrying anything: \(error.localizedDescription)")
             // Waiting to be authorised is not a failure — it is a first run, and the screen
             // for it is the login page. A node that is up but carries nothing is a failure,
-            // and says so. `wireTailnet` has already set `.needsLogin` when a URL exists.
+            // and `wireTailnet` has already set `.needsLogin` when a URL exists.
             let waiting = tailnetLoginURL != nil && !node.state.isRunning
-            phase = waiting ? .needsLogin : .failed(error.localizedDescription)
-            return
+            if waiting {
+                phase = .needsLogin
+                return .settled
+            }
+            return .retry("The network is up but not carrying anything.")
         }
 
         do {
             let session = try await client.checkSession()
             guard session.authenticated, session.configured else {
-                phase = .failed(
-                    session.authenticated
-                        ? "This tailnet identity is not enrolled with the service."
-                        : "The service did not recognise this device's tailnet identity."
-                )
-                return
+                // A refusal is an answer, and asking again would only get it again: what has
+                // to change is the address or the device, and both live in Settings.
+                phase = .failed(refusal(authenticated: session.authenticated))
+                return .settled
             }
 
             let bootstrap = try await client.bootstrap()
@@ -450,10 +548,40 @@ final class CallSession: ObservableObject {
                 runCameraSelfTest()
             }
             #endif
+            return .settled
         } catch {
+            if Self.isCancellation(error) { return .cancelled }
             log("load failed: \(error.localizedDescription)")
-            phase = .failed(error.localizedDescription)
+            return .retry(error.localizedDescription)
         }
+    }
+
+    /// Whether an error describes a request that was replaced rather than one that failed.
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return Task.isCancelled
+    }
+
+    /// Why the service would not hear this device, in the words of the deployment it is in.
+    ///
+    /// The two modes refuse differently and have to say so differently. A private server
+    /// reads an identity out of the tailnet and turns away one it does not know; a public
+    /// one has no tailnet to read and is asking this device to prove itself instead. Telling
+    /// someone on a public server that their *tailnet identity* was not recognised sends
+    /// them looking for a network the app is not using, which is the assumption this change
+    /// exists to remove.
+    private func refusal(authenticated: Bool) -> String {
+        let publicServer = AppSettings.connectionMode == .publicServer
+        guard authenticated else {
+            return publicServer
+                ? "This server did not accept this device. If it asks devices to enrol, "
+                    + "paste the enrolment code you were given in Settings."
+                : "The service did not recognise this device's tailnet identity."
+        }
+        return publicServer
+            ? "This server accepted this device, but it is not tied to anyone here yet."
+            : "This tailnet identity is not enrolled with the service."
     }
 
     // MARK: - Placing
@@ -632,12 +760,24 @@ final class CallSession: ObservableObject {
             notice = "The call's room could not be read."
             return
         }
-        log("room \(target.room) on \(target.origin.absoluteString)")
-        signal.media = media
         // The invitation names the signalling host, which is exactly why the client and the
-        // backend cannot disagree about it. A deployment whose signalling host is not the
-        // one its invitations name can override it in Settings; empty is the normal case.
-        signal.originOverride = AppSettings.signallingOverrideURL ?? target.origin
+        // backend cannot disagree about it. Two things can still be wrong with the name it
+        // carries: a deployment whose signalling host is not the one its invitations name
+        // can override it in Settings, and an invitation naming loopback is describing the
+        // server to itself, which from here would be this phone. `signallingOrigin` settles
+        // the second case; the override settles the first, and beats it.
+        let signallingOrigin = AppSettings.signallingOverrideURL
+            ?? FamilyCallService.signallingOrigin(for: target.origin)
+        signal.originOverride = signallingOrigin
+        // The origin actually dialled, not the one the invitation carried. When the two
+        // differ, that difference is the whole explanation for a call with no media in it,
+        // and a log printing only the invitation sends the reader looking in the wrong
+        // place. Measured that way, once.
+        log(signallingOrigin == target.origin
+            ? "room \(target.room) on \(target.origin.absoluteString)"
+            : "room \(target.room) — signalling \(signallingOrigin.absoluteString),"
+                + " not the invitation's \(target.origin.absoluteString)")
+        signal.media = media
         signal.peerName = me?.displayName
         log(media.startCapture())
         signal.connect(room: target.room)

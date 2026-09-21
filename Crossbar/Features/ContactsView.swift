@@ -49,7 +49,7 @@ struct ContactsView: View {
                 }
             }
             .navigationTitle("Contacts")
-            .refreshable { await session.load() }
+            .refreshable { await session.refresh() }
             .overlay {
                 if session.contacts.isEmpty {
                     ContentUnavailableView(
