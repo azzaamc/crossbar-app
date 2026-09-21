@@ -1,6 +1,7 @@
 @preconcurrency import AVFAudio
 @preconcurrency import CallKit
 import Foundation
+import UIKit
 
 /// CallKit for the product flow.
 ///
@@ -11,7 +12,7 @@ import Foundation
 /// of its own**, because two owners of "which call is this" is how they come to
 /// disagree.
 @MainActor
-final class CallKitController: NSObject, CXProviderDelegate {
+final class CallKitController: NSObject, CXProviderDelegate, CXCallObserverDelegate {
     /// The system accepted a request to place a call. `handle` carries the contact id.
     var onStart: ((UUID, String) -> Void)?
     var onAnswer: ((UUID) -> Void)?
@@ -29,8 +30,16 @@ final class CallKitController: NSObject, CXProviderDelegate {
     var onLog: ((String) -> Void)?
 
     private let callController = CXCallController()
+
+    /// The system's own view of the calls this app owns. Kept because it is the only
+    /// place that shows what iOS thinks is happening — including whether it has
+    /// decided a call is on hold or over — as opposed to what the app is doing.
+    private let callObserver = CXCallObserver()
+
     private lazy var provider: CXProvider = {
-        let configuration = CXProviderConfiguration()
+        // Named rather than anonymous: Apple's own sample names the provider, and an
+        // unnamed one is what the system UI has to attribute a call to.
+        let configuration = CXProviderConfiguration(localizedName: "Crossbar")
         configuration.supportsVideo = true
         configuration.maximumCallGroups = 1
         // The household calls are two to four people; the extra headroom costs
@@ -52,6 +61,7 @@ final class CallKitController: NSObject, CXProviderDelegate {
         // provider yet, and `provider` would otherwise only be touched on the incoming
         // path — which is how an outgoing call failed on a cold start.
         _ = provider
+        callObserver.setDelegate(self, queue: .main)
     }
 
     /// Places the call on the system UI as an outgoing call.
@@ -85,7 +95,22 @@ final class CallKitController: NSObject, CXProviderDelegate {
         provider.reportOutgoingCall(with: callID, connectedAt: Date())
     }
 
+    /// Calls the app has already asked CallKit to end.
+    ///
+    /// Ending one twice is not harmless. The second `CXEndCallAction` comes back refused
+    /// with `callUUIDInvalid`, which reached the person as "CallKit rejected the request:
+    /// the operation couldn't be completed" moments after a call that had worked perfectly.
+    /// The app ends a call from more than one path — the person's own end, and the teardown
+    /// that follows the server confirming it — and CallKit cannot be asked twice. Measured
+    /// 2026-09-21, on the first call between two phones.
+    private var ended: Set<UUID> = []
+
     func end(callID: UUID) {
+        guard !ended.contains(callID) else {
+            onLog?("end already asked for — not asking CallKit a second time")
+            return
+        }
+        ended.insert(callID)
         onLog?("app asked to end the call")
         request(CXTransaction(action: CXEndCallAction(call: callID)))
     }
@@ -131,7 +156,11 @@ final class CallKitController: NSObject, CXProviderDelegate {
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        onLog?("performing end")
+        // Where the app stood when the system asked for the call to end. Recorded
+        // because the lock path delivered no `willResignActive`: either the system
+        // still considered this app frontmost while the screen was off, or it ended
+        // the call before it ever told us we were losing the foreground.
+        onLog?("performing end — app state=\(UIApplication.shared.applicationState.rawValue)")
         onEnd?(action.callUUID)
         action.fulfill()
     }
@@ -153,5 +182,13 @@ final class CallKitController: NSObject, CXProviderDelegate {
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         onLog?("deactivated the audio session")
         onAudioDeactivated?(audioSession)
+    }
+
+    // MARK: - CXCallObserverDelegate
+
+    /// What the system believes, which is not always what the app believes.
+    func callObserver(_ callObserver: CXCallObserver, callChanged call: CXCall) {
+        onLog?("system view \(call.uuid.uuidString.prefix(8)): "
+            + "ended=\(call.hasEnded) outgoing=\(call.isOutgoing) onHold=\(call.isOnHold) connected=\(call.hasConnected)")
     }
 }
