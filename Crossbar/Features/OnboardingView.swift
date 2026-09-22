@@ -1,243 +1,255 @@
 import SwiftUI
 
-/// The one question this app has to ask before it can work: where its service is.
+/// The first thing anybody sees, and the only question this app has to ask.
 ///
-/// Shown when no mode has been chosen yet, and again from Settings when someone wants to
-/// change it. Crossbar's two deployments are not two addresses for one thing — one is a
-/// household's own network, which this app carries, and the other is a server reached the
-/// ordinary way — so the two paths are explained here in plain words, one section each, and
-/// the answer is stored. See `ConnectionMode` for why it is stored rather than worked out
-/// from the address.
+/// The question is not which transport to use: that is the household administrator's business,
+/// and the code they hand over answers it. So the screen is one thing — a code. Scan it or paste
+/// it, and the app configures itself: which server, which kind of network, and who this device is.
 ///
-/// Neither path repeats anything the rest of the app already does. A tailnet that needs
-/// this device approved lands in the session's own `needsLogin` state, which has a screen
-/// and a button of its own, and an enrolment code goes to `DeviceAuth`, which is the only
-/// thing that knows how to spend one. Nor does either path dial anything itself: a load is
-/// what takes a route, and whoever changed the mode asks for it — the root screen reacts to
-/// the value it seeded from the setting, and Settings asks directly, because a change made
-/// there is one the root never saw.
+/// The manual path still exists, because a deployment whose code cannot be scanned has to be
+/// reachable somehow. It is behind a button in the corner, and it is the only place in the app
+/// where the two kinds of deployment are named — everywhere else, a code carries that answer and
+/// nobody has to know it.
 struct OnboardingView: View {
-    /// Called once a mode has been stored, so whoever showed this screen can carry on.
-    ///
-    /// The root screen replaces this view with the ordinary flow; Settings, which pushes
-    /// this, is popped by `dismiss` and needs nothing from here.
+    /// Called once the app knows how it reaches its service, so whoever showed this can carry on.
     var onChoose: (ConnectionMode) -> Void = { _ in }
 
-    @Environment(\.dismiss) private var dismiss
     @ObservedObject private var deviceAuth = DeviceAuth.shared
 
-    /// The private address, bound to the same setting Settings edits. Left alone by the
-    /// private path: empty means the built-in address, and a household that has set its own
-    /// keeps it.
-    @AppStorage(AppSettings.Key.serviceAddress) private var serviceAddress = ""
-
-    @State private var serverAddress = ""
-    @State private var enrollmentCode = ""
+    @State private var code = ""
     @State private var isScanning = false
-    @State private var failure: String?
     @State private var isWorking = false
+    @State private var failure: String?
+    @State private var isDone = false
+    @State private var showingManual = false
 
-    /// What a person is told when the server wants a code and they have not given one.
-    ///
-    /// The wording is the way in: it says what is being asked of them and nothing about
-    /// what happens if it is not answered, because what happens is a call that never
-    /// arrives and a sentence about identity that would not have helped.
-    private static let needsEnrolment =
-        "This server needs this device to be enrolled. Paste the enrollment code you were given."
+    /// The manual path's own state, kept here because the sheet is presented from here.
+    @State private var address = ""
+    @State private var kind: ConnectionMode = .privateNetwork
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    Text("Crossbar runs in two places, and this app reaches them "
-                         + "differently. Choose the one that is yours — you can change it "
-                         + "later in Settings.")
+            VStack(spacing: Theme.Space.loose) {
+                Spacer(minLength: Theme.Space.normal)
+                welcome
+                Spacer(minLength: Theme.Space.normal)
+                if isDone { done } else { join }
+                Spacer(minLength: Theme.Space.tight)
+            }
+            .padding(.horizontal, Theme.Space.screen)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Set up by hand") { showingManual = true }
+                        .font(.footnote)
+                        .accessibilityIdentifier("onboarding.manual")
+                }
+            }
+            .sheet(isPresented: $isScanning) {
+                EnrollmentScanner { scanned in
+                    code = scanned
+                    isScanning = false
+                    Task { await join() }
+                }
+            }
+            .sheet(isPresented: $showingManual) {
+                ManualJoinView(address: $address, kind: $kind, code: $code) {
+                    if code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        // Nothing to enrol, which is the case this path exists for: a server
+                        // that does not ask, where the address is the whole of what it needed.
+                        onChoose(kind)
+                    } else {
+                        Task { await join() }
+                    }
+                }
+            }
+            // One haptic for the longest wait in the app and the outcome that matters most.
+            .sensoryFeedback(.success, trigger: isDone)
+            .sensoryFeedback(.error, trigger: failure)
+        }
+    }
+
+    // MARK: - What is on the screen
+
+    private var welcome: some View {
+        VStack(spacing: Theme.Space.snug) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.system(size: 52, weight: .light))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.tint)
+
+            VStack(spacing: Theme.Space.tight) {
+                Text("Crossbar")
+                    .font(.largeTitle.weight(.semibold))
+                Text("Calls with the people on your Crossbar.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var join: some View {
+        VStack(spacing: Theme.Space.normal) {
+            Button {
+                isScanning = true
+            } label: {
+                Label("Scan the code", systemImage: "qrcode.viewfinder")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 34)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityIdentifier("onboarding.scan")
+
+            VStack(spacing: Theme.Space.snug) {
+                VStack(spacing: Theme.Space.tight) {
+                    // Named as a field rather than left to its placeholder: a bordered box
+                    // holding grey centred text reads as a disabled button, and this is the
+                    // path somebody has to take when there is no camera to point at a code.
+                    Text("Or paste the code instead")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    TextField("Enrolment code", text: $code)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .multilineTextAlignment(.center)
+                        .font(.callout.monospaced())
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Enrolment code")
+                        .accessibilityIdentifier("onboarding.code")
                 }
 
-                privateSection
-                publicSection
-            }
-            .navigationTitle("Connection")
-            .sheet(isPresented: $isScanning) {
-                EnrollmentScanner { code in
-                    enrollmentCode = code
-                    isScanning = false
+                if isWorking {
+                    HStack(spacing: Theme.Space.tight) {
+                        ProgressView().controlSize(.small)
+                        Text("Joining…")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                } else {
+                    Button("Join") { Task { await join() } }
+                        .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("onboarding.join")
                 }
-            }
-        }
-    }
-
-    // MARK: - This household's own network
-
-    private var privateSection: some View {
-        Section {
-            TextField("Address", text: $serviceAddress,
-                      prompt: Text(FamilyCallService.compiledDefault.absoluteString))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .accessibilityIdentifier("onboarding.privateAddress")
-
-            Button("Use this household's network") { usePrivateNetwork() }
-                .accessibilityIdentifier("onboarding.usePrivateNetwork")
-        } header: {
-            Text("This household runs its own network (Tailscale)")
-        } footer: {
-            Text("Choose this to join a household whose Crossbar server runs on its own "
-                 + "private network. This app carries that network itself, so nothing else "
-                 + "has to be installed — the first time it connects, that network will ask "
-                 + "to approve this device, and the page for it is the whole of the setup.\n\n"
-                 + "The address below is the one this app was built with unless someone has "
-                 + "set a different one here. Leave it as it is unless you were told "
-                 + "otherwise.")
-        }
-    }
-
-    // MARK: - A server
-
-    private var publicSection: some View {
-        Section {
-            TextField("Server address", text: $serverAddress,
-                      prompt: Text("https://crossbar.example.com"))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .accessibilityIdentifier("onboarding.serverAddress")
-
-            // Two ways to the same place: what the camera reads lands in this field, and
-            // the button below spends it from there.
-            HStack(spacing: 10) {
-                TextField("Enrolment code", text: $enrollmentCode,
-                          prompt: Text("Only if the server asks for one"))
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .accessibilityIdentifier("onboarding.enrollmentCode")
-
-                Button {
-                    isScanning = true
-                } label: {
-                    Image(systemName: "qrcode.viewfinder")
-                        .imageScale(.large)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Scan the code")
-                .accessibilityIdentifier("onboarding.scanCode")
-            }
-
-            if isWorking {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("Checking the server…").foregroundStyle(.secondary)
-                }
-            } else {
-                Button("Connect") { Task { await usePublicServer() } }
-                    .disabled(serverAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("onboarding.useServer")
             }
 
             if let failure {
                 Text(failure)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("onboarding.notice")
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("onboarding.failure")
             }
-        } header: {
-            Text("Connect to a Crossbar server")
-        } footer: {
-            Text("Choose this when you were given the address of a Crossbar server — one "
-                 + "that answers at a hostname, on the internet or on a network you are "
-                 + "already on. The address must be an https:// one.\n\n"
-                 + "If the server asks devices to enrol, paste the enrolment code you were "
-                 + "given: the whole line, or the payload a QR code carries. A code carries "
-                 + "that server's own address, so the field above does not have to be right "
-                 + "as well. A server that asks for nothing needs no code, and leaving the "
-                 + "field empty there is not a mistake.")
         }
     }
 
-    // MARK: - Choosing
-
-    /// The tailnet path: the mode, and nothing else.
-    ///
-    /// The address is deliberately untouched. An empty one means the built-in address, a
-    /// stored one is the household's own, and writing either of them from here would be
-    /// this screen deciding something it was not asked about.
-    private func usePrivateNetwork() {
-        finish(.privateNetwork)
+    private var done: some View {
+        VStack(spacing: Theme.Space.normal) {
+            Label("You're in", systemImage: "checkmark.circle.fill")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.green)
+            Text("Crossbar is ready. The people on your server appear in a moment.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .accessibilityElement(children: .combine)
     }
 
-    /// The server path: validate the address, spend the code if there is one, then choose.
-    private func usePublicServer() async {
-        guard let address = validatedServerAddress() else {
-            failure = "That is not a server address. A Crossbar server is reached at an "
-                    + "https:// address, so paste the whole of it, starting with https://."
-            return
-        }
+    // MARK: - The one action
 
+    private func join() async {
+        let entered = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !entered.isEmpty, !isWorking else { return }
         isWorking = true
         failure = nil
-        // Set before anything is asked of the service, because both `DeviceAuth` and the
-        // control plane read the address afresh on every request: this is what the probe,
-        // the enrolment and the load after them will use.
-        AppSettings.serviceAddress = address.absoluteString
+        defer { isWorking = false }
 
-        let code = enrollmentCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        if code.isEmpty {
-            // Nothing to spend, so the only question left is whether the server was
-            // expecting something. Asked here rather than discovered later, because a load
-            // against a server that wants a code fails as a call that never arrives.
-            if !deviceAuth.isEnrolled, await deviceAuth.requiresEnrolment() == true {
-                failure = Self.needsEnrolment
-                isWorking = false
-                return
+        do {
+            try await deviceAuth.enroll(code: entered)
+            isDone = true
+            // The enrolment settled both of these from the code, so what it stored is what
+            // this app now runs as.
+            onChoose(AppSettings.connectionMode ?? kind)
+        } catch let refusal as DeviceAuthError {
+            failure = refusal.failureMessage
+        } catch {
+            failure = error.localizedDescription
+        }
+    }
+}
+
+/// The way in for a deployment whose code cannot be scanned.
+///
+/// The only place in the app where the two kinds of deployment are named, and deliberately so:
+/// a code carries that answer, an address does not, and asking somebody to choose between two
+/// kinds of network they have never heard of is exactly the question the rest of this screen
+/// exists to avoid.
+private struct ManualJoinView: View {
+    @Binding var address: String
+    @Binding var kind: ConnectionMode
+    @Binding var code: String
+    var onJoin: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Where your Crossbar is", selection: $kind) {
+                        Text("This household's network").tag(ConnectionMode.privateNetwork)
+                        Text("A server address").tag(ConnectionMode.publicServer)
+                    }
+                    .pickerStyle(.inline)
+                } header: {
+                    Text("Where your Crossbar is")
+                } footer: {
+                    Text(kind.summary)
+                }
+
+                Section("Address") {
+                    TextField("Address", text: $address,
+                              prompt: Text(FamilyCallService.compiledDefault.absoluteString))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .accessibilityIdentifier("onboarding.privateAddress")
+                }
+
+                Section {
+                    TextField("Code", text: $code, prompt: Text("If your server asks for one"))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Enrolment code")
+                } footer: {
+                    Text("A code carries the address of the service it belongs to, so filling "
+                         + "this in is enough on its own. The address above is for a server "
+                         + "that does not hand out codes.")
+                }
             }
-        } else {
-            do {
-                try await deviceAuth.enroll(code: code)
-            } catch DeviceAuthError.unsupportedServer {
-                // A server with no device-auth routes answers 404, and for this app that is
-                // the server saying it does not ask — never a fault. The code was simply
-                // not needed, which is worth no sentence at all.
-            } catch let refusal as DeviceAuthError {
-                failure = refusal.failureMessage
-                isWorking = false
-                return
-            } catch {
-                failure = error.localizedDescription
-                isWorking = false
-                return
+            .navigationTitle("Set up by hand")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Join") {
+                        // Applied here because nothing else will on this path: a code carries
+                        // an address, and this is the path for when there is no code.
+                        AppSettings.serviceAddress = address
+                        AppSettings.connectionMode = kind
+                        dismiss()
+                        onJoin()
+                    }
+                    .accessibilityIdentifier("onboarding.useServer")
+                }
             }
         }
-
-        finish(.publicServer)
-    }
-
-    /// The address someone typed, when it is one this app can dial.
-    ///
-    /// `https` is required rather than preferred: a public server is answering over the
-    /// internet, and the pairing secret that follows — the enrolment code and the session
-    /// it buys — is a credential, not a preference.
-    private func validatedServerAddress() -> URL? {
-        let text = serverAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: text),
-              url.scheme?.lowercased() == "https",
-              let host = url.host(), !host.isEmpty else {
-            return nil
-        }
-        return url
-    }
-
-    /// Stores the choice and hands the person on.
-    ///
-    /// Nothing is dialled from here, because this screen does not know what is watching it:
-    /// storing the mode *is* continuing to the normal flow, and each caller asks for the
-    /// reload that follows — the root screen by reacting to the value it holds, Settings by
-    /// asking the session directly.
-    private func finish(_ mode: ConnectionMode) {
-        AppSettings.connectionMode = mode
-        onChoose(mode)
-        dismiss()
     }
 }

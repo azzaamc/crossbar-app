@@ -2,24 +2,23 @@ import SwiftUI
 
 /// The call itself.
 ///
-/// Everything the user can do here is routed through **CallKit**, not the API, so this
-/// screen and the system's own call UI can never disagree about whether the microphone
-/// is muted or the call has ended. That is why `end()` and `toggleMute()` live on the
-/// session rather than being wired straight to the client.
+/// Everything the user can do here is routed through **CallKit**, not the API, so this screen
+/// and the system's own call UI can never disagree about whether the microphone is muted or the
+/// call has ended. That is why `end()` and `toggleMute()` live on the session rather than being
+/// wired straight to the client.
+///
+/// On a video call the controls get out of the way, because the picture is what the screen is
+/// for — but only once there is somebody's picture to watch, and never while a call is still
+/// ringing, when the controls are all there is. A tap brings them back, and a screen reader is
+/// told the same thing by the action on the video.
 struct InCallView: View {
     @ObservedObject var session: CallSession
 
+    @State private var showControls = true
+
     var body: some View {
-        VStack(spacing: 12) {
-            VStack(spacing: 2) {
-                Text(title)
-                    .font(.title3.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                Text(status)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, 12)
+        VStack(spacing: Theme.Space.snug) {
+            heading
 
             CallVideoGrid(
                 signal: session.signal,
@@ -32,30 +31,104 @@ struct InCallView: View {
                 onRemoteViewReady: { session.noteRemoteTileView($0) }
             )
             .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture { toggleControls() }
+            .accessibilityAction(named: "Show call controls") { showControls = true }
 
-            if session.eventsDown {
-                Text("Lost the connection to the service — status may be out of date.")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
+            if showControls {
+                controls
+                    .padding(.bottom, Theme.Space.normal)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
-
-            controls
-                .padding(.bottom, 16)
         }
-        .padding(.horizontal)
+        .padding(.horizontal, Theme.Space.normal)
+        .animation(.snappy(duration: 0.22), value: showControls)
+    }
+
+    // MARK: - Who, and what is happening
+
+    /// The people on the call, and what is happening to it.
+    ///
+    /// The names are the heading rather than the status: "Calling…" as a title says the same
+    /// thing twice, and somebody glancing at the screen wants to know *who* first.
+    private var heading: some View {
+        VStack(spacing: Theme.Space.hairline) {
+            Text(others.isEmpty ? "Calling…" : others.formatted(.list(type: .and)))
+                .font(.title3.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+
+            HStack(spacing: Theme.Space.hairline) {
+                if isConnected, let answered = session.phase.call?.answeredAt {
+                    // How long the call has been up is the one number somebody looks for, and
+                    // it is a fact the record already has — no counter of our own to drift
+                    // away from it.
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(Reading.duration(from: answered, to: context.date.ISO8601Format()) ?? status)
+                    }
+                } else {
+                    Text(status)
+                }
+
+                if session.eventsDown {
+                    Text("·")
+                    Label("Reconnecting", systemImage: "exclamationmark.triangle.fill")
+                }
+            }
+            .font(.footnote)
+            .foregroundStyle(session.eventsDown ? Color.orange : Color.secondary)
+        }
+        .padding(.top, Theme.Space.snug)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Everyone on the call except the user. For a household call that is usually one name;
+    /// when it is more, all of them, because "Call with Mum" is wrong when Dad is there too.
+    private var others: [String] {
+        guard let call = session.phase.call else { return [] }
+        return (call.participants ?? [])
+            .map(\.userId)
+            .filter { $0 != session.me?.id }
+            .map { session.displayName(for: $0) }
+    }
+
+    private var isConnected: Bool {
+        if case .inCall = session.phase { return true }
+        return false
+    }
+
+    private var status: String {
+        switch session.phase {
+        case .outgoing: return "Ringing…"
+        case .inCall: return others.count > 1 ? "Connected · \(others.count + 1) people" : "Connected"
+        default: return ""
+        }
+    }
+
+    // MARK: - Controls
+
+    /// Whether the controls may get out of the way at all.
+    ///
+    /// Only on a call with somebody else's picture on it. With no remote video the controls
+    /// are the whole of the screen, and one that hides when it is the only thing there is a
+    /// control the user has to hunt for.
+    private var canHideControls: Bool { !others.isEmpty && isConnected }
+
+    private func toggleControls() {
+        guard canHideControls else { return }
+        showControls.toggle()
     }
 
     /// The controls at whichever size fits the screen.
     ///
-    /// Five buttons at the comfortable size want about 370 points of width, which a phone
-    /// on its side — or a small one — does not have. A control past the edge of the screen
-    /// is a control the user cannot reach, and on a call screen that is the one failure
-    /// that matters, so the row steps down to a tighter one rather than being clipped.
+    /// Five buttons at the comfortable size want about 370 points of width, which a phone on
+    /// its side — or a small one — does not have. A control past the edge of the screen is a
+    /// control the user cannot reach, and on a call screen that is the one failure that
+    /// matters, so the row steps down to a tighter one rather than being clipped.
     private var controls: some View {
         ViewThatFits(in: .horizontal) {
-            controlRow(spacing: 16, diameter: 52)
-            controlRow(spacing: 8, diameter: 40)
+            controlRow(spacing: Theme.Space.normal, diameter: Theme.Control.regular)
+            controlRow(spacing: Theme.Space.tight, diameter: Theme.Control.compact)
         }
     }
 
@@ -90,29 +163,6 @@ struct InCallView: View {
         }
     }
 
-    /// Everyone on the call except the user. For a household call that is usually one
-    /// name; when it is more, all of them, because "Call with Mum" is wrong when Dad is
-    /// there too.
-    private var others: [String] {
-        guard let call = session.phase.call else { return [] }
-        return (call.participants ?? [])
-            .map(\.userId)
-            .filter { $0 != session.me?.id }
-            .map { session.displayName(for: $0) }
-    }
-
-    private var title: String {
-        others.isEmpty ? "Calling…" : others.formatted(.list(type: .and))
-    }
-
-    private var status: String {
-        switch session.phase {
-        case .outgoing: "Ringing…"
-        case .inCall: others.count > 1 ? "Connected · \(others.count + 1) people" : "Connected"
-        default: ""
-        }
-    }
-
     private func control(
         _ symbol: String,
         _ label: String,
@@ -122,13 +172,14 @@ struct InCallView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(spacing: 5) {
+            VStack(spacing: Theme.Space.hairline) {
                 Image(systemName: symbol)
-                    .font(.title3)
+                    .font(.system(size: diameter * 0.4, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
                     .frame(width: diameter, height: diameter)
                     .background(
                         isDestructive ? AnyShapeStyle(.red)
-                            : isActive ? AnyShapeStyle(.tint.opacity(0.25))
+                            : isActive ? AnyShapeStyle(.tint.opacity(0.22))
                             : AnyShapeStyle(.thinMaterial),
                         in: Circle()
                     )
@@ -136,9 +187,15 @@ struct InCallView: View {
                 Text(label)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+            .frame(minWidth: diameter)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
+        // A control that changes something says what it is set to, so the state is not
+        // carried by a tint the screen reader cannot see.
+        .accessibilityValue(isDestructive ? "" : (isActive ? "on" : "off"))
     }
 }

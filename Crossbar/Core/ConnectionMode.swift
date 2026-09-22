@@ -25,6 +25,18 @@ enum ConnectionMode: String, CaseIterable {
     /// A Crossbar server at a hostname, reached the ordinary way.
     case publicServer
 
+    /// The mode a code names, as this app's own.
+    ///
+    /// The service spells these `private` and `public` — what it trusts — and the app spells
+    /// them for the screen that explains them. One place, so the two cannot drift apart.
+    static func named(by value: String?) -> ConnectionMode? {
+        switch value?.lowercased() {
+        case "private": return .privateNetwork
+        case "public": return .publicServer
+        default: return nil
+        }
+    }
+
     /// What this mode is called on screen. One spelling, because two screens name it.
     var title: String {
         switch self {

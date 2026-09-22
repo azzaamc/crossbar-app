@@ -110,6 +110,14 @@ final class DeviceAuth: ObservableObject {
             discardSession()
         }
 
+        // Which kind of deployment this is, settled before anything is dialled: the mode
+        // decides whether the app brings up a network of its own, so an enrolment that ran
+        // first would be knocking on the wrong door.
+        if let mode = parsed.mode, mode != AppSettings.connectionMode {
+            AppSettings.connectionMode = mode
+            discardSession()
+        }
+
         try identity.createKeyIfNeeded()
         guard let publicKey = identity.publicKeyBase64 else { throw DeviceAuthError.noKey }
 
@@ -431,7 +439,14 @@ enum DeviceAuthError: Error, LocalizedError {
 /// What someone pastes into the enrolment field, or what a QR code carries.
 struct EnrollmentCode {
     let token: String
+    /// The service's address when the code names one, which is how this app is pointed at its
+    /// own backend without anybody typing a hostname.
     let server: String?
+    /// Which kind of deployment the code is for — the one thing the app cannot work out for
+    /// itself, because the same address is a tailnet name in one kind and a server on the
+    /// internet in the other. Absent from a code made before the service sent it, in which
+    /// case the app asks rather than guessing.
+    let mode: ConnectionMode?
 
     /// Accepts the service's JSON payload (`{"version":1,"server":…,"enrollment_token":…}`)
     /// or a bare token.
@@ -450,11 +465,13 @@ struct EnrollmentCode {
            let token = (shape["enrollment_token"] as? String ?? shape["token"] as? String)?.nonBlank {
             self.token = token
             self.server = (shape["server"] as? String)?.nonBlank
+            self.mode = ConnectionMode.named(by: shape["mode"] as? String)
             return
         }
 
         self.token = trimmed
         self.server = nil
+        self.mode = nil
     }
 }
 

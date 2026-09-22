@@ -67,6 +67,8 @@ struct FamilyCall: Decodable, Identifiable, Equatable {
     let callerId: String
     let callerName: String?
     let status: String
+    /// `video` or `audio`. The service has always sent it; the app only ever asked for video.
+    let kind: String?
     /// The reader's own participation status, from `callsForUser` only.
     let myStatus: String?
     let createdAt: String
