@@ -17,13 +17,6 @@ struct ContentView: View {
     /// that changes it while this view is on screen, and it says so through `onChoose`.
     @State private var mode = AppSettings.connectionMode
 
-    /// Whether Settings is up, from the failure screen.
-    ///
-    /// Everywhere else Settings is reached from the contacts toolbar, which exists only once
-    /// the session is up. When it is not, this is the only route to the screen holding the
-    /// address and the enrolment code — which is where the refusal message points.
-    @State private var showSettings = false
-
     var body: some View {
         Group {
             if mode == nil {
@@ -43,49 +36,23 @@ struct ContentView: View {
         Group {
             switch session.phase {
             case .loading:
-                ProgressView("Connecting…")
+                LaunchView()
 
             case .needsLogin:
                 ContentUnavailableView {
-                    Label("Sign in to the network",
-                          systemImage: "person.badge.key.fill")
+                    Label("Approve this device", systemImage: "person.badge.key.fill")
                 } description: {
                     Text(session.tailnetLoginURL == nil
-                         ? "This app carries its own network connection, so nothing else has "
-                         + "to be installed. It is starting up, and the sign-in page will "
-                         + "appear here as soon as it is ready."
-                         : "Approve this device in the page that opens. The app carries on by "
-                         + "itself once it is authorised.")
+                         ? "Crossbar is starting its connection. The sign-in page will appear "
+                         + "here as soon as it is ready."
+                         : "Your household's network has to recognise this device before "
+                         + "Crossbar can reach it. Approve it in the page that opens, and the "
+                         + "app carries on by itself.")
                 } actions: {
                     if session.tailnetLoginURL != nil {
                         Button("Open the sign-in page") { session.node.openLoginPage() }
                             .buttonStyle(.borderedProminent)
                     }
-                    if let url = session.tailnetLoginURL {
-                        Text(url)
-                            .font(.caption2.monospaced())
-                            .textSelection(.enabled)
-                    }
-                }
-
-            case .failed(let reason):
-                ContentUnavailableView {
-                    Label("Can't reach the service", systemImage: "wifi.exclamationmark")
-                } description: {
-                    Text(reason)
-                } actions: {
-                    Button("Try again") { Task { await session.load() } }
-                        .buttonStyle(.borderedProminent)
-                    // The way out of a state this screen cannot fix by retrying.
-                    //
-                    // A device that holds an address but no key gets a refusal from the
-                    // server, and the refusal tells it to paste an enrolment code in
-                    // Settings — which, without this button, was a screen the message named
-                    // and the app offered no route to. Retrying cannot help: the answer will
-                    // be the same until the address or the device changes, and both of those
-                    // live in Settings. Measured 2026-09-21, on the way into the first public
-                    // deployment, by doing exactly that.
-                    Button("Settings") { showSettings = true }
                 }
 
             case .ringing(let call):
@@ -95,7 +62,19 @@ struct ContentView: View {
                 InCallView(session: session)
 
             case .ready:
-                ContactsView(session: session)
+                MainTabs(session: session)
+
+            case .failed:
+                // The same app, with the failure shown inside it rather than instead of it.
+                // A whole screen of "can't reach the service" takes away the people somebody
+                // opened it to call, and the one thing still worth doing — seeing whether
+                // anyone is around.
+                //
+                // This is also how the app keeps a route to Settings. A refusal once named a
+                // screen the app offered no way to reach, and which needed a button of its
+                // own to fix; a tab bar cannot help but offer it. The service's own words for
+                // why are not shown here — they belong in diagnostics.
+                MainTabs(session: session)
             }
         }
         // Loaded once per launch, and again whenever the connection changes — which is why
@@ -107,7 +86,29 @@ struct ContentView: View {
         .task(id: mode) {
             await session.load()
         }
-        .sheet(isPresented: $showSettings) { SettingsView(session: session) }
+    }
+}
+
+/// What the app shows while it works out whether it can reach anything.
+///
+/// The name, and a quiet sign of life. Deliberately not a spinner alone on white: the first
+/// thing anybody sees should say what they opened, and the second should say it is working
+/// rather than that it has stopped.
+private struct LaunchView: View {
+    var body: some View {
+        VStack(spacing: Theme.Space.snug) {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .font(.system(size: 46, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.tint)
+            Text("Crossbar")
+                .font(.title3.weight(.semibold))
+            ProgressView()
+                .controlSize(.small)
+                .padding(.top, Theme.Space.hairline)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Crossbar is connecting")
     }
 }
 

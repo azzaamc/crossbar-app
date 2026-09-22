@@ -11,7 +11,6 @@ import SwiftUI
 /// service's owner hands over.
 struct SettingsView: View {
     @ObservedObject var session: CallSession
-    @Environment(\.dismiss) private var dismiss
 
     @ObservedObject private var deviceAuth = DeviceAuth.shared
 
@@ -47,11 +46,6 @@ struct SettingsView: View {
                 deviceSection
             }
             .navigationTitle("Settings")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
             .confirmationDialog("Sign out of the tailnet?",
                                 isPresented: $confirmingSignOut,
                                 titleVisibility: .visible) {

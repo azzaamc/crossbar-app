@@ -29,6 +29,33 @@ struct FamilyContact: Decodable, Identifiable, Equatable {
 /// entries of `/api/bootstrap`, which come from `store.callsForUser` and are a
 /// different shape for the same idea (`src/db.js:295-305`). Optional fields here are
 /// ones some route omits rather than ones that may be null in principle.
+/// One call that has finished, as the history reports it.
+///
+/// Every field is a fact the service already keeps: which way round it was is worked out from
+/// who placed it, and what became of it is this person's own participation row rather than a
+/// summary the server invented for the screen.
+struct RecentCall: Decodable, Identifiable, Equatable {
+    let callId: String
+    let kind: String
+    let callerId: String
+    let callerName: String?
+    let startedAt: String
+    let answeredAt: String?
+    let endedAt: String?
+    let myStatus: String?
+    let joinedAt: String?
+    let leftAt: String?
+    /// Everyone else on it, as names joined for reading. Absent when there was nobody else.
+    let others: String?
+
+    var id: String { callId }
+}
+
+/// The envelope `GET /api/calls/history` answers with.
+private struct CallHistory: Decodable {
+    let calls: [RecentCall]
+}
+
 struct FamilyCall: Decodable, Identifiable, Equatable {
     struct Participant: Decodable, Equatable {
         let userId: String
@@ -427,6 +454,15 @@ final class FamilyCallClient {
             log("  group \(group.displayName): \(members.isEmpty ? "none signed in" : members.joined(separator: ", "))")
         }
         return result
+    }
+
+    /// `GET /api/calls/history` — what has finished, newest first.
+    ///
+    /// The read the Recents screen is built on. `/api/calls` answers only what is ringing or
+    /// active, deliberately, because that is what a client needs in order to rejoin one; this
+    /// is the other question, asked of the same records.
+    func callHistory() async throws -> [RecentCall] {
+        try await send(request("GET", "api/calls/history"), as: CallHistory.self).calls
     }
 
     /// `GET /api/calls/:id` — used to re-read state after an event stream drops,

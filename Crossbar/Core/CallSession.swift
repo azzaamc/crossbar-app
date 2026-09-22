@@ -41,6 +41,14 @@ final class CallSession: ObservableObject {
     @Published private(set) var phase: Phase = .loading
     @Published private(set) var me: FamilyUser?
     @Published private(set) var contacts: [FamilyContact] = []
+
+    /// Calls that have finished, newest first, for the Recents screen.
+    ///
+    /// Read beside the people, because it is the other thing the app has to show and it comes
+    /// from the same service at the same moment. A history that cannot be read is not a
+    /// reason to refuse the load: the people are what was asked for, and an empty Recents
+    /// says nothing has happened rather than the whole app failing.
+    @Published private(set) var history: [RecentCall] = []
     @Published private(set) var isMuted = false
     @Published private(set) var isCameraEnabled = true
     @Published private(set) var isSpeakerOn = true
@@ -527,6 +535,8 @@ final class CallSession: ObservableObject {
             contacts = bootstrap.contacts
             phase = .ready
             startEvents()
+
+            history = (try? await client.callHistory()) ?? []
 
             // What the stream could not tell this app: an invitation that arrived while it
             // was closed. Same path the reconnect uses, because a call that arrived while
