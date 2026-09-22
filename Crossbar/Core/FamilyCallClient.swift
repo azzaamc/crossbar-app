@@ -6,7 +6,6 @@ import Foundation
 struct FamilyUser: Decodable {
     let id: String
     let displayName: String
-    let relationship: String?
     let avatar: String?
 }
 
@@ -14,7 +13,6 @@ struct FamilyUser: Decodable {
 struct FamilyContact: Decodable, Identifiable, Equatable {
     let id: String
     let displayName: String
-    let relationship: String?
     let avatar: String?
     let lastSeen: String?
     /// Added by the route rather than the query: whether the contact currently holds
@@ -178,6 +176,39 @@ enum FamilyCallService {
         }
         return compiledDefault
     }
+
+    /// Whether an address can only ever mean "the machine reading it".
+    ///
+    /// `localhost`, `127.0.0.1` and `::1` say the same thing wherever they are read, and on
+    /// a phone they can only ever name the phone.
+    static func isLoopback(_ url: URL) -> Bool {
+        switch url.host?.lowercased() {
+        case "localhost", "127.0.0.1", "::1", "[::1]": return true
+        default: return false
+        }
+    }
+
+    /// The origin a signalling socket should dial for this invitation.
+    ///
+    /// The invitation names the signalling host, which is the whole reason it carries one:
+    /// the client and the backend cannot disagree about where to dial. But an invitation
+    /// that names *loopback* cannot have meant this device's own loopback — a server that
+    /// answered this app a moment ago is not inside this phone — so the address the app is
+    /// already talking to is the only reading that makes sense.
+    ///
+    /// Without that rule the socket dials itself, and it fails in the one way that is
+    /// hardest to see: the call still goes active at the server, both ends sit in a call
+    /// that looks connected, and no media crosses because no two peers ever met. Measured
+    /// on a test rig whose `PUBLIC_ORIGIN` was loopback, 2026-09-21 — 46 seconds of a call
+    /// that neither end could hear.
+    static func signallingOrigin(for invitation: URL) -> URL {
+        guard isLoopback(invitation), !isLoopback(baseURL) else { return invitation }
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        components?.path = ""
+        components?.query = nil
+        components?.fragment = nil
+        return components?.url ?? baseURL
+    }
 }
 
 // MARK: - Client
@@ -195,6 +226,12 @@ enum FamilyCallService {
 /// mismatched, so omitting it is what makes the POST routes reachable rather than
 /// only the reads. Adding one would be self-inflicted: the app is not the public
 /// origin and never will be.
+///
+/// A service that has turned device auth on wants a second thing beside the injected
+/// header, and that is a session this device has earned with its own key. `DeviceAuth`
+/// supplies it: the token rides along on every request, and a request is unchanged when
+/// this device holds none — which is the private deployment, and the reason none of this
+/// is a required parameter.
 @MainActor
 final class FamilyCallClient {
     /// Set by the owner after construction, because the owner cannot capture itself
@@ -213,7 +250,15 @@ final class FamilyCallClient {
     /// the transport per request: what replaces it is a *new* node after a rebuild, whose
     /// loopback is a different address, and a session holds the proxy it was built with.
     var transport: CallTransport = .direct {
-        didSet { session = transport.session() }
+        didSet {
+            session = transport.session()
+            // The device-auth routes travel by the same carrier as everything else. In the
+            // embedded node's case the service is reachable over the node's loopback and
+            // nowhere else, so a session minted over the system route would be one the
+            // control plane could then not use — and the failure would arrive as a call
+            // that could not be placed.
+            DeviceAuth.shared.transport = transport
+        }
     }
 
     private var session = URLSession(configuration: .default)
@@ -239,13 +284,64 @@ final class FamilyCallClient {
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         }
+        return authorized(request)
+    }
+
+    /// Adds the session this device holds, when it holds one.
+    ///
+    /// Additive by construction: a device that was never enrolled has no token, and this
+    /// changes nothing about the request it is handed. That is deliberate rather than
+    /// incidental — the private deployment requires no device auth, and neither does any
+    /// service without `/api/auth/*` routes, so the requests this app has always made must
+    /// go out unchanged.
+    private func authorized(_ request: URLRequest) -> URLRequest {
+        var request = request
+        if let token = DeviceAuth.shared.sessionToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "authorization")
+        }
         return request
+    }
+
+    /// One request, re-authenticating once if the service refuses the session.
+    ///
+    /// Two kinds of staleness meet here. A session past 80% of its life is replaced before
+    /// the request goes out, so the request in flight is not the one that finds out. A 401
+    /// is the service disagreeing about the token in hand — the app's own opinion of its
+    /// age is then beside the point — so one exchange is attempted and the request is sent
+    /// again.
+    ///
+    /// One, not a loop: a service that refuses a freshly minted token is refusing this
+    /// device, and repeating would only hide that behind retries. When the session cannot
+    /// be renewed the original 401 is returned, which is the answer the caller would have
+    /// got before device identity existed.
+    private func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        await DeviceAuth.shared.ensureSession()
+        let (data, response) = try await session.data(for: authorized(request))
+        guard (response as? HTTPURLResponse)?.statusCode == 401,
+              await DeviceAuth.shared.ensureSession(forcing: true) else {
+            return (data, response)
+        }
+        return try await session.data(for: authorized(request))
+    }
+
+    /// The same once-only re-authentication for the event stream.
+    ///
+    /// Separate from `data(for:)` because a stream is opened rather than awaited: the bytes
+    /// have to come back unconsumed for the reader in `events()` to walk them.
+    private func stream(for request: URLRequest) async throws -> (URLSession.AsyncBytes, URLResponse) {
+        await DeviceAuth.shared.ensureSession()
+        let (bytes, response) = try await session.bytes(for: authorized(request))
+        guard (response as? HTTPURLResponse)?.statusCode == 401,
+              await DeviceAuth.shared.ensureSession(forcing: true) else {
+            return (bytes, response)
+        }
+        return try await session.bytes(for: authorized(request))
     }
 
     @discardableResult
     private func send<T: Decodable>(_ request: URLRequest, as type: T.Type) async throws -> T {
         log("\(request.httpMethod ?? "?") \(request.url?.absoluteString ?? "?")")
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
 
         guard (200..<300).contains(code) else {
@@ -284,7 +380,7 @@ final class FamilyCallClient {
         // otherwise leaves no trace at all, which is indistinguishable from one that
         // was never attempted — and that ambiguity already cost a run here.
         log("GET api/session (requesting)")
-        let (data, response) = try await session.data(for: request("GET", "api/session"))
+        let (data, response) = try await data(for: request("GET", "api/session"))
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
         let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let identity = shape["identity"] as? [String: Any]
@@ -304,7 +400,7 @@ final class FamilyCallClient {
     /// open, and that is a product-level fact rather than a detail.
     @discardableResult
     func pushConfig() async throws -> (enabled: Bool, publicKeyLength: Int) {
-        let (data, response) = try await session.data(for: request("GET", "api/push/config"))
+        let (data, response) = try await data(for: request("GET", "api/push/config"))
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
         let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let enabled = shape["enabled"] as? Bool ?? false
@@ -398,7 +494,7 @@ final class FamilyCallClient {
                     // mistaken for a dead one.
                     request.timeoutInterval = 120
 
-                    let (bytes, response) = try await self.session.bytes(for: request)
+                    let (bytes, response) = try await self.stream(for: request)
                     let code = (response as? HTTPURLResponse)?.statusCode ?? -1
                     self.log("GET api/events -> HTTP \(code)")
                     guard code == 200 else {

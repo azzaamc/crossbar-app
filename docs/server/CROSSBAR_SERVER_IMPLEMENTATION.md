@@ -265,3 +265,166 @@ not the plan: the plan was to keep MiroTalk for the PWA. What made it unnecessar
 is that the PWA's contract was always "a page URL goes in the frame, a navigation
 to `/newcall` comes out" — and this server can satisfy that with its own client on
 its own origin.
+
+---
+
+## 8. Device identity, network modes and relay (added 2026-09-21)
+
+### 8.1 The two flows, as implemented
+
+Private mode — today's deployment, with a device key added as clients acquire one:
+
+```
+client → tailnet → Tailscale Serve → 127.0.0.1:3003 → Crossbar
+       → challenge-response (device key) → session
+       → signalling admission (participant of that call) → WebRTC (host candidates on the tailnet)
+```
+
+Public mode:
+
+```
+client → Internet → TCP 443 → Caddy (TLS, WSS, header hygiene) → 127.0.0.1:3003 → Crossbar
+       → challenge-response (device key) → session
+       → signalling admission → WebRTC: direct, or TURN on the same host when ICE cannot pair
+```
+
+### 8.2 What an operator does
+
+```bash
+node src/admin.js status                     # mode, origin, counts
+node src/admin.js users                      # people, and who administers
+node src/admin.js enroll --user mum          # one-time invitation: JSON payload and token
+node src/admin.js enrollments                # every invitation and its state
+node src/admin.js devices                    # every device, with state and last seen
+node src/admin.js revoke-device dev_xxx      # that device stops working; the person does not
+node src/admin.js doctor                     # DNS, TLS, HTTPS, WSS, STUN, TURN
+```
+
+The same operations exist over HTTP under `/api/admin/*` for an administrator — which
+is what the authorization tests exercise — and there is deliberately no admin web UI.
+
+### 8.3 Configuration reference
+
+New settings. Existing ones (`HOST`, `PORT`, `PUBLIC_ORIGIN`, `ICE_STUN_URL`,
+`DATA_DIR`, `FAMILY_CONFIG_PATH`, `WEB_ROOT`, `MAX_PARTICIPANTS`, `CALL_RING_SECONDS`,
+`ALLOW_SELF_CALLS`, `ALLOW_DEV_IDENTITY`, `DEV_IDENTITIES`, `AUTO_ENROL_IDENTITIES`)
+are unchanged, so an existing `.env` keeps working.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CROSSBAR_NETWORK_MODE` | `private` | `private` or `public`; the trust posture |
+| `CROSSBAR_PUBLIC_HOSTNAME` | — | required in public mode; `PUBLIC_ORIGIN` must name it |
+| `CROSSBAR_REQUIRE_DEVICE_AUTH` | `true` public, `false` private | whether a device key is required, not merely available |
+| `CROSSBAR_SESSION_SECRET` | — | signs session tokens; required whenever device auth is on |
+| `CROSSBAR_SESSION_TTL_SECONDS` | `43200` | how long a session lasts |
+| `CROSSBAR_CHALLENGE_TTL_SECONDS` | `120` | how long a challenge may be answered |
+| `CROSSBAR_ENROLLMENT_TTL_SECONDS` | `900` | how long an invitation lasts |
+| `CROSSBAR_TURN_HOST` | — | relay host; empty means STUN only |
+| `CROSSBAR_TURN_PORT` | `3478` | relay port for both STUN and TURN |
+| `CROSSBAR_TURN_MIN_PORT` / `_MAX_PORT` | `49160` / `49200` | relay range to forward |
+| `CROSSBAR_TURN_SHARED_SECRET` | — | coturn's `static-auth-secret`; required with a TURN host |
+| `CROSSBAR_TURN_TTL_SECONDS` | `600` | lifetime of a relay credential |
+
+Unsafe combinations are **refused at startup** rather than warned about: public mode
+without a hostname or a session secret, `PUBLIC_ORIGIN` that does not name the public
+hostname, `TRUST_TAILSCALE_HEADERS` on in public mode, `ALLOW_DEV_IDENTITY` on in
+public mode, and a TURN host with no shared secret.
+
+### 8.4 Data model additions
+
+`devices` gains `public_key`, `key_algorithm`, `status` and `revoked_at`; `users`
+gains `admin`; three tables are added — `enrollment_tokens` (hashes only),
+`authenticators` (one row per additional mechanism per device) and `auth_challenges`
+(single-use). Changes land through `MIGRATIONS` in `src/db.js`, keyed on `PRAGMA
+user_version`, applied on every start and idempotent, so a database created before
+this change picks them up with no rebuild and no manual step.
+
+### 8.5 Verified
+
+- `npm test` — **66 tests, all passing**. `test/auth.test.js` adds 23: enrolment
+  (valid, invalid, expired, reused, revoked, wrong curve), challenge-response (valid,
+  wrong signature, replay, another device's challenge, expiry), sessions (valid,
+  expired, tampered, revoked mid-session), revocation (one device fails, the person's
+  other device keeps working), authorization (a non-admin is refused; an administrator
+  is not; a member cannot revoke somebody else's device), relay credentials (expiry,
+  the HMAC shape coturn expects, refused with no session, refused for a revoked
+  device), and health. `test/family.test.js` adds three for the household file being
+  able to move a login between people.
+- The 40 pre-existing tests are unchanged and still pass — that is the private-mode
+  regression, and it is the evidence that nothing about the current deployment moved.
+- The operator CLI was run against the development database (`status`, `users`,
+  `enroll` with and without a session secret, `enrollments`, `devices`, `revoke-device`,
+  `revoke-enrollment`, `doctor`).
+- Each unsafe public-mode combination was confirmed to refuse to start.
+- **A real iPhone enrolled and called, 2026-09-21.** The app generated a key, spent
+  an invitation, and from then on authenticated with it: the server logged
+  `device_enrolled deviceId=dev_CpPdyPcugPw3Do8V userId=abdullah platform=ios`, and
+  the phone's signalling socket was admitted as that device
+  (`signal_admitted … userId=abdullah deviceId=dev_CpPdyPcugPw3Do8V`). That line can
+  only come from the session token — the app has never sent a `device=` parameter, and
+  every app connection before this logged `deviceId: null`.
+- **A two-participant call with media, 2026-09-21**: two peers admitted to one room —
+  the phone as an enrolled device, a browser client as the other end — carrying video
+  both ways for 34 seconds (590 decoded remote frames at 20 fps, none dropped, camera
+  flips included) and ending cleanly.
+- The ring window works: an unanswered call went `ringing` → `call_missed` at 93
+  seconds, and the app cleared itself without help.
+- **A three-way call with media, 2026-09-21**: the phone (an enrolled device), Dad and
+  Mum as browser clients, all three in the room at once. The phone reported two separate
+  remote tiles with live video and each browser rendered the other two. The call was
+  created by a client *other* than the one that answered, so this covers the invitation
+  path as well: the phone rang for a call it had not placed.
+- **The room limit holds and the mesh scales, 2026-09-21**: four peers in one room — the
+  configured maximum — among them the same person on two devices, which the server allows
+  because the limit counts sockets rather than people; every peer carried three remote
+  streams. A fifth peer was refused with `reason=room_full` and the client said so plainly
+  ("Not admitted") rather than failing silently.
+- **A native-to-native call with media, 2026-09-21** — the first, and the case all the
+  earlier ones missed by pairing a phone with a browser. Both ends iPhones; the callee
+  admitted by her own device key (`signal_admitted … userId=mum
+  deviceId=dev_hHH6Gxo_QbDHdEaT`) and the caller on the tailnet identity her household
+  file names. Video ran both ways at 30 fps for about fifty seconds with no dropped
+  frames. Both phones reached the server through the app's own embedded node, on their
+  own tailnets — the arrangement the product intends, exercised end to end from a second
+  person's device for the first time.
+- **A lapsed device session is invisible in private mode, 2026-09-21.** After the rig was
+  restarted with a new session secret, the caller's phone went on working, but
+  `signal_admitted` logged `deviceId=null` for it while the callee's key was named
+  normally. Nothing returned 401 for the app to react to, because the transport identity
+  answered every request, so it never re-authenticated and its device key quietly stopped
+  being used. Harmless where the tailnet identity is enough — but not where relay
+  credentials are wanted, since those require a session.
+- **A three-way call with two real phones in the mesh, 2026-09-21.** A browser client
+  joined first, then both phones answered into the same room: three peers, every pair
+  negotiated, the browser rendering both phones' video and each phone carrying a remote
+  stream. One phone was admitted by its device key
+  (`signal_admitted … userId=mum deviceId=dev_hHH6Gxo_QbDHdEaT`), the other on the
+  tailnet identity its household file names — the two ways in, in one room.
+
+### 8.6 Not verified
+
+- **No public deployment exists.** The deployment files are written and were exercised
+  separately — the Caddyfile passes `caddy validate`, and its header stripping was proven
+  end to end against a throwaway upstream that received none of the spoofed identity
+  headers; HTTPS/2, HSTS, the WSS upgrade and rate limiting through a real Caddy in front
+  of the real server were all measured. What has never happened is a deployment at a real
+  hostname: no ACME certificate, no coturn process, no public IP, and therefore no call in
+  public mode.
+- **Allocation through coturn is not exercised.** `doctor` checks that the relay answers,
+  not that it will relay for a given device, and says so.
+- **The two modes have not been timed against each other** — a call in public mode
+  through TURN has never been made.
+
+### 8.7 A browser cannot enrol yet, and that is a protocol detail
+
+Where `CROSSBAR_REQUIRE_DEVICE_AUTH` is on, the only clients that can connect are ones
+holding a device key — which today means the iOS app. A browser is not excluded by
+policy, but it cannot sign what the server verifies: `crypto.verify('sha256', …)` and
+`P256.Signing` both take **DER-encoded** ECDSA signatures, and WebCrypto's
+`crypto.subtle.sign` produces IEEE P1363 (`r‖s`) instead. A browser client therefore
+needs either a conversion at the client (40 lines, no new cryptography) or a server that
+accepts both encodings — a decision for whoever writes the browser enrolment, and
+recorded here so it is not discovered twice.
+
+That matters for the shape of a public deployment: until then, enrolling a phone needs
+the app, and the browser client is a private-mode participant only.

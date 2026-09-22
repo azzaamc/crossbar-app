@@ -271,3 +271,68 @@ user-specific files from the probe checkpoint:
 and
 `Crossbar.xcodeproj/xcuserdata/azzaam.xcuserdatad/xcschemes/xcschememanagement.plist`.
 Do not treat them as a reason to commit additional `xcuserdata`.
+
+## Local two-party rig (no second person needed)
+
+Every lock/background/call question needs a real peer, and the household's own members
+cannot sign in (the deployed `Dad`/`Mum` logins are still `replace-with-…` placeholders
+and no device is registered for them). The second participant is therefore the **Family
+Call PWA as Dad**, taken from the server's own development identity mode, and the phone
+is Abdullah over Serve — the same topology as production, on one Mac. Used 2026-09-20 to
+find that CallKit, not the call, ends a call when the device locks
+(`NATIVE_PROGRESS.md`, "Lock during a CallKit call").
+
+1. **Server.** `cd server && npm start` with its own `.env` (loopback only,
+   `ALLOW_DEV_IDENTITY=true`, `PORT=3010`). `.env` points `WEB_ROOT` at the PWA, so the
+   server serves it. A separate `FAMILY_CONFIG_PATH` maps `abdullah` to the real tailnet
+   login (so the phone is Abdullah) and keeps `dad@dev`/`mum@dev` for the browser;
+   `DEV_IDENTITIES=dad@dev,mum@dev`. Nothing here touches production.
+2. **Reachability.** The listener is loopback-only by design, so the phone needs
+   `tailscale serve --bg --https=8445 http://127.0.0.1:3010` on the Mac. Verify from
+   another tailnet node: `GET /api/session` must return `source: "tailscale"` with the
+   rig's `userId`.
+3. **Dad.** Open `http://127.0.0.1:3010/` and set `document.cookie =
+   'crossbar.dev.identity=dad@dev; path=/'`. Loopback is what makes the dev identity
+   legal, and the PWA's call frame inherits it because `PUBLIC_ORIGIN` stays loopback.
+4. **The phone.** Point it at the Mac with the app's two Settings fields — `Address` and
+   `Signalling address` — both to the Serve URL. Both are needed: the invitation's own
+   origin is loopback, so the second one is what the socket dials. **Put them back
+   afterwards**; the preferences daemon keeps its own cache, so writing the plist into
+   the app's container does *not* change what the app uses.
+5. **Answering.** The PWA rings and needs a click on `#answer-button`. To answer without
+   a person watching, drive the open tab over CDP (`--remote-debugging-port` is on the
+   omp-managed browser) and click when `#incoming-dialog` is open; the PWA then does the
+   responding, the call frame and the media itself.
+
+`GET /api/calls` is only origin-checked on writes, and a request with **no** `Origin`
+header is always allowed — which is how a script answers a call as Dad without a browser.
+
+### Which origin to publish, and what it costs
+
+`PUBLIC_ORIGIN` decides what the invitation's `joinUrl` points at, and only one value can
+be published at a time. The choice is a real trade, measured 2026-09-21:
+
+| `PUBLIC_ORIGIN` | The phone needs | The browser needs |
+| --- | --- | --- |
+| the Serve URL | the server address only — everything else follows from it | it **cannot** take part: its POSTs carry `Origin: http://127.0.0.1:3010`, which no longer matches, so `checkOrigin` refuses them |
+| loopback | the server address **and** the signalling override, because the `joinUrl` name it is handed is `127.0.0.1` | nothing: the origin matches and the dev cookie identifies it |
+
+So: phone-only testing (enrolment, identity, a call the phone places alone) is simplest
+with `PUBLIC_ORIGIN` set to the Serve URL, and a two-participant call is simplest with it
+left at loopback plus the signalling override. Both were run.
+
+### A device-auth rig
+
+Setting `CROSSBAR_SESSION_SECRET` is what makes the `/api/auth/*` routes exist at all;
+without it they answer 404, which a client is required to read as "this server does not
+use device authentication" rather than as an error. To test enrolment:
+
+```bash
+FAMILY_CONFIG_PATH=/tmp/crossbar-rig-family.json CROSSBAR_SESSION_SECRET=… \
+  PUBLIC_ORIGIN=https://<mac>.ts.net:8445 node src/admin.js enroll --user abdullah
+```
+
+The payload it prints is what a device pastes — and its `server` field is `PUBLIC_ORIGIN`,
+so set that to the address the device will actually dial before creating the invitation,
+or the code will point the device at loopback. An invitation is single use: one per
+device, and the CLI prints the plaintext exactly once because only its hash is stored.

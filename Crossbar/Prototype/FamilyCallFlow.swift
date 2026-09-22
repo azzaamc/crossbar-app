@@ -258,7 +258,6 @@ final class FamilyCallFlow: ObservableObject {
             contacts[index] = FamilyContact(
                 id: contact.id,
                 displayName: contact.displayName,
-                relationship: contact.relationship,
                 avatar: contact.avatar,
                 lastSeen: contact.lastSeen,
                 online: online

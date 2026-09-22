@@ -112,11 +112,6 @@ struct ContactsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.me?.displayName ?? "Not signed in")
                         .font(.headline)
-                    if let relationship = session.me?.relationship, !relationship.isEmpty {
-                        Text(relationship)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
                 }
             }
 
@@ -176,11 +171,6 @@ private struct ContactRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(contact.displayName)
                     .font(.body.weight(.medium))
-                if let relationship = contact.relationship, !relationship.isEmpty {
-                    Text(relationship)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             Spacer()

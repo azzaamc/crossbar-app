@@ -99,6 +99,13 @@ chmod 600 /home/admin/crossbar/data/family.json
 # NOTE: that file still carries placeholder logins for dad and mum. With
 # AUTO_ENROL_IDENTITIES=true (the default) they enrol on first contact anyway,
 # under a derived id — exactly as they did on the existing service.
+#
+# What that costs, measured 2026-09-21: the household ends up holding two of each
+# of them. The placeholder row keeps the id and the name from the file; the login
+# becomes a second, device-less person named from their Tailscale profile. Their
+# phone's key belongs to the first row, so a call to the second rings nothing at
+# all — a contact that looks like them and reaches nobody. Replace the placeholder
+# logins with the real ones before anyone calls anybody.
 
 # 4b. Development data: make the other members callable.
 #     The directory only shows people who have signed in at least once, so on a

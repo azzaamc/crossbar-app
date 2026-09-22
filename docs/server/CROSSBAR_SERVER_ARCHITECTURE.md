@@ -423,3 +423,64 @@ Still open, and requiring the owner rather than evidence:
 
 What was built, how it is run, and what was verified are in
 [`CROSSBAR_SERVER_IMPLEMENTATION.md`](CROSSBAR_SERVER_IMPLEMENTATION.md).
+
+---
+
+## 15. Network modes and Crossbar device identity (2026-09-21)
+
+Everything above assumes the tailnet is the only way in. That assumption is now
+explicit and configurable rather than implicit, because the same server also has to
+work on a hostname on the open internet.
+
+```
+                         CROSSBAR CLIENT
+                               │
+                    Crossbar Device Identity
+                               │
+             ┌─────────────────┴─────────────────┐
+      PRIVATE NETWORK                       PUBLIC INTERNET
+         Tailscale                            HTTPS/WSS
+             │                                   │
+    optional additional                         Caddy
+   network identity/auth                          │
+             │                                   │
+             └─────────────────┬─────────────────┘
+                               │
+                       Crossbar Backend
+                               │
+                         Signaling/API
+                               │
+                         WebRTC / ICE
+                          /         \
+                     Direct         TURN
+                                     │
+                                   coturn
+```
+
+**`CROSSBAR_NETWORK_MODE` selects a trust posture, not a code path.** One process, one
+database, one signalling implementation, both modes.
+
+| | private | public |
+| --- | --- | --- |
+| Transport | Tailscale Serve → loopback | Caddy → loopback |
+| `CROSSBAR_PUBLIC_HOSTNAME` | unused | required, and `PUBLIC_ORIGIN` must name it |
+| `trustTailscaleHeaders` | default on | **default off, and refuses to be turned on** |
+| `allowDevIdentity` | allowed on loopback only | refused at startup |
+| `requireDeviceAuth` | default off | **default on** |
+| Relay | not needed on a tailnet | coturn, credentials issued per device |
+
+**Where the identity layer sits.** `src/auth.js` is transport-independent: the same
+enrolment, challenge-response and session code serves both modes, and the socket in
+`src/signal.js` authenticates with the same session the API does — including the rule
+that a transport identity is not enough where a key is required. `src/identity.js` is
+now only about the transport.
+
+**Media.** ICE configuration is built per device by `src/ice.js` and delivered two
+ways: inside `addPeer` on the signalling socket, and from `GET /api/webrtc/ice` for a
+client that wants it before a peer exists. Each side is told what *it* may use, with
+credentials that expire. Direct paths are still preferred and nothing here arranges
+them; TURN is the fallback.
+
+The flows, the deployment requirements and the configuration reference are in
+[`CROSSBAR_SERVER_IMPLEMENTATION.md`](CROSSBAR_SERVER_IMPLEMENTATION.md) and
+[`CROSSBAR_SECURITY_MODEL.md`](CROSSBAR_SECURITY_MODEL.md).

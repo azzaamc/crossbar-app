@@ -1,7 +1,8 @@
-# Crossbar security model (proposed)
+# Crossbar security model
 
-Security as a first-class component of the proposed server, defined before
-implementation. **Not implemented.**
+Security as a first-class component of the server. First written before the
+implementation; **updated 2026-09-21** for the two deployment modes and for Crossbar's
+own device identity, both of which are implemented and tested (`test/auth.test.js`).
 
 It is written as an explicit answer to each gap measured in
 [`MIROTALK_SECURITY_MODEL.md`](MIROTALK_SECURITY_MODEL.md), and it must be **at
@@ -42,39 +43,69 @@ server host, with no tailnet identity, must not be able to act as a family membe
 or join a call.* Today that is false for MiroTalk (it reads no identity header at
 all) and true for the control plane.
 
+**Reachability and identity are separate questions (added 2026-09-21).** The model
+above treats the tailnet as the perimeter, which holds only while the tailnet is the
+only way in. Crossbar now runs in two modes — `CROSSBAR_NETWORK_MODE=private` (the
+tailnet, as drawn above) and `CROSSBAR_NETWORK_MODE=public` (a hostname on the open
+internet, terminated by a reverse proxy on the same host) — and in **both** of them the
+canonical application identity is a key held by the device, not the network it arrived
+over:
+
+```
+NETWORK REACHABILITY  →  APPLICATION AUTHENTICATION  →  SIGNALLING AUTHORIZATION  →  WEBRTC
+tailnet, or internet     Crossbar device key            call participation           direct, or TURN
+```
+
+The tailnet keeps its value as an *additional* signal about a device — recorded in the
+`authenticators` table beside the key — and as the transport for a private deployment.
+It stops being the thing that decides who somebody is. In public mode the transport
+says nothing at all: a header a local proxy injects cannot be told apart from one the
+caller typed, so `trustTailscaleHeaders` defaults to false there and the process
+**refuses to start** if it is asked for. The same reasoning makes
+`ALLOW_DEV_IDENTITY` a startup error in public mode.
+
 ---
 
 ## 2. Authentication
 
 | Subject | Mechanism | Notes |
 | --- | --- | --- |
-| Person | Tailscale Serve identity headers, accepted **only** when `remoteAddress` is loopback | already proven on device; unchanged from the control plane |
-| Enrollment | an entry in the household file pins id/name/avatar before first sign-in; `AUTO_ENROL_IDENTITIES` (default on) additionally enrols a login that arrives from the tailnet on first sight | matches the service this replaces, which is how its members actually joined |
-| Device | a `?device=` id on the socket, bound to the authenticated person and stored in `devices` | optional; closes the "Xcode preview joined a live call" defect and makes re-attach clean |
+| **Person, canonical** | **Crossbar device key** — a P-256 ECDSA key generated on the device, enrolled once, proved by signing a challenge | `src/auth.js`. The private half never leaves the device; the server keeps the public half as SPKI DER and nothing else. Required in public mode, available in private mode |
+| Device enrolment | a single-use, high-entropy, expiring invitation token, stored server-side **only as a SHA-256 hash**, and always naming the person it is for | `POST /api/auth/enroll`. The plaintext token is shown to the operator exactly once and never logged |
+| Session | an HMAC-SHA256 token binding device id, person id and expiry, verified against the **live** device row | stateless, so there is no session table to grow or to leak; revocation works because the row is read on every use |
+| Device (legacy, private mode) | a `?device=` id on the socket, bound to the authenticated person and stored in `devices` | optional; closes the "Xcode preview joined a live call" defect and makes re-attach clean |
+| Person (legacy, private mode) | Tailscale Serve identity headers, accepted **only** when `remoteAddress` is loopback | retained so devices with no key keep working; no longer sufficient where device authentication is required |
+| Additional authenticator | the tailnet login a device arrived with, recorded per device in `authenticators` | evidence about a device, withdrawable on its own, never the identity itself |
 | Call participation | the person must be a participant of the call whose room they name | replaces "the room name is the password" |
-| Signalling connection | the identity injected on the WebSocket upgrade request | the same mechanism as the API, because an upgrade is an HTTP request |
+| Signalling connection | the same session, presented as a header or as `?token=` on the upgrade | an upgrade is an HTTP request, so it obeys the same rule as the API — and where a key is required, the socket refuses a transport identity too |
 | Push delivery | provider credentials held server-side only; never sent to clients | unchanged |
 
-There is **no password, no shared secret in a client, and no API key on a
-device**.
+There is **no password, no shared secret in a client, and no API key on a device.**
+A client holds a private key and, briefly, a session token.
 
-**Who becomes a member — the perimeter, stated plainly.** With auto-enrolment on
-(the default), anyone whose identity the proxy vouches for becomes a member on
-first contact, under a derived id. The admission decision is therefore
-**Tailscale's**, not this server's: the tailnet is invite-only, and a device that
-is not on it cannot reach the listener at all. Set `AUTO_ENROL_IDENTITIES=false`
-to make the household file the only way in — at the cost of having to add every
-device's login before it can be used. This is the same choice the existing
-service makes, and its member list shows it: the production database contains
-members enrolled this way.
+**What a device proves, and how.** `POST /api/auth/challenge` issues 32 random bytes
+with an expiry. The device signs the exact bytes
+`crossbar-device-auth-v1\n<deviceId>\n<challengeId>\n<nonce>` with ECDSA over SHA-256
+and posts the signature to `/api/auth/session`. The challenge is spent **before** the
+signature is examined, so a wrong signature costs the attempt rather than leaving the
+challenge standing for the next guess, and expiry is decided before the verdict. A
+challenge belongs to the device it was issued to: presenting it with another device id
+fails. Each of those properties is asserted in `test/auth.test.js`.
 
-**Development identity — stated plainly.** For running the server on a laptop,
-where no Tailscale proxy exists, an identity may instead be named by an
-`x-dev-identity` header or a `crossbar.dev.identity` cookie. It is refused unless
-the listener is loopback *and* `ALLOW_DEV_IDENTITY` is set, the server refuses to
-start if that flag is combined with a non-loopback listener, and the name must
-appear in `DEV_IDENTITIES` (or resolve to a configured family member). A
-production deployment sets none of it.
+**Who becomes a member.** In private mode the household file pins id/name/avatar
+before first sign-in, and `AUTO_ENROL_IDENTITIES` (default on) additionally enrols a
+tailnet login on first sight — the behaviour of the service this replaces, and how its
+members actually joined. In public mode there is no tailnet to enrol from: a person
+exists once a device of theirs has been enrolled from an invitation, and an
+administrator (a person marked `admin` in the household file) creates the invitation.
+
+**Development identity — stated plainly.** For running the server on a laptop, where
+no Tailscale proxy exists, an identity may instead be named by an `x-dev-identity`
+header or a `crossbar.dev.identity` cookie. It is refused unless the listener is
+loopback *and* `ALLOW_DEV_IDENTITY` is set, the server refuses to start if that flag is
+combined with a non-loopback listener or with public mode, and the name must appear in
+`DEV_IDENTITIES` (or resolve to a configured family member). A production deployment
+sets none of it.
 
 ---
 
@@ -166,7 +197,7 @@ belongs at that client's render layer, not in the signalling server.
 | HTTP security headers | the existing control-plane set is retained for any HTML it serves — CSP, `X-Frame-Options: DENY`, `referrer-policy: no-referrer`, `x-content-type-options: nosniff`, `permissions-policy` |
 | CORS | retained for the browser-facing API as a *browser read policy*. Explicitly **not** treated as admission control: a native WebSocket client sends no `Origin`, and the server must not rely on the header |
 | Origin checking | kept on state-changing HTTP routes (present-and-mismatched is rejected) |
-| `X-Forwarded-For` | **not trusted**; if a client address is needed for logs, use the socket address, and never use it for authorization or rate-limit keys |
+| `X-Forwarded-For` | **used for rate-limit keys, and only its last hop.** Behind the reverse proxy every connection arrives from loopback, so some client address is needed to distinguish callers at all; the last entry is the one our own proxy appended, and a client-supplied header lands at the front, where it is not believed. Never used for authorization |
 | Compression | unnecessary; if enabled, the SSE stream must keep `no-transform` |
 
 ---
@@ -179,6 +210,10 @@ belongs at that client's render layer, not in the signalling server.
 | MiroTalk API secret (PWA era only) | server-side, never sent to a client, never logged |
 | VAPID key pair | server-side; only the public key is ever returned (as today) |
 | Root signing material | none — the server holds no signing key of its own |
+| `CROSSBAR_SESSION_SECRET` | signs session tokens; server-side only and never sent to a client. Rotating it invalidates every live session, which is the intended way to do that |
+| `CROSSBAR_TURN_SHARED_SECRET` | shared with coturn alone, for temporary relay credentials. A client receives an HMAC derived from it and never the secret, and what it receives expires |
+| Device public keys | not secret, but the only material that names a device. The private halves exist on devices and are never transmitted |
+| Invitation tokens | never stored — only their SHA-256 hashes — and never logged. The plaintext is shown once, to whoever created the invitation |
 | Environment file | `0600`, `EnvironmentFile=` in the unit, not world-readable |
 | Startup logging | **redacted configuration only** — the current production MiroTalk prints its API key and JWT key on every start; that must never be reproduced |
 | Failure logging | reasons and ids, never payload bodies, never headers, never SDP or ICE |
@@ -234,11 +269,14 @@ persistent storage or write a bounded rotating file.
 ## 12. Residual risk, stated plainly
 
 1. **Anyone with a shell on the host can impersonate a family member through the
-   loopback listener.** The identity header is trusted because it arrives from
-   loopback; root or the `admin` account can forge it. This is unchanged from
-   today and is inherent to "the tailnet is the enrollment mechanism". Mitigation
-   is host hygiene (no shared accounts, no untrusted local processes), not server
-   code.
+   loopback listener — where device authentication is off.** The identity header is
+   trusted because it arrives from loopback, so root or the `admin` account can forge
+   it; that is inherent to "the tailnet is the enrolment mechanism". Set
+   `CROSSBAR_REQUIRE_DEVICE_AUTH=true` and it stops being sufficient: the forged
+   request reaches the authentication step and no further, because a device key is
+   required and the host has none. Public mode has no such path at all, because the
+   header is not believed there. For a private deployment the mitigation is still host
+   hygiene (no shared accounts, no untrusted local processes), not server code.
 2. **Media is P2P and unobservable by the server.** A peer learns the other's
    candidate addresses as WebRTC requires. Without TURN, a failing pair fails
    silently at the media layer.
@@ -249,3 +287,24 @@ persistent storage or write a bounded rotating file.
 5. **Denial of service from an authenticated family member** remains possible in
    kind (they can ring, then hang up), bounded by rate limits rather than
    prevented.
+6. **A stolen device key is a stolen device.** The key lives in the Keychain — Secure
+   Enclave where the device has one, which is what makes it hard to copy — and a
+   revoked device is refused at authentication, at session creation, at the socket and
+   at the ICE endpoint. What is *not* mitigated: a device unlocked and handed to
+   somebody is a device they can use, as with any app on it.
+7. **A misconfigured relay is an open relay.** coturn must run with
+   `use-auth-secret` and the shared secret, never anonymously. The server refuses to
+   start with a TURN host and no shared secret, and clients receive only credentials
+   that expire. Whether the relay itself is configured correctly is the operator's
+   check: `admin.js doctor` reports reachability, not a successful allocation, and says
+   so rather than implying more.
+8. **Public mode exposes the API to the internet, which is the point of it.** Every
+   unauthenticated request costs a lookup and a comparison: three auth routes (limited
+   per address and per device), one health line, and static files. Everything else needs
+   a device key. An attacker can still spend the host's bandwidth and CPU — the reverse
+   proxy's own limits are the outer boundary — but no unauthenticated endpoint writes
+   anything except a challenge.
+9. **Sessions are stateless, so individual sign-out is by expiry or by revocation.** A
+   device cannot be logged out without either revoking it or rotating
+   `CROSSBAR_SESSION_SECRET` (which ends every session). Acceptable at this scale, and
+   named here so the limitation is a decision rather than a surprise.

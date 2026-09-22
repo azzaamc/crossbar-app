@@ -123,14 +123,24 @@ final class TailnetNode: ObservableObject {
     /// carrier the product can use.
     private var probeURL: URL { FamilyCallService.baseURL.appendingPathComponent("api/session") }
 
-    /// Whether the node is deliberately not used.
+    /// Whether the node is used at all.
+    ///
+    /// Two questions have to be answered yes, and they are not the same question. The first
+    /// is the **connection mode**: carrying a tailnet is what a private deployment *is*,
+    /// while a household whose server answers at a hostname has no network for this app to
+    /// carry, and bringing one up there would be a second network nobody asked for. The
+    /// second is the **switch in Settings**, which is a preference inside the private mode
+    /// — someone on their own network may still prefer to dial it with the Tailscale app
+    /// rather than with this one.
     ///
     /// `CROSSBAR_TAILNET_NODE=off` dials direct, for an instrument that needs to compare
     /// the two routes or work while the node cannot be authorised. It is an override
     /// rather than a fallback: nothing selects it silently, because a run that took the
     /// system's route while the screen said otherwise is the exact failure this project
-    /// keeps finding.
+    /// keeps finding. It can only ever take the node *away*: no value of it starts one in
+    /// `publicServer` mode.
     static var isEnabled: Bool {
+        guard AppSettings.connectionMode == .privateNetwork else { return false }
         guard AppSettings.usesEmbeddedNode else { return false }
         return ProcessInfo.processInfo.environment["CROSSBAR_TAILNET_NODE"] != "off"
     }
