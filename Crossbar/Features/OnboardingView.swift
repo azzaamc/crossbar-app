@@ -33,6 +33,7 @@ struct OnboardingView: View {
 
     @State private var serverAddress = ""
     @State private var enrollmentCode = ""
+    @State private var isScanning = false
     @State private var failure: String?
     @State private var isWorking = false
 
@@ -59,6 +60,12 @@ struct OnboardingView: View {
                 publicSection
             }
             .navigationTitle("Connection")
+            .sheet(isPresented: $isScanning) {
+                EnrollmentScanner { code in
+                    enrollmentCode = code
+                    isScanning = false
+                }
+            }
         }
     }
 
@@ -99,11 +106,25 @@ struct OnboardingView: View {
                 .keyboardType(.URL)
                 .accessibilityIdentifier("onboarding.serverAddress")
 
-            TextField("Enrolment code", text: $enrollmentCode,
-                      prompt: Text("Only if the server asks for one"))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .accessibilityIdentifier("onboarding.enrollmentCode")
+            // Two ways to the same place: what the camera reads lands in this field, and
+            // the button below spends it from there.
+            HStack(spacing: 10) {
+                TextField("Enrolment code", text: $enrollmentCode,
+                          prompt: Text("Only if the server asks for one"))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("onboarding.enrollmentCode")
+
+                Button {
+                    isScanning = true
+                } label: {
+                    Image(systemName: "qrcode.viewfinder")
+                        .imageScale(.large)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Scan the code")
+                .accessibilityIdentifier("onboarding.scanCode")
+            }
 
             if isWorking {
                 HStack(spacing: 8) {

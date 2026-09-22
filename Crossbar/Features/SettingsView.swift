@@ -31,6 +31,7 @@ struct SettingsView: View {
     @State private var confirmingSignOut = false
     @State private var confirmingForgetDevice = false
     @State private var enrollmentCode = ""
+    @State private var isScanning = false
     @State private var enrollmentFailure: String?
     @State private var isEnrolling = false
     @State private var notice: String?
@@ -237,10 +238,29 @@ struct SettingsView: View {
                     .accessibilityIdentifier("settings.deviceStatus")
             }
 
-            TextField("Enrolment code", text: $enrollmentCode, prompt: Text("Paste the code"))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .accessibilityIdentifier("settings.enrollmentCode")
+            // The camera or the keyboard; both end up in this one field.
+            HStack(spacing: 10) {
+                TextField("Enrolment code", text: $enrollmentCode, prompt: Text("Paste the code"))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("settings.enrollmentCode")
+
+                Button {
+                    isScanning = true
+                } label: {
+                    Image(systemName: "qrcode.viewfinder")
+                        .imageScale(.large)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Scan the code")
+                .accessibilityIdentifier("settings.scanCode")
+            }
+            .sheet(isPresented: $isScanning) {
+                EnrollmentScanner { code in
+                    enrollmentCode = code
+                    isScanning = false
+                }
+            }
 
             if isEnrolling {
                 HStack(spacing: 8) {
