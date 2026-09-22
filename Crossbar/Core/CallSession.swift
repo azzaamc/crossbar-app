@@ -228,6 +228,15 @@ final class CallSession: ObservableObject {
     }
 
     private func reportCameraToRoom() {
+        // Only while there is a call to report it to.
+        //
+        // The guard used to be the signalling peer id, which outlives the call: `disconnect`
+        // clears the peers and the socket but not that id, so the next time the app came
+        // forward — which ending a call causes, because CallKit takes the app out of the
+        // foreground as its own UI takes over — a camera was started again for a call that
+        // was already over. The indicator stayed on because the camera genuinely was on.
+        // Measured 2026-09-21, on a call ended from the phone.
+        guard phase.call != nil else { return }
         guard !signal.myPeerId.isEmpty else { return }
         let appIsInFront = UIApplication.shared.applicationState == .active
         // A video call that is in PiP keeps transmitting: the window exists to keep the

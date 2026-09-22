@@ -144,10 +144,18 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         var components = URLComponents(url: origin, resolvingAgainstBaseURL: false)!
         components.scheme = origin.scheme == "https" ? "wss" : "ws"
         components.path = "/socket.io/"
-        components.queryItems = [
+        var query = [
             URLQueryItem(name: "EIO", value: "4"),
             URLQueryItem(name: "transport", value: "websocket"),
         ]
+        // The same session the control plane presents, when this device has one: the
+        // signalling host is the service's, so a service that asks devices to identify
+        // themselves asks here too. Absent for a device that was never enrolled, which
+        // leaves this URL exactly as it was built before device identity existed.
+        if let token = DeviceAuth.shared.sessionToken {
+            query.append(URLQueryItem(name: "token", value: token))
+        }
+        components.queryItems = query
         guard let url = components.url else {
             append("could not build socket.io URL from \(origin.absoluteString)")
             return
@@ -190,6 +198,11 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         session?.invalidateAndCancel()
         session = nil
         state = "disconnected"
+        // The room's identifiers name things inside a room, and there is no room now. Left
+        // behind, `myPeerId` answers "am I in a call?" with a stale yes — which is how a
+        // camera came back on after a call had ended, the next time the app came forward.
+        myPeerId = ""
+        roomId = ""
     }
 
     private func receiveLoop(_ task: URLSessionWebSocketTask) {
