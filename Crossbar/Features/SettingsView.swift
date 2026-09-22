@@ -1,17 +1,17 @@
 import SwiftUI
 
-/// Everything a person can change, and the state they need in order to change it.
+/// Everything a person can change, in five sections and one order.
 ///
-/// Five sections, because that is the whole surface: which deployment this device is in,
-/// where the service is, whether this device is on the network that can reach it, whether
-/// the service has been told who this device is, and — under Advanced — the instruments.
-/// The identity is shown rather than configured: in the private deployment it comes from
-/// the tailnet, and that is the point of it rather than a detail to be edited. A device
-/// identity is enrolled rather than configured, for the same reason and from a code the
-/// service's owner hands over.
+/// The order is the point. What somebody opens this screen for is themselves and their server;
+/// what they almost never open it for is the address the app dials or the network it dials over.
+/// Those are still here, one section down, together with the reason a load failed — because a
+/// troubleshooting question deserves an answer, and it does not deserve to be the first thing on
+/// the screen.
+///
+/// The identity is shown rather than configured: in one deployment it comes from the network,
+/// and in both a device is enrolled rather than edited, from a code somebody else hands over.
 struct SettingsView: View {
     @ObservedObject var session: CallSession
-
     @ObservedObject private var deviceAuth = DeviceAuth.shared
 
     @AppStorage(AppSettings.Key.serviceAddress) private var serviceAddress = ""
@@ -20,11 +20,11 @@ struct SettingsView: View {
 
     /// The connection mode, as this screen is showing it.
     ///
-    /// Kept here rather than read from the setting on every pass, because the setting is
-    /// written by the screen this one pushes: a value that screen changed is not one this
-    /// one is told about, and a row read straight from the defaults would go on describing
-    /// the mode that was in force when Settings was opened. It is seeded on the way in, and
-    /// the pushed screen reports what it stored.
+    /// Kept here rather than read from the setting on every pass, because the setting is written
+    /// by the screen this one pushes: a value that screen changed is not one this screen is told
+    /// about, and a row read straight from the defaults would go on describing the mode that was
+    /// in force when Settings was opened. It is seeded on the way in, and the pushed screen
+    /// reports what it stored.
     @State private var mode = AppSettings.connectionMode
 
     @State private var confirmingSignOut = false
@@ -39,11 +39,11 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                connectionSection
-                serviceSection
-                networkSection
-                identitySection
-                deviceSection
+                youSection
+                serverSection
+                privacySection
+                advancedSection
+                aboutSection
             }
             .navigationTitle("Settings")
             .confirmationDialog("Sign out of the tailnet?",
@@ -53,7 +53,7 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("This device leaves the network and will need to be authorised again "
-                     + "before it can reach the service.")
+                     + "before it can reach the server.")
             }
             .confirmationDialog("Forget this device?",
                                 isPresented: $confirmingForgetDevice,
@@ -61,33 +61,101 @@ struct SettingsView: View {
                 Button("Forget", role: .destructive) { forgetDevice() }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The key this device enrolled with is deleted, and it cannot be "
-                     + "recovered. The service then needs a new enrolment code before this "
-                     + "device can reach it again.")
+                Text("The key this device enrolled with is deleted and cannot be recovered. "
+                     + "Your administrator will need to invite it again before it can connect.")
             }
         }
     }
 
-    // MARK: - Connection
+    // MARK: - You
 
-    /// Which of Crossbar's two deployments this device is in, and where to change it.
-    ///
-    /// Shown rather than only asked once, because it is the one line on this screen that
-    /// changes what the others mean: an address is a tailnet name in one mode and a server
-    /// on the internet in the other, and the same word "address" is both. Changing it
-    /// re-dials everything — nothing that is up can stay up across a change of route — so
-    /// this is a door back to the question rather than a switch that flips underneath a
-    /// live session.
-    private var connectionSection: some View {
+    private var youSection: some View {
         Section {
-            LabeledContent("Mode", value: mode?.title ?? "Not chosen yet")
+            if let me = session.me {
+                LabeledContent("Name", value: me.displayName)
+                    .accessibilityIdentifier("settings.identityName")
+            } else {
+                Text("Not signed in yet.")
+                    .foregroundStyle(.secondary)
+            }
+
+            if deviceAuth.isEnrolled {
+                LabeledContent("This device", value: deviceAuth.deviceName ?? "Enrolled")
+                    .accessibilityIdentifier("settings.deviceName")
+
+                Button("Forget this device", role: .destructive) {
+                    confirmingForgetDevice = true
+                }
+                .accessibilityIdentifier("settings.forgetDevice")
+            } else {
+                Text("This device is not enrolled with your Crossbar.")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("settings.deviceStatus")
+
+                // The camera or the keyboard; both end up in this one field.
+                HStack(spacing: Theme.Space.snug) {
+                    TextField("Enrolment code", text: $enrollmentCode, prompt: Text("Enrolment code"))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.enrollmentCode")
+
+                    Button {
+                        isScanning = true
+                    } label: {
+                        Theme.symbol("qrcode.viewfinder", size: 20)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Scan the code")
+                    .accessibilityIdentifier("settings.scanCode")
+                }
+                .sheet(isPresented: $isScanning) {
+                    EnrollmentScanner { code in
+                        enrollmentCode = code
+                        isScanning = false
+                    }
+                }
+
+                if isEnrolling {
+                    HStack(spacing: Theme.Space.tight) {
+                        ProgressView().controlSize(.small)
+                        Text("Enrolling…").foregroundStyle(.secondary)
+                    }
+                } else {
+                    Button("Enrol this device") { enroll() }
+                        .disabled(enrollmentCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("settings.enroll")
+                }
+
+                if let enrollmentFailure {
+                    Text(enrollmentFailure)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("settings.enrollmentNotice")
+                }
+            }
+        } header: {
+            Text("You")
+        } footer: {
+            Text("Your name comes from your household's Crossbar, not from an account here. "
+                 + "This device holds a key it made itself and never sends anywhere; forgetting "
+                 + "it deletes the key.")
+        }
+    }
+
+    // MARK: - Server
+
+    private var serverSection: some View {
+        Section {
+            LabeledContent("Crossbar", value: serverName)
+                .accessibilityIdentifier("settings.serverName")
+
+            LabeledContent("Status", value: connectionWord)
                 .accessibilityIdentifier("settings.connectionMode")
 
-            NavigationLink("Change connection") {
-                // The mode is stored, not bound, so the root screen — which loads whenever
-                // the mode changes — cannot see a change made here: it was not the one that
-                // changed it. So this screen asks for the reload itself, the same way the
-                // Reconnect button below asks for its own, and takes back what was chosen.
+            NavigationLink("Change server") {
+                // The mode is stored, not bound, so the root screen — which loads whenever the
+                // mode changes — cannot see a change made here: it was not the one that changed
+                // it. So this screen asks for the reload itself and takes back what was chosen.
                 OnboardingView { chosen in
                     mode = chosen
                     Task { await session.load() }
@@ -95,18 +163,62 @@ struct SettingsView: View {
             }
             .accessibilityIdentifier("settings.changeConnection")
         } header: {
-            Text("Connection")
+            Text("Crossbar Server")
         } footer: {
             Text(mode?.summary
-                 ?? "Choose how this app reaches its service, and the rest of this screen "
-                 + "will mean the deployment you chose.")
+                 ?? "This app reaches one Crossbar server: your household's. The code you were "
+                 + "sent points it there.")
         }
     }
 
-    // MARK: - Service
+    /// The server's name as somebody would say it: the host, not the whole address.
+    private var serverName: String {
+        let address = AppSettings.serviceAddress ?? FamilyCallService.compiledDefault.absoluteString
+        return URL(string: address)?.host ?? address
+    }
 
-    private var serviceSection: some View {
+    /// Whether this device can reach its server, in a word.
+    private var connectionWord: String {
+        switch session.phase {
+        case .ready: return "Connected"
+        case .loading: return "Connecting…"
+        case .needsLogin: return "Waiting for approval"
+        case .ringing, .outgoing, .inCall: return "In a call"
+        case .failed: return "Not connected"
+        }
+    }
+
+    // MARK: - Privacy
+
+    private var privacySection: some View {
         Section {
+            NavigationLink("What Crossbar knows") { PrivacyView() }
+        } header: {
+            Text("Privacy")
+        }
+    }
+
+    // MARK: - Advanced
+
+    /// The plumbing, and the reason a load failed.
+    ///
+    /// Everything here is real and none of it is needed to make a call, which is exactly why it
+    /// is one section down rather than spread across the screen. The failure's own words are
+    /// here too: somebody debugging has to be able to read them, and somebody ringing their
+    /// mother should not have to.
+    private var advancedSection: some View {
+        Section {
+            LabeledContent("Carried by", value: session.tailnetRoute)
+                .accessibilityIdentifier("settings.route")
+
+            Toggle("Carry the network in this app", isOn: $embeddedNode)
+                .accessibilityIdentifier("settings.embeddedNode")
+                // Applied at once: a switch that quietly waited for the next launch would leave
+                // the row above describing a network the app is no longer using.
+                .onChange(of: embeddedNode) {
+                    Task { await session.load() }
+                }
+
             TextField("Address", text: $serviceAddress,
                       prompt: Text(FamilyCallService.compiledDefault.absoluteString))
                 .textInputAutocapitalization(.never)
@@ -121,8 +233,8 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.signallingOrigin")
 
             if isBusy {
-                HStack(spacing: 8) {
-                    ProgressView()
+                HStack(spacing: Theme.Space.tight) {
+                    ProgressView().controlSize(.small)
                     Text("Reconnecting…").foregroundStyle(.secondary)
                 }
             } else {
@@ -135,161 +247,51 @@ struct SettingsView: View {
                 }
                 .accessibilityIdentifier("settings.reconnect")
             }
-        } header: {
-            Text("Service")
-        } footer: {
-            Text("Both addresses must be reachable over your tailnet. Leave the service "
-                 + "address empty to use the built-in one, and the signalling address empty "
-                 + "to use the one each invitation carries — which is the normal case, "
-                 + "because then the client cannot disagree with the service about it.")
-        }
-    }
 
-    // MARK: - Network
-
-    private var networkSection: some View {
-        Section {
-            LabeledContent("Carried by", value: session.tailnetRoute)
-                .accessibilityIdentifier("settings.route")
-
-            Toggle("Carry the tailnet in this app", isOn: $embeddedNode)
-                .accessibilityIdentifier("settings.embeddedNode")
-                // Applied at once: a switch that quietly waits for the next launch would
-                // leave the route line describing a network the app is no longer using.
-                .onChange(of: embeddedNode) {
-                    Task { await session.load() }
-                }
-
-            if case .failed(let reason) = session.tailnetState {
-                Text(reason).font(.footnote).foregroundStyle(.secondary)
+            if case .failed(let reason) = session.phase {
+                Text(reason)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("settings.failureReason")
             }
 
             if let notice {
                 Text(notice).font(.footnote).foregroundStyle(.secondary)
             }
 
+            Link("Open the tailnet console", destination: AppSettings.tailnetConsole)
+                .accessibilityIdentifier("settings.tailnetConsole")
+
             Button("Sign out of the tailnet") { confirmingSignOut = true }
                 .disabled(!embeddedNode || session.tailnetState == .idle)
                 .accessibilityIdentifier("settings.signOut")
-
-            Link("Open the tailnet console", destination: AppSettings.tailnetConsole)
-                .accessibilityIdentifier("settings.tailnetConsole")
         } header: {
-            Text("Network")
+            Text("Advanced")
         } footer: {
-            Text("With this on, the app runs its own node on your tailnet and nothing else "
-                 + "has to be installed. Turning it off means dialling over the system's own "
-                 + "network, which needs the Tailscale app connected.\n\n"
-                 + "This device appears in the tailnet as \(TailnetNode.hostName).")
+            Text("The address this app dials, and the network it dials over. Leave all of it "
+                 + "alone unless you have been told otherwise — an address that is wrong here "
+                 + "stops the app reaching anything at all.")
         }
     }
 
-    // MARK: - Identity
+    // MARK: - About
 
-    private var identitySection: some View {
+    private var aboutSection: some View {
         Section {
-            if let me = session.me {
-                LabeledContent("Name", value: me.displayName)
-                    .accessibilityIdentifier("settings.identityName")
-            } else {
-                Text("No identity yet.").foregroundStyle(.secondary)
-            }
-            LabeledContent("Source", value: mode == .publicServer
-                           ? "This device's enrolment" : "Tailnet sign-in")
+            LabeledContent("Version", value: version)
+            LabeledContent("This device appears as", value: TailnetNode.hostName)
         } header: {
-            Text("Identity")
-        } footer: {
-            Text("Your identity is not an account in this app. The service reads it from "
-                 + "the tailnet you sign in to, and injects it into every request; this app "
-                 + "has no password to keep and no way to change who it is.")
+            Text("About")
         }
     }
 
-    // MARK: - Device
-
-    /// Whether this service has been told who this device is.
-    ///
-    /// Separate from the identity section above on purpose: that one is the person, read
-    /// from the tailnet, and this one is the hardware, which is a key this device holds and
-    /// the service keeps a record of. A household that has turned device auth on needs this
-    /// enrolled before anything else in the app will answer; the private deployment does
-    /// not ask for it, and then this section says so and stays out of the way.
-    private var deviceSection: some View {
-        Section {
-            if deviceAuth.isEnrolled {
-                LabeledContent("Device ID", value: deviceAuth.deviceId ?? "—")
-                    .accessibilityIdentifier("settings.deviceId")
-
-                LabeledContent("Device name", value: deviceAuth.deviceName ?? "—")
-                    .accessibilityIdentifier("settings.deviceName")
-            } else {
-                Text("This device is not enrolled.")
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("settings.deviceStatus")
-            }
-
-            // The camera or the keyboard; both end up in this one field.
-            HStack(spacing: 10) {
-                TextField("Enrolment code", text: $enrollmentCode, prompt: Text("Paste the code"))
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .accessibilityIdentifier("settings.enrollmentCode")
-
-                Button {
-                    isScanning = true
-                } label: {
-                    Image(systemName: "qrcode.viewfinder")
-                        .imageScale(.large)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Scan the code")
-                .accessibilityIdentifier("settings.scanCode")
-            }
-            .sheet(isPresented: $isScanning) {
-                EnrollmentScanner { code in
-                    enrollmentCode = code
-                    isScanning = false
-                }
-            }
-
-            if isEnrolling {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("Enrolling…").foregroundStyle(.secondary)
-                }
-            } else {
-                Button("Enrol this device") { enroll() }
-                    .disabled(enrollmentCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("settings.enroll")
-            }
-
-            if let enrollmentFailure {
-                Text(enrollmentFailure)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("settings.enrollmentNotice")
-            }
-
-            if deviceAuth.isEnrolled {
-                Button("Forget this device", role: .destructive) {
-                    confirmingForgetDevice = true
-                }
-                .accessibilityIdentifier("settings.forgetDevice")
-            }
-        } header: {
-            Text("Device")
-        } footer: {
-            Text("An enrolment code ties this device to one service, and it carries that "
-                 + "service's own address, so the address above does not have to be set by "
-                 + "hand as well.\n\n"
-                 + "The key this device enrols with is made here and never leaves it, and "
-                 + "forgetting the device deletes it: the service then needs to issue a new "
-                 + "code before this device can be reached again. Leave all of this alone "
-                 + "unless the service asks for it — a service without device enrolment, "
-                 + "which is the private deployment this app was built against, needs none "
-                 + "of it.")
-        }
+    private var version: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+        return "\(short) (\(build))"
     }
+
+    // MARK: - Actions
 
     private func enroll() {
         let code = enrollmentCode
@@ -299,10 +301,9 @@ struct SettingsView: View {
             do {
                 try await deviceAuth.enroll(code: code)
                 enrollmentCode = ""
-                // The code may have moved the service's address, which only takes effect
-                // when something is asked of it: loading here means the app is talking to
-                // the service it just enrolled with rather than to the one it was pointed
-                // at a moment ago.
+                // The code may have moved the server's address, which only takes effect when
+                // something is asked of it: loading here means the app is talking to the server
+                // it just enrolled with rather than the one it was pointed at a moment ago.
                 await session.load()
             } catch let refusal as DeviceAuthError {
                 enrollmentFailure = refusal.failureMessage
@@ -315,8 +316,8 @@ struct SettingsView: View {
 
     private func forgetDevice() {
         deviceAuth.forget()
-        // The refusal, if there was one, was about the identity that has just been
-        // deleted; leaving it on screen would read as a fault in the state that replaced it.
+        // The refusal, if there was one, was about the identity that has just been deleted;
+        // leaving it on screen would read as a fault in the state that replaced it.
         enrollmentFailure = nil
     }
 
@@ -326,5 +327,43 @@ struct SettingsView: View {
             notice = outcome
             await session.load()
         }
+    }
+}
+
+/// What this app does and does not know, in plain words.
+///
+/// Every line is checkable against the code: calls are peer to peer and the server arranges them
+/// rather than carrying them, a relay is used when a network leaves two devices no other way to
+/// reach each other, and the directory the server keeps is the household itself. Anything
+/// stronger than that — anonymous, impossible to intercept — would be a claim this app cannot
+/// keep, so none of it is here.
+struct PrivacyView: View {
+    var body: some View {
+        List {
+            Section("Your calls") {
+                Text("Calls go directly between the two devices wherever the network allows it. "
+                     + "Your Crossbar server arranges the call and knows who is on it; the sound "
+                     + "and the picture do not pass through it.")
+            }
+
+            Section("When a direct path is not possible") {
+                Text("Some networks leave two devices no way to reach each other. Then the call "
+                     + "is relayed through a server so that it can happen at all. Your "
+                     + "administrator can see whether one is configured for your Crossbar.")
+            }
+
+            Section("What your server keeps") {
+                Text("The household's directory: who is in it, which devices have joined, and "
+                     + "when calls happened. That is what it is for. It does not record calls, "
+                     + "and nothing in this app can.")
+            }
+
+            Section("What this device keeps") {
+                Text("A key it made itself, which never leaves it, and the names of the people "
+                     + "you can call. Forgetting the device deletes the key.")
+            }
+        }
+        .navigationTitle("What Crossbar knows")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

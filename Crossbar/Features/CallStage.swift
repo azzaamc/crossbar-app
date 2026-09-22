@@ -166,6 +166,10 @@ struct LocalPreview: View {
     /// snap takes over, so the corner is the only state that survives a drag.
     @State private var drag: CGSize = .zero
 
+    /// The snap is a nicety — the tile is already where the finger left it — so for anyone who
+    /// has asked the system for less movement it simply appears in its corner instead.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         GeometryReader { geo in
             let stage = geo.size
@@ -190,7 +194,7 @@ struct LocalPreview: View {
                             )
                             // Springing rather than jumping: the tile is in the user's hand
                             // when this runs, and the snap is the gesture's last act.
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                            withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.82)) {
                                 corner = landed
                                 drag = .zero
                             }

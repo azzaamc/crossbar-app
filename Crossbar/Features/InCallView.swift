@@ -16,6 +16,9 @@ struct InCallView: View {
 
     @State private var showControls = true
 
+    /// Whether the controls may slide into and out of place, or should simply be there.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         VStack(spacing: Theme.Space.snug) {
             heading
@@ -42,7 +45,7 @@ struct InCallView: View {
             }
         }
         .padding(.horizontal, Theme.Space.normal)
-        .animation(.snappy(duration: 0.22), value: showControls)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: showControls)
     }
 
     // MARK: - Who, and what is happening
