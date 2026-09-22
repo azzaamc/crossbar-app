@@ -124,10 +124,13 @@ struct InCallView: View {
 
     /// The controls at whichever size fits the screen.
     ///
-    /// Five buttons at the comfortable size want about 370 points of width, which a phone on
-    /// its side — or a small one — does not have. A control past the edge of the screen is a
-    /// control the user cannot reach, and on a call screen that is the one failure that
-    /// matters, so the row steps down to a tighter one rather than being clipped.
+    /// The full row — a video call's, at five buttons — wants about 370 points of width, which
+    /// a phone on its side, or a small one, does not have. A control past the edge of the
+    /// screen is a control the user cannot reach, and on a call screen that is the one failure
+    /// that matters, so the row steps down to a tighter one rather than being clipped.
+    ///
+    /// An audio call drops the two camera buttons, which are not tight fits but controls for
+    /// something that call cannot do: `kind` came back with the call, so the row knows.
     private var controls: some View {
         ViewThatFits(in: .horizontal) {
             controlRow(spacing: Theme.Space.normal, diameter: Theme.Control.regular)
@@ -144,14 +147,16 @@ struct InCallView: View {
                 isActive: session.isMuted
             ) { session.toggleMute() }
 
-            control(
-                session.isCameraEnabled ? "video.fill" : "video.slash.fill",
-                session.isCameraEnabled ? "Camera off" : "Camera on",
-                diameter: diameter,
-                isActive: !session.isCameraEnabled
-            ) { session.toggleCamera() }
+            if session.isVideoCall {
+                control(
+                    session.isCameraEnabled ? "video.fill" : "video.slash.fill",
+                    session.isCameraEnabled ? "Camera off" : "Camera on",
+                    diameter: diameter,
+                    isActive: !session.isCameraEnabled
+                ) { session.toggleCamera() }
 
-            control("camera.rotate.fill", "Flip", diameter: diameter) { session.switchCamera() }
+                control("camera.rotate.fill", "Flip", diameter: diameter) { session.switchCamera() }
+            }
 
             control(
                 "speaker.wave.2.fill",

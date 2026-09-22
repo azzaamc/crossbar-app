@@ -93,9 +93,6 @@ enum AppSettings {
         UserDefaults.standard.object(forKey: Key.embeddedNode) as? Bool ?? true
     }
 
-    /// The tailnet's machine list, for inspecting or revoking this device.
-    static let tailnetConsole = URL(string: "https://login.tailscale.com/admin/machines")!
-
     private static func trimmed(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -13,8 +13,10 @@ import UIKit
 /// disagree.
 @MainActor
 final class CallKitController: NSObject, CXProviderDelegate, CXCallObserverDelegate {
-    /// The system accepted a request to place a call. `handle` carries the contact id.
-    var onStart: ((UUID, String) -> Void)?
+    /// The system accepted a request to place a call. `handle` carries the contact id, and
+    /// `video` says which kind of call was asked for — the action is the only thing that
+    /// knows, so it is carried out here rather than guessed at afterwards.
+    var onStart: ((UUID, String, Bool) -> Void)?
     var onAnswer: ((UUID) -> Void)?
     var onEnd: ((UUID) -> Void)?
     var onMute: ((UUID, Bool) -> Void)?
@@ -146,7 +148,7 @@ final class CallKitController: NSObject, CXProviderDelegate, CXCallObserverDeleg
         onLog?("performing start")
         action.fulfill()
         provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
-        onStart?(action.callUUID, action.handle.value)
+        onStart?(action.callUUID, action.handle.value, action.isVideo)
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {

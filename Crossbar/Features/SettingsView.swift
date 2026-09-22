@@ -14,10 +14,6 @@ struct SettingsView: View {
     @ObservedObject var session: CallSession
     @ObservedObject private var deviceAuth = DeviceAuth.shared
 
-    @AppStorage(AppSettings.Key.serviceAddress) private var serviceAddress = ""
-    @AppStorage(AppSettings.Key.signallingOrigin) private var signallingOrigin = ""
-    @AppStorage(AppSettings.Key.embeddedNode) private var embeddedNode = true
-
     /// The connection mode, as this screen is showing it.
     ///
     /// Kept here rather than read from the setting on every pass, because the setting is written
@@ -41,8 +37,8 @@ struct SettingsView: View {
             Form {
                 youSection
                 serverSection
-                privacySection
                 advancedSection
+                privacySection
                 aboutSection
             }
             .navigationTitle("Settings")
@@ -136,9 +132,7 @@ struct SettingsView: View {
         } header: {
             Text("You")
         } footer: {
-            Text("Your name comes from your household's Crossbar, not from an account here. "
-                 + "This device holds a key it made itself and never sends anywhere; forgetting "
-                 + "it deletes the key.")
+            Text("Your name comes from your Crossbar. This device holds a key it made itself.")
         }
     }
 
@@ -162,6 +156,17 @@ struct SettingsView: View {
                 }
             }
             .accessibilityIdentifier("settings.changeConnection")
+
+            // Only where there is an identity to invite from. An invitation is issued *by* a
+            // device — the service reads whose it is from the session — so a deployment that does
+            // not enrol devices has nobody for this row to act as, and its invitations come from
+            // whoever installed it. A row that could only ever fail is worse than no row.
+            if deviceAuth.isEnrolled {
+                NavigationLink("Add another device") {
+                    AddDeviceView(session: session)
+                }
+                .accessibilityIdentifier("settings.addDevice")
+            }
         } header: {
             Text("Crossbar Server")
         } footer: {
@@ -200,38 +205,15 @@ struct SettingsView: View {
 
     // MARK: - Advanced
 
-    /// The plumbing, and the reason a load failed.
+    /// What to do when it is not working.
     ///
-    /// Everything here is real and none of it is needed to make a call, which is exactly why it
-    /// is one section down rather than spread across the screen. The failure's own words are
-    /// here too: somebody debugging has to be able to read them, and somebody ringing their
-    /// mother should not have to.
+    /// This section used to hold every address the app knows, the switch for carrying a network
+    /// inside it, and two links to somebody else's console — a screen of plumbing that confused
+    /// the person who wrote the rest of this app, which is a reliable sign it would confuse
+    /// everybody else. What is left is the two things it is actually for: asking it to try
+    /// again, and reading what the server said when it refused.
     private var advancedSection: some View {
         Section {
-            LabeledContent("Carried by", value: session.tailnetRoute)
-                .accessibilityIdentifier("settings.route")
-
-            Toggle("Carry the network in this app", isOn: $embeddedNode)
-                .accessibilityIdentifier("settings.embeddedNode")
-                // Applied at once: a switch that quietly waited for the next launch would leave
-                // the row above describing a network the app is no longer using.
-                .onChange(of: embeddedNode) {
-                    Task { await session.load() }
-                }
-
-            TextField("Address", text: $serviceAddress,
-                      prompt: Text(FamilyCallService.compiledDefault.absoluteString))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .accessibilityIdentifier("settings.serviceAddress")
-
-            TextField("Signalling address", text: $signallingOrigin, prompt: Text("From the invitation"))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .accessibilityIdentifier("settings.signallingOrigin")
-
             if isBusy {
                 HStack(spacing: Theme.Space.tight) {
                     ProgressView().controlSize(.small)
@@ -259,27 +241,26 @@ struct SettingsView: View {
                 Text(notice).font(.footnote).foregroundStyle(.secondary)
             }
 
-            Link("Open the tailnet console", destination: AppSettings.tailnetConsole)
-                .accessibilityIdentifier("settings.tailnetConsole")
-
             Button("Sign out of the tailnet") { confirmingSignOut = true }
-                .disabled(!embeddedNode || session.tailnetState == .idle)
+                .disabled(session.tailnetState == .idle)
                 .accessibilityIdentifier("settings.signOut")
         } header: {
             Text("Advanced")
         } footer: {
-            Text("The address this app dials, and the network it dials over. Leave all of it "
-                 + "alone unless you have been told otherwise — an address that is wrong here "
-                 + "stops the app reaching anything at all.")
+            Text("If Crossbar is not connecting, this is where to look. The line above is what "
+                 + "the server said when it last refused.")
         }
     }
 
     // MARK: - About
 
+    /// What this build is.
+    ///
+    /// It used to name the device as the tailnet console sees it, which is a fact only for
+    /// somebody who runs that console — and then only to recognise one row among many.
     private var aboutSection: some View {
         Section {
             LabeledContent("Version", value: version)
-            LabeledContent("This device appears as", value: TailnetNode.hostName)
         } header: {
             Text("About")
         }

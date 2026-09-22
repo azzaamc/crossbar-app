@@ -24,7 +24,6 @@ struct OnboardingView: View {
     @State private var showingManual = false
 
     /// The manual path's own state, kept here because the sheet is presented from here.
-    @State private var address = ""
     @State private var kind: ConnectionMode = .privateNetwork
 
     var body: some View {
@@ -40,7 +39,7 @@ struct OnboardingView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Set up by hand") { showingManual = true }
+                    Button("Manual Setup") { showingManual = true }
                         .font(.footnote)
                         .accessibilityIdentifier("onboarding.manual")
                 }
@@ -53,10 +52,11 @@ struct OnboardingView: View {
                 }
             }
             .sheet(isPresented: $showingManual) {
-                ManualJoinView(address: $address, kind: $kind, code: $code) {
+                ManualJoinView(kind: $kind, code: $code) {
                     if code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         // Nothing to enrol, which is the case this path exists for: a server
-                        // that does not ask, where the address is the whole of what it needed.
+                        // that does not hand out codes, where the kind is the whole of what it
+                        // needed and the address is the one the app was built with.
                         onChoose(kind)
                     } else {
                         Task { await join() }
@@ -73,10 +73,8 @@ struct OnboardingView: View {
 
     private var welcome: some View {
         VStack(spacing: Theme.Space.snug) {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(.system(size: 52, weight: .light))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.tint)
+            CrossbarMark()
+                .frame(width: 92, height: 92)
 
             VStack(spacing: Theme.Space.tight) {
                 Text("Crossbar")
@@ -190,7 +188,6 @@ struct OnboardingView: View {
 /// kinds of network they have never heard of is exactly the question the rest of this screen
 /// exists to avoid.
 private struct ManualJoinView: View {
-    @Binding var address: String
     @Binding var kind: ConnectionMode
     @Binding var code: String
     var onJoin: () -> Void
@@ -201,39 +198,32 @@ private struct ManualJoinView: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Where your Crossbar is", selection: $kind) {
-                        Text("This household's network").tag(ConnectionMode.privateNetwork)
-                        Text("A server address").tag(ConnectionMode.publicServer)
+                    Picker("Kind", selection: $kind) {
+                        Text("Private network (Tailscale)").tag(ConnectionMode.privateNetwork)
+                        Text("Public internet (HTTPS)").tag(ConnectionMode.publicServer)
                     }
                     .pickerStyle(.inline)
+                    // Without this the picker draws its own label as the first row, which
+                    // reads as an option that cannot be selected.
+                    .labelsHidden()
                 } header: {
-                    Text("Where your Crossbar is")
+                    Text("How it is reached")
                 } footer: {
                     Text(kind.summary)
                 }
 
-                Section("Address") {
-                    TextField("Address", text: $address,
-                              prompt: Text(FamilyCallService.compiledDefault.absoluteString))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .accessibilityIdentifier("onboarding.privateAddress")
-                }
-
                 Section {
-                    TextField("Code", text: $code, prompt: Text("If your server asks for one"))
+                    TextField("Code", text: $code, prompt: Text("Enrolment code"))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } header: {
                     Text("Enrolment code")
                 } footer: {
-                    Text("A code carries the address of the service it belongs to, so filling "
-                         + "this in is enough on its own. The address above is for a server "
-                         + "that does not hand out codes.")
+                    Text("A code carries the address of the server it belongs to, so this is "
+                         + "usually the only thing to fill in.")
                 }
             }
-            .navigationTitle("Set up by hand")
+            .navigationTitle("Manual Setup")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -241,9 +231,9 @@ private struct ManualJoinView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Join") {
-                        // Applied here because nothing else will on this path: a code carries
-                        // an address, and this is the path for when there is no code.
-                        AppSettings.serviceAddress = address
+                        // The kind is the only thing this screen decides. A code carries the
+                        // server's address and the mode it is reached in; when there is no
+                        // code, the kind is what the app has to be told.
                         AppSettings.connectionMode = kind
                         dismiss()
                         onJoin()

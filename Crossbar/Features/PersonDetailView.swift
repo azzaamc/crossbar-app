@@ -39,9 +39,9 @@ struct PersonDetailView: View {
 
             Section {
                 Button {
-                    session.placeCall(to: contact)
+                    session.placeCall(to: contact, video: false)
                 } label: {
-                    Label("Call \(contact.displayName)", systemImage: "video.fill")
+                    Label("Call \(contact.displayName)", systemImage: "phone.fill")
                         .font(.body.weight(.semibold))
                         .frame(maxWidth: .infinity)
                         .frame(height: 32)
@@ -50,6 +50,19 @@ struct PersonDetailView: View {
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
                 .accessibilityIdentifier("person.call")
+
+                Button {
+                    session.placeCall(to: contact, video: true)
+                } label: {
+                    Label("Video call \(contact.displayName)", systemImage: "video.fill")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 32)
+                }
+                .buttonStyle(.bordered)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+                .accessibilityIdentifier("person.videoCall")
             } footer: {
                 // The dot and this sentence both say whether they are reachable *now*, which
                 // is not the same as whether they will pick up. The copy stops where the

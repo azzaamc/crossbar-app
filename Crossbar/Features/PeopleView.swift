@@ -19,8 +19,8 @@ struct PeopleView: View {
                     NavigationLink {
                         PersonDetailView(session: session, contact: contact)
                     } label: {
-                        PersonRow(name: contact.displayName, isOnline: contact.online) {
-                            session.placeCall(to: contact)
+                        PersonRow(name: contact.displayName, isOnline: contact.online) { video in
+                            session.placeCall(to: contact, video: video)
                         }
                     }
                 }

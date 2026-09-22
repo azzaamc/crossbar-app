@@ -379,11 +379,11 @@ final class CallSession: ObservableObject {
 
     private func wireCallKit() {
         callKit.onLog = { [weak self] line in self?.log("callkit: \(line)") }
-        callKit.onStart = { [weak self] callID, handle in
+        callKit.onStart = { [weak self] callID, handle, video in
             guard let self else { return }
             self.isOutgoingCall = true
             self.callKitCallID = callID
-            Task { await self.createCall(toContactID: handle) }
+            Task { await self.createCall(toContactID: handle, video: video) }
         }
         callKit.onAnswer = { [weak self] _ in
             self?.log("CallKit answered")
@@ -580,20 +580,46 @@ final class CallSession: ObservableObject {
             : "This tailnet identity is not enrolled with the service."
     }
 
+    // MARK: - Inviting another device
+
+    /// `POST /api/devices/enrollment`, for the screen that hands a second device its way in.
+    ///
+    /// Asked through this object rather than through a client of that screen's own, because the
+    /// client here is this one and it carries the transport the node was wired to: a second client
+    /// would dial the system's route while everything else went down the node's loopback, and the
+    /// invitation would then fail on the phones where nothing else does.
+    ///
+    /// Nothing is kept. The invitation lives in the screen that asked for it, for as long as that
+    /// screen does, and there is deliberately no field here to remember one in: this object
+    /// survives the screen, and a code held past its visit is a code held past its use.
+    func createDeviceInvitation() async throws -> DeviceInvitation {
+        try await client.createDeviceInvitation()
+    }
+
     // MARK: - Placing
+
+    /// Whether the call in progress has pictures.
+    ///
+    /// A call carries its kind once it exists. Before that there is nothing to draw controls
+    /// for, and video is the shape this app has always had, so that is what the absence means.
+    var isVideoCall: Bool { phase.call?.isVideo ?? true }
 
     /// Asks CallKit to place the call; `onStart` then creates it. Nothing here touches
     /// the API, so there is no path to a ring that the system does not know about.
-    func placeCall(to contact: FamilyContact) {
+    ///
+    /// `video` goes to CallKit as well as to the service. That is what makes the system's own
+    /// call UI match the call: an audio call CallKit drew as a video call would offer the wrong
+    /// controls on the lock screen, where this app has no say in what is drawn.
+    func placeCall(to contact: FamilyContact, video: Bool) {
         guard phase.call == nil else { return }
         notice = nil
-        _ = callKit.startOutgoing(handle: contact.id)
+        _ = callKit.startOutgoing(handle: contact.id, video: video)
     }
 
-    private func createCall(toContactID contactID: String) async {
+    private func createCall(toContactID contactID: String, video: Bool) async {
         do {
-            log("placing a call to \(displayName(for: contactID))")
-            let envelope = try await client.createCall(inviteeIds: [contactID])
+            log("placing a \(video ? "video" : "audio") call to \(displayName(for: contactID))")
+            let envelope = try await client.createCall(inviteeIds: [contactID], video: video)
             phase = .outgoing(envelope.call)
             deviceCallID = envelope.call.id
             connect(using: envelope.joinUrl)

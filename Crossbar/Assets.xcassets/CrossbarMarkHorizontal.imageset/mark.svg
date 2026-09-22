@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<mask id="hcut" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+<rect x="0" y="0" width="1024" height="1024" fill="#FFFFFF"/>
+<rect x="220.63" y="100.87" width="111.44" height="822.27" rx="55.72" ry="55.72" fill="#000"/>
+<rect x="456.28" y="100.87" width="111.44" height="822.27" rx="55.72" ry="55.72" fill="#000"/>
+<rect x="691.93" y="100.87" width="111.44" height="822.27" rx="55.72" ry="55.72" fill="#000"/>
+<circle cx="276.35" cy="297.19" r="100.14" fill="#000"/>
+<circle cx="512" cy="512" r="100.14" fill="#000"/>
+<circle cx="747.65" cy="726.81" r="100.14" fill="#000"/>
+</mask>
+<g mask="url(#hcut)">
+<rect x="78.01" y="271.34" width="867.98" height="51.68" rx="25.84" ry="25.84" fill="#1B2A23"/>
+<rect x="78.01" y="486.16" width="867.98" height="51.68" rx="25.84" ry="25.84" fill="#1B2A23"/>
+<rect x="78.01" y="700.97" width="867.98" height="51.68" rx="25.84" ry="25.84" fill="#1B2A23"/>
+</g>
+</svg>

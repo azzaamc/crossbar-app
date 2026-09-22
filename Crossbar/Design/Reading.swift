@@ -9,10 +9,29 @@ enum Reading {
 
     private static let iso = ISO8601DateFormatter()
 
+    /// The service writes its instants as `toISOString()` output, which carries milliseconds, and
+    /// a plain ISO-8601 formatter refuses those — silently, by returning nothing, so a row that
+    /// asked for one comes out with no time in it at all rather than with an error. Both
+    /// spellings are read.
+    private static let isoMilliseconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
     private static func date(_ value: String?) -> Date? {
         guard let value, !value.isEmpty else { return nil }
-        return iso.date(from: value)
+        return iso.date(from: value) ?? isoMilliseconds.date(from: value)
     }
+
+    /// The instant a service value names, for the one screen that needs the moment rather than
+    /// the words.
+    ///
+    /// The invitation screen is that screen: it says when a code stops working, and it also has to
+    /// know when that is, so that a code past its life does not sit on the glass looking as though
+    /// it still works. Both come through here, so the sentence and the moment it describes cannot
+    /// disagree about which instant the service meant.
+    static func instant(_ value: String?) -> Date? { date(value) }
 
     /// When a call was: the hour if it was today, a word if it was yesterday, a date after.
     ///

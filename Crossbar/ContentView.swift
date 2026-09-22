@@ -97,10 +97,8 @@ struct ContentView: View {
 private struct LaunchView: View {
     var body: some View {
         VStack(spacing: Theme.Space.snug) {
-            Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(.system(size: 46, weight: .regular))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.tint)
+            CrossbarMark()
+                .frame(width: 84, height: 84)
             Text("Crossbar")
                 .font(.title3.weight(.semibold))
             ProgressView()

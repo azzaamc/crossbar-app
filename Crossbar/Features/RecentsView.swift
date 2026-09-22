@@ -9,13 +9,23 @@ import SwiftUI
 struct RecentsView: View {
     @ObservedObject var session: CallSession
 
+    @State private var query = ""
+
+    /// The calls the search leaves, which is all of them when there is no search.
+    private var matching: [RecentCall] {
+        let wanted = query.trimmingCharacters(in: .whitespaces)
+        guard !wanted.isEmpty else { return session.history }
+        return session.history.filter { RecentRow.title(of: $0).localizedCaseInsensitiveContains(wanted) }
+    }
+
     var body: some View {
         List {
-            ForEach(session.history) { call in
+            ForEach(matching) { call in
                 RecentRow(call: call, session: session)
             }
         }
         .navigationTitle("Recents")
+        .searchable(text: $query, prompt: "Search by name")
         .refreshable { await session.refresh() }
         .overlay { emptyState }
     }
@@ -27,6 +37,8 @@ struct RecentsView: View {
                 "No calls yet",
                 systemImage: "clock",
                 description: Text("Calls you make and calls that arrive appear here."))
+        } else if matching.isEmpty {
+            ContentUnavailableView.search(text: query)
         }
     }
 }
@@ -54,11 +66,16 @@ private struct RecentRow: View {
         return isOutgoing ? "phone.arrow.up.right" : "phone.arrow.down.left"
     }
 
-    /// Everyone else on it, when there was more than the person who placed it.
-    private var title: String {
+    /// What to call this call: everyone else on it, or whoever placed it.
+    ///
+    /// Static because the search needs the same words the row shows. A search that matched on
+    /// anything else would find calls it could not explain, and stay quiet about ones it could.
+    static func title(of call: RecentCall) -> String {
         if let others = call.others, !others.isEmpty { return others }
         return call.callerName ?? "Unknown"
     }
+
+    private var title: String { Self.title(of: call) }
 
     private var detail: String {
         if isOutgoing { return "Outgoing" }
@@ -102,7 +119,9 @@ private struct RecentRow: View {
 
             if let contact = callBack {
                 Button {
-                    session.placeCall(to: contact)
+                    // The kind of the call being looked at, so ringing somebody back repeats
+                    // what happened rather than imposing a shape on it.
+                    session.placeCall(to: contact, video: call.isVideo)
                 } label: {
                     Theme.symbol("phone.fill", size: 17)
                         .frame(width: 40, height: 40)

@@ -123,8 +123,13 @@ struct PresenceDot: View {
 struct PersonRow: View {
     let name: String
     let isOnline: Bool
-    /// Called when the call button beside the row is tapped, never when the row is.
-    let call: () -> Void
+    /// Called when a call button beside the row is tapped, never when the row is. `true` is a
+    /// video call.
+    ///
+    /// Two buttons rather than one, because the two are different things to ask for and the
+    /// service has always been able to tell them apart — it takes a `kind` and this app never
+    /// sent one. Audio takes the handset, which is the icon this row has always had.
+    let call: (Bool) -> Void
 
     private var initial: String {
         String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
@@ -147,24 +152,39 @@ struct PersonRow: View {
 
             Spacer(minLength: Theme.Space.tight)
 
-            Button(action: call) {
-                Theme.symbol("phone.fill", size: 18)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
+            HStack(spacing: Theme.Space.hairline) {
+                Button {
+                    call(false)
+                } label: {
+                    Theme.symbol("phone.fill", size: 18)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Call \(name)")
+
+                Button {
+                    call(true)
+                } label: {
+                    Theme.symbol("video.fill", size: 18)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Video call \(name)")
             }
-            // Borderless keeps only the button tappable: a whole row that places a call is a
+            // Borderless keeps only the buttons tappable: a whole row that places a call is a
             // call placed by accident, and this is the one action in the app that cannot be
             // taken back.
             .buttonStyle(.borderless)
-            .accessibilityLabel("Call \(name)")
         }
     }
 }
 
 #Preview("People") {
     List {
-        PersonRow(name: "Mum", isOnline: true) {}
-        PersonRow(name: "Dad", isOnline: false) {}
-        PersonRow(name: "Abdullah", isOnline: true) {}
+        PersonRow(name: "Mum", isOnline: true) { _ in }
+        PersonRow(name: "Dad", isOnline: false) { _ in }
+        PersonRow(name: "Abdullah", isOnline: true) { _ in }
     }
 }

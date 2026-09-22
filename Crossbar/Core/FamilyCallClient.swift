@@ -49,6 +49,10 @@ struct RecentCall: Decodable, Identifiable, Equatable {
     let others: String?
 
     var id: String { callId }
+
+    /// Whether this call had pictures. Anything that is not explicitly audio counts as video,
+    /// which is what a row recorded before the service sent a kind was.
+    var isVideo: Bool { kind != "audio" }
 }
 
 /// The envelope `GET /api/calls/history` answers with.
@@ -69,6 +73,12 @@ struct FamilyCall: Decodable, Identifiable, Equatable {
     let status: String
     /// `video` or `audio`. The service has always sent it; the app only ever asked for video.
     let kind: String?
+    /// Whether this call has pictures.
+    ///
+    /// Anything that is not explicitly audio counts as video, because that is what an older
+    /// row with no kind was, and drawing camera controls on a call that has none is a worse
+    /// mistake than leaving them off a call that has one.
+    var isVideo: Bool { kind != "audio" }
     /// The reader's own participation status, from `callsForUser` only.
     let myStatus: String?
     let createdAt: String
@@ -116,6 +126,28 @@ struct FamilyAPIError: Error, LocalizedError {
     let message: String
 
     var errorDescription: String? { "HTTP \(status) \(code) — \(message)" }
+}
+
+/// `POST /api/devices/enrollment` → what this app made of the answer.
+///
+/// Not the route's own shape, which is an envelope of `enrollment` and `payload`: this is what the
+/// screen that shows an invitation needs from it, assembled where the response is read so that no
+/// view has to know how the route spells anything.
+struct DeviceInvitation {
+    /// When the code stops working, in the service's own spelling of an instant — the one
+    /// `Reading` reads.
+    let expiresAt: String
+
+    /// The payload as the string a QR code carries.
+    ///
+    /// The service's fields, in the service's own names, untouched — because the reader of these
+    /// bytes is not this device. It is `EnrollmentCode` on the *other* phone, which is deliberately
+    /// tolerant of fields it does not know, and a payload rebuilt here from the parts this app
+    /// happens to understand would drop exactly those on their way across.
+    let code: String
+
+    /// The token alone, for the phone whose camera cannot be pointed at the code.
+    let token: String
 }
 
 // MARK: - The room, recovered from the join URL
@@ -374,20 +406,7 @@ final class FamilyCallClient {
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
 
         guard (200..<300).contains(code) else {
-            // Parse the service's own error so a refusal reads as the reason the
-            // product would show, not as a status code.
-            if let shape = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let error = shape["error"] as? [String: Any] {
-                let apiError = FamilyAPIError(
-                    status: code,
-                    code: error["code"] as? String ?? "UNKNOWN",
-                    message: error["message"] as? String ?? "No message"
-                )
-                log("  -> \(apiError.localizedDescription)")
-                throw apiError
-            }
-            log("  -> HTTP \(code)")
-            throw FamilyAPIError(status: code, code: "UNKNOWN", message: "\(data.count) bytes")
+            throw refusal(status: code, data: data)
         }
 
         do {
@@ -398,6 +417,29 @@ final class FamilyCallClient {
             log("  -> HTTP \(code) but the body did not decode: \(error)")
             throw error
         }
+    }
+
+    /// The service's refusal, as the reason the product would show: its own message when it wrote
+    /// one, and only what this app could see when it did not.
+    ///
+    /// One place, because two routes read a body that refused — the typed reads, and the invitation,
+    /// which keeps its payload as bytes — and a refusal has to read the same way whichever route met
+    /// it. The words belong to the service rather than to either of them.
+    private func refusal(status: Int, data: Data) -> FamilyAPIError {
+        let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        guard let error = shape["error"] as? [String: Any] else {
+            let apiError = FamilyAPIError(status: status, code: "UNKNOWN", message: "\(data.count) bytes")
+            log("  -> HTTP \(status)")
+            return apiError
+        }
+
+        let apiError = FamilyAPIError(
+            status: status,
+            code: error["code"] as? String ?? "UNKNOWN",
+            message: error["message"] as? String ?? "No message"
+        )
+        log("  -> \(apiError.localizedDescription)")
+        return apiError
     }
 
     // MARK: Reads
@@ -478,9 +520,15 @@ final class FamilyCallClient {
 
     /// `POST /api/calls` — **this rings real phones.** Rate-limited to 6 per minute
     /// per user (`src/server.js:170`).
-    func createCall(inviteeIds: [String]) async throws -> JoinEnvelope {
+    ///
+    /// The service has taken a `kind` since it was written and the app never sent one, so every
+    /// call it has placed arrived as a video call. It is sent now.
+    func createCall(inviteeIds: [String], video: Bool) async throws -> JoinEnvelope {
         let envelope = try await send(
-            request("POST", "api/calls", body: ["inviteeIds": inviteeIds]),
+            request("POST", "api/calls", body: [
+                "inviteeIds": inviteeIds,
+                "kind": video ? "video" : "audio",
+            ]),
             as: JoinEnvelope.self
         )
         log("  created call \(envelope.call.id) status=\(envelope.call.status)")
@@ -510,6 +558,59 @@ final class FamilyCallClient {
     func end(callId: String) async throws {
         let envelope = try await send(request("POST", "api/calls/\(callId)/end"), as: CallOnlyEnvelope.self)
         log("  ended \(callId), status=\(envelope.call.status)")
+    }
+
+    /// `POST /api/devices/enrollment` — an invitation for one more device of this person's.
+    ///
+    /// The body is empty and the invitee is not a parameter, both deliberately: whose invitation
+    /// this is comes from the session, so a device can only ever invite the person it belongs to
+    /// and a field naming somebody else would be a field whose only use is refusing it. The
+    /// lifetime is the service's as well — it answers the instant the code dies rather than a
+    /// duration it lets the client keep — and so is how many of these a person may ask for in a
+    /// minute. Nothing on this side decides either, which is what makes the screen honest about the
+    /// code it is handed.
+    ///
+    /// The payload is read out as the string a QR code carries rather than decoded into a type: it
+    /// is spent on the other device, by `EnrollmentCode`, which is tolerant of fields it does not
+    /// know — see `DeviceInvitation.code`.
+    func createDeviceInvitation() async throws -> DeviceInvitation {
+        log("POST api/devices/enrollment (requesting)")
+        let (data, response) = try await data(for: request("POST", "api/devices/enrollment", body: [:]))
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+
+        guard (200..<300).contains(status) else {
+            throw refusal(status: status, data: data)
+        }
+
+        let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        guard let enrollment = shape["enrollment"] as? [String: Any],
+              let expiresAt = enrollment["expiresAt"] as? String,
+              let payload = shape["payload"] as? [String: Any],
+              let token = (payload["enrollment_token"] as? String ?? payload["token"] as? String),
+              !token.isEmpty,
+              let code = Self.jsonText(payload) else {
+            log("  -> HTTP \(status) but there was no invitation in the body")
+            throw FamilyAPIError(
+                status: status,
+                code: "NO_PAYLOAD",
+                message: "The service answered without an invitation to show."
+            )
+        }
+
+        log("  -> HTTP \(status), expires \(expiresAt)")
+        return DeviceInvitation(expiresAt: expiresAt, code: code, token: token)
+    }
+
+    /// A JSON object as the text a QR code carries: the object's own fields, no more and no fewer.
+    ///
+    /// Sorted, so the same invitation always draws the same code. Nothing reads the order — the
+    /// reader is `EnrollmentCode`, which looks fields up by name — but a code that changed shape
+    /// between two draws of the same payload would make a comparison of the two meaningless.
+    private static func jsonText(_ shape: [String: Any]) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: shape, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     // MARK: The event stream
