@@ -425,6 +425,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Crossbar/Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Crossbar uses the camera for video calls.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Crossbar uses the microphone for calls.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -460,6 +461,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Crossbar/Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Crossbar uses the camera for video calls.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Crossbar uses the microphone for calls.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
