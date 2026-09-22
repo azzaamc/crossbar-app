@@ -92,13 +92,6 @@ final class CallSession: ObservableObject {
     private var isOutgoingCall = false
     private var logHandle: FileHandle?
 
-    #if DEBUG
-    /// One-shot guard for the CallKit self-test gate, which lives in `load`.
-    private var ranSelfTest = false
-    /// The same for the camera self-test.
-    private var ranCameraSelfTest = false
-    #endif
-
     /// The call **this device** is in, if any.
     ///
     /// Family Call's identity is a person, not a device: `/api/bootstrap` answers "am I
@@ -541,22 +534,6 @@ final class CallSession: ObservableObject {
             // was down.
             await adopt(bootstrap)
 
-            #if DEBUG
-            // Inside the load rather than in the view's task, because the view's task is
-            // cancelled when its identity changes and this gate sat after an await there.
-            // Buttons on a device cannot be pressed from here, so the CallKit path needs a
-            // way in that rings nobody; see `runCallKitSelfTest`.
-            if !ranSelfTest,
-               ProcessInfo.processInfo.environment["CROSSBAR_CALLKIT_SELFTEST"] == "1" {
-                ranSelfTest = true
-                runCallKitSelfTest()
-            }
-            if !ranCameraSelfTest,
-               ProcessInfo.processInfo.environment["CROSSBAR_CAMERA_SELFTEST"] == "1" {
-                ranCameraSelfTest = true
-                runCameraSelfTest()
-            }
-            #endif
             return .settled
         } catch {
             if Self.isCancellation(error) { return .cancelled }
@@ -602,56 +579,6 @@ final class CallSession: ObservableObject {
         notice = nil
         _ = callKit.startOutgoing(handle: contact.id)
     }
-
-    #if DEBUG
-    /// Asks CallKit to place a call to an invitee who is not a contact, so the provider
-    /// registration, the start-call transaction and the callback are all exercised
-    /// without any phone ringing: the service refuses the invite before it notifies
-    /// anybody (`403 CONTACT_NOT_ALLOWED`).
-    ///
-    /// This is the one genuinely new failure surface the product shell introduced. The
-    /// debug flow called the API directly, so a rejected CallKit transaction would have
-    /// gone unnoticed; here it is the first step of every outgoing call.
-    func runCallKitSelfTest() {
-        guard phase.call == nil else { return }
-        log("self-test: asking CallKit to place a call")
-        _ = callKit.startOutgoing(handle: "crossbar-selftest")
-    }
-    #endif
-
-    #if DEBUG
-    /// Drives the capture through a start and two switches, with no call and no peer.
-    ///
-    /// The camera switch is the one path in this app that has crashed it: two `EXC_CRASH`
-    /// reports on 2026-09-19, both faulting on WebRTC's capture queue inside
-    /// `-[AVCaptureVideoDataOutput setVideoSettings:]` the moment the camera was flipped
-    /// during a call. Reaching that needs a live 1:1 call and a finger on the Flip button —
-    /// which is exactly why it reached a real phone before it reached the probe screen — so
-    /// the reproduction is gated instead, and it doubles as the check that the switch still
-    /// works after any later change to the capture path.
-    ///
-    ///   … -e '{"CROSSBAR_CAMERA_SELFTEST":"1"}'
-    func runCameraSelfTest() {
-        log("camera self-test: \(media.startCapture())")
-        Task {
-            for round in 1...2 {
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                log("camera self-test \(round): \(media.switchCamera())")
-            }
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            media.stopCapture()
-            log("camera self-test: asked to stop")
-
-            // Then the race that left the camera light on after a call nobody answered: a
-            // stop landing while the start is still being confirmed. The capture must not
-            // be left running, which the status-bar indicator shows and the log explains.
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            log("camera self-test: start, then stop immediately — \(media.startCapture())")
-            media.stopCapture()
-            log("camera self-test: stop sent while that start was in flight")
-        }
-    }
-    #endif
 
     private func createCall(toContactID contactID: String) async {
         do {

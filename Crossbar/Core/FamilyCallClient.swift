@@ -218,8 +218,8 @@ enum FamilyCallService {
 /// Identity is not a parameter. The service accepts `tailscale-user-login` only when
 /// the request arrives from loopback (`src/identity.js`) and its listener refuses to
 /// bind anywhere else (`src/config.js:59-62`), so a native client has no identity to
-/// present and must traverse Serve, which injects the header. That was measured
-/// before this was written; see `BackendReachabilityProbe`.
+/// present and must traverse Serve, which injects the header. That was measured on the
+/// device before this was written: without Serve the client has no identity to present.
 ///
 /// This client sends **no `Origin` header**, deliberately. `checkOrigin`
 /// (`src/server.js:97-105`) rejects only a header that is both present and

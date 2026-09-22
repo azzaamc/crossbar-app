@@ -45,10 +45,6 @@ struct SettingsView: View {
                 networkSection
                 identitySection
                 deviceSection
-
-                #if DEBUG
-                advancedSection
-                #endif
             }
             .navigationTitle("Settings")
             .toolbar {
@@ -300,29 +296,6 @@ struct SettingsView: View {
                  + "of it.")
         }
     }
-
-    // MARK: - Advanced
-
-    #if DEBUG
-    private var advancedSection: some View {
-        Section {
-            NavigationLink("Instruments") { ProbeView() }
-                .accessibilityIdentifier("settings.instruments")
-
-            Button("Exercise the camera") { session.runCameraSelfTest() }
-                .accessibilityIdentifier("settings.cameraSelfTest")
-
-            Button("Exercise CallKit") { session.runCallKitSelfTest() }
-                .accessibilityIdentifier("settings.callKitSelfTest")
-        } header: {
-            Text("Advanced")
-        } footer: {
-            Text("The instruments this app was built against, and the two self-tests that "
-                 + "exercise paths a call would otherwise have to be in front of a person to "
-                 + "reach. Debug builds only.")
-        }
-    }
-    #endif
 
     private func enroll() {
         let code = enrollmentCode

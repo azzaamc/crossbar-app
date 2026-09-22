@@ -24,25 +24,6 @@ struct ContentView: View {
     /// address and the enrolment code — which is where the refusal message points.
     @State private var showSettings = false
 
-    #if DEBUG
-    /// Set by `CROSSBAR_PROBE_AUTOSHOW=1`.
-    ///
-    /// The instruments' own launch gates cannot fire until their screen is on screen,
-    /// and that screen sits behind a tap in the contacts toolbar — which is exactly
-    /// what a run nobody can stand next to the phone cannot do. This is how the
-    /// signalling instrument gets driven without a hand.
-    ///
-    ///   … -e '{"CROSSBAR_PROBE_AUTOSHOW":"1"}'
-    ///
-    /// Set by `onAppear` below, and deliberately not in the `@State` initialiser: a
-    /// `fullScreenCover` whose binding is already true when the view is inserted is not
-    /// presented at all — the presentation wants a change — and not from the load task
-    /// either, which is cancelled when the phase switch changes the view's identity.
-    /// Both were tried on 2026-09-19 and both presented nothing, which reads exactly like
-    /// the variable never being delivered.
-    @State private var showProbe = false
-    #endif
-
     var body: some View {
         Group {
             if mode == nil {
@@ -55,18 +36,6 @@ struct ContentView: View {
                 product
             }
         }
-        #if DEBUG
-        // The instruments, presented over whatever is on screen — the product or the
-        // question above it. A debug screen reachable only by tapping a toolbar item cannot
-        // be reached at all when the phone is on a desk, and this gate in particular has to
-        // fire whether or not anyone has answered that question yet.
-        .onAppear {
-            if ProcessInfo.processInfo.environment["CROSSBAR_PROBE_AUTOSHOW"] == "1" {
-                showProbe = true
-            }
-        }
-        .fullScreenCover(isPresented: $showProbe) { ProbeView() }
-        #endif
     }
 
     /// What the product shows, once there is a route to reach it by.
