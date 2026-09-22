@@ -151,8 +151,13 @@ final class CallKitController: NSObject, CXProviderDelegate, CXCallObserverDeleg
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         onLog?("performing answer")
-        onAnswer?(action.callUUID)
+        // Acknowledged before the app's own work, as the start handler above does. CallKit's
+        // timeout is about the action, and running a callback first made the app's work part
+        // of that budget — so anything slow enough inside it became "CallKit timed out
+        // waiting for the call to be handled", which says nothing about what was slow.
         action.fulfill()
+        onAnswer?(action.callUUID)
+        onLog?("answer handled")
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
@@ -161,14 +166,19 @@ final class CallKitController: NSObject, CXProviderDelegate, CXCallObserverDeleg
         // still considered this app frontmost while the screen was off, or it ended
         // the call before it ever told us we were losing the foreground.
         onLog?("performing end — app state=\(UIApplication.shared.applicationState.rawValue)")
-        onEnd?(action.callUUID)
         action.fulfill()
+        onEnd?(action.callUUID)
+        onLog?("end handled")
     }
 
     func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
         onLog?("performing mute=\(action.isMuted)")
-        onMute?(action.callUUID, action.isMuted)
+        // This one timed out on 2026-09-22: the system resets mute as a call ends, the
+        // callback was awaited before acknowledging, and the acknowledgement never came. The
+        // line below says whether the callback returns — the timeout alone could not.
         action.fulfill()
+        onMute?(action.callUUID, action.isMuted)
+        onLog?("mute handled")
     }
 
     /// CallKit hands over a session **it** activated; WebRTC adopts that session
