@@ -245,6 +245,9 @@ final class CallPiPController: NSObject {
     private var callViewController: AVPictureInPictureVideoCallViewController?
     private var callView: SampleBufferCallView?
     private var renderer: SampleBufferFrameRenderer?
+    /// The view the window grows out of, which the system watches to decide when to open it.
+    /// Kept so a rebuilt call screen can replace it — see `arm`.
+    private weak var sourceView: UIView?
     private weak var track: RTCVideoTrack?
 
     var isActive: Bool { controller?.isPictureInPictureActive ?? false }
@@ -257,13 +260,20 @@ final class CallPiPController: NSObject {
     /// Idempotent for the same track and view, because callers arm it from wherever the two
     /// become available — the tile's view and the remote track arrive at different moments
     /// and neither is guaranteed to be second.
+    ///
+    /// A *different* pair means what it was built around is gone. The system starts PiP by
+    /// watching the source view, and the call screen builds a new tile when it comes back to
+    /// the foreground, so the arrangement has to be rebuilt around the new one rather than
+    /// left pointing at a view that is no longer on screen. Checking only "is it armed" left
+    /// exactly that stale controller behind.
     @discardableResult
     func arm(track: RTCVideoTrack, sourceView: UIView) -> Bool {
         guard isSupported else {
             onLog?("PiP is not supported on this device")
             return false
         }
-        guard !isArmed else { return true }
+        if isArmed, track === self.track, sourceView === self.sourceView { return true }
+        if isArmed { teardown() }
 
         let callViewController = AVPictureInPictureVideoCallViewController()
         callViewController.preferredContentSize = CGSize(width: 360, height: 640)
@@ -299,6 +309,7 @@ final class CallPiPController: NSObject {
         self.renderer = renderer
         self.controller = controller
         self.track = track
+        self.sourceView = sourceView
 
         onLog?("PiP armed (supported=\(isSupported), possible=\(controller.isPictureInPicturePossible))")
         return true
@@ -335,6 +346,7 @@ final class CallPiPController: NSObject {
         }
         renderer = nil
         track = nil
+        sourceView = nil
         callView?.removeFromSuperview()
         callView = nil
         controller?.contentSource = nil
@@ -354,8 +366,14 @@ extension CallPiPController: AVPictureInPictureControllerDelegate {
         _ pictureInPictureController: AVPictureInPictureController
     ) {
         Task { @MainActor in
-            self.onLog?("PiP stopped")
-            self.teardown()
+            // The window closing is not the arrangement ending.
+            //
+            // This tore the whole thing down, so the first return to the app disarmed PiP for
+            // the rest of the call: the next trip to the background had nothing to start, and
+            // the call carried on with audio only. `closeWindow` and `disarm` are the two ways
+            // out, and only one of them means "this call has no video any more" — measured
+            // 2026-09-22, on a call left and returned to twice.
+            self.onLog?("PiP stopped — the arrangement stays armed")
         }
     }
 
@@ -364,8 +382,10 @@ extension CallPiPController: AVPictureInPictureControllerDelegate {
         failedToStartPictureInPictureWithError error: any Error
     ) {
         Task { @MainActor in
-            self.onLog?("PiP failed to start: \(error.localizedDescription)")
-            self.teardown()
+            // Kept armed for the same reason. A start can fail for a reason that passes — the
+            // app not yet eligible, the window not yet laid out — and tearing down here turned
+            // one refusal into never again.
+            self.onLog?("PiP failed to start: \(error.localizedDescription) — still armed")
         }
     }
 
