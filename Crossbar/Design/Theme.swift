@@ -96,12 +96,17 @@ struct Avatar: View {
     }
 }
 
-/// Whether somebody can be reached.
+/// Whether somebody is on Crossbar at the moment.
 ///
-/// A dot is not enough on its own: it is the only place this app says "you can call them
-/// now", and colour alone would leave it unsaid for anyone who cannot see it. So the dot is
-/// drawn *and* the meaning is carried in the accessibility label of whatever row it is in —
-/// see `PersonRow`.
+/// Presence, and nothing more than presence: whether their app has a connection open right
+/// now. It is deliberately **not** a statement about whether calling them would work. A call
+/// rings their phone through a push, on the lock screen, with Crossbar closed, so there is no
+/// state of theirs in which a call fails to arrive — and a dot that meant "you can call them
+/// now" was describing a limitation this app no longer has.
+///
+/// A dot is not enough on its own, and colour alone would leave the meaning unsaid for anyone
+/// who cannot see it. So the dot is drawn *and* the meaning is carried in the accessibility
+/// label of whatever row it is in — see `PersonRow`.
 struct PresenceDot: View {
     let isOnline: Bool
     var diameter: CGFloat = 11
@@ -117,7 +122,7 @@ struct PresenceDot: View {
 
 /// Somebody you can call, as a row.
 ///
-/// Takes what it needs and nothing more: a name, whether they are reachable, and what to do
+/// Takes what it needs and nothing more: a name, whether they are on Crossbar, and what to do
 /// when the row is tapped. It deliberately does not take the session, so that the layout of a
 /// list of people can be seen — and changed — without a service to talk to.
 struct PersonRow: View {
@@ -145,10 +150,11 @@ struct PersonRow: View {
             Text(name)
                 .font(.body.weight(.medium))
                 .lineLimit(1)
-                // The dot is the only place this app says "you can call them now", and a dot
-                // is nothing to a screen reader. The meaning rides on the name instead, so
-                // the row says it whether or not it can be seen.
-                .accessibilityLabel("\(name), \(isOnline ? "available" : "not reachable")")
+                // The dot is the only place this app says whether somebody's app is open, and
+                // a dot is nothing to a screen reader. The meaning rides on the name instead,
+                // so the row says it whether or not it can be seen — and it says that much and
+                // no more, because calling this person works whether or not they are here.
+                .accessibilityLabel("\(name), \(isOnline ? "on Crossbar now" : "not on Crossbar now")")
 
             Spacer(minLength: Theme.Space.tight)
 

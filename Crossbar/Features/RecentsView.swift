@@ -15,7 +15,9 @@ struct RecentsView: View {
     private var matching: [RecentCall] {
         let wanted = query.trimmingCharacters(in: .whitespaces)
         guard !wanted.isEmpty else { return session.history }
-        return session.history.filter { RecentRow.title(of: $0).localizedCaseInsensitiveContains(wanted) }
+        return session.history.filter {
+            RecentRow.title(of: $0, me: session.me?.id).localizedCaseInsensitiveContains(wanted)
+        }
     }
 
     var body: some View {
@@ -66,16 +68,32 @@ private struct RecentRow: View {
         return isOutgoing ? "phone.arrow.up.right" : "phone.arrow.down.left"
     }
 
-    /// What to call this call: everyone else on it, or whoever placed it.
+    /// What to call this call: the person it was with, from this device's side.
+    ///
+    /// Which field holds them depends on which way the call went, and that is why this reads
+    /// the direction first rather than the name list. A call somebody else placed has them as
+    /// its caller, so the caller's name is the answer; a call this device placed has *this*
+    /// person as its caller, so the answer is `others` — which the service lists as everybody
+    /// on the call except the person asking for the history.
+    ///
+    /// Taking the caller's name in both cases is how somebody's own name came to be sitting at
+    /// the top of their own call history beside the word "Incoming". That is the one reading
+    /// of a recents row that is never right, because a call is the two people on it and the
+    /// one this row is *for* is the one who is not you.
     ///
     /// Static because the search needs the same words the row shows. A search that matched on
     /// anything else would find calls it could not explain, and stay quiet about ones it could.
-    static func title(of call: RecentCall) -> String {
-        if let others = call.others, !others.isEmpty { return others }
-        return call.callerName ?? "Unknown"
+    static func title(of call: RecentCall, me: String?) -> String {
+        // Somebody else placed it, so they are the other person — whatever else the call
+        // contained, and whatever the service's name list says about it.
+        if call.callerId != me { return call.callerName ?? "Unknown" }
+        // This device placed it, so the other people are the ones who are not its caller. A
+        // call with nobody else on it at all falls back to the name the service did give,
+        // rather than inventing "Unknown" over the top of a record that has one.
+        return call.others ?? call.callerName ?? "Unknown"
     }
 
-    private var title: String { Self.title(of: call) }
+    private var title: String { Self.title(of: call, me: session.me?.id) }
 
     private var detail: String {
         if isOutgoing { return "Outgoing" }
