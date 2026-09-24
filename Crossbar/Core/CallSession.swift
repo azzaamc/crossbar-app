@@ -562,23 +562,43 @@ final class CallSession: ObservableObject {
     }
 
     /// Files this device's VoIP push token with the service, which is how a call reaches a phone
-    /// whose app is closed.
+    /// whose app is closed. PushKit mints it, and a call this device has to report arrives on it.
+    func uploadVoIPPushToken(_ token: String) async {
+        await uploadPushToken(token, kind: "voip")
+    }
+
+    /// Files this device's **alert** push token with the service, which is how a missed call
+    /// reaches it.
+    ///
+    /// A different token, from a different registry, filed under a different word, and the
+    /// difference is the whole point of having two. The VoIP token rings this phone: what arrives
+    /// on it is a call being placed to this device, and iOS ends an app that takes one and
+    /// reports no call. This token is APNs' ordinary one, and what arrives on it is an ordinary
+    /// notification — the service's record that a call nobody answered has finished. Filed under
+    /// one word, one of the two would be sent where the other is expected, and that failure
+    /// looks exactly like a service that sends nothing at all.
+    func uploadAlertPushToken(_ token: String) async {
+        await uploadPushToken(token, kind: "alert")
+    }
+
+    /// The one upload both tokens go through, because everything about them but the word is the
+    /// same.
     ///
     /// Asked through this session's client for the same reason the device invitation is: that
     /// client carries the family network's own route, and one built in the push layer would dial
     /// the system's route while everything else went down the node's. See
     /// `createDeviceInvitation`.
     ///
-    /// PushKit announces this on every launch, so nothing is retried or remembered here: a
-    /// service that is unreachable when it is asked is asked again by the next launch.
+    /// Both registries announce their token on every launch, so nothing is retried or remembered
+    /// here: a service that is unreachable when it is asked is asked again by the next launch.
     ///
     /// The device id is the service's own, issued when this device enrolled — the token is filed
     /// against the device that signed the request. A device that has not enrolled has nothing to
     /// file it under, and that is a state to write down rather than a failure to report: the
     /// thing that has to happen is an enrolment, not another try.
-    func uploadVoIPPushToken(_ token: String) async {
+    private func uploadPushToken(_ token: String, kind: String) async {
         guard let deviceId = DeviceAuth.shared.deviceId else {
-            log("a VoIP token arrived before this device is enrolled — nothing to file it under")
+            log("a \(kind) push token arrived before this device is enrolled — nothing to file it under")
             return
         }
 
@@ -587,7 +607,7 @@ final class CallSession: ObservableObject {
                 deviceId: deviceId,
                 token: token,
                 environment: PushEnvironment.current,
-                kind: "voip"
+                kind: kind
             )
         } catch {
             log("could not file this device's VoIP token: \(error.localizedDescription)")
