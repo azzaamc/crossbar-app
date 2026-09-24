@@ -54,11 +54,18 @@ private struct RecentRow: View {
     /// fact the app already has, and it does not need the service to repeat it.
     private var isOutgoing: Bool { call.callerId == session.me?.id }
 
-    /// Whether anybody ever joined.
+    /// Whether the person on this side ever joined the call.
     ///
     /// Read from the record rather than from a word the server chose: a call somebody was on
     /// was answered, and a call nobody joined was not, whatever the participation row is
     /// spelled as. That way the row cannot disagree with the record it came from.
+    ///
+    /// This is deliberately the whole test, and it makes "Missed" cover two things the service
+    /// can tell apart: a call that rang out with nobody answering, and one the person looked at
+    /// and declined. They are not distinguished here on purpose. Both are calls that did not
+    /// happen, both want the same thing from the person looking at the row — which is to know
+    /// that somebody tried to reach them — and the difference between "I missed it" and "I said
+    /// no" is one the person already knows about themselves.
     private var wasAnswered: Bool { call.joinedAt != nil }
 
     private var isMissed: Bool { !isOutgoing && !wasAnswered }
