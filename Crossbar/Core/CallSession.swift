@@ -69,6 +69,15 @@ final class CallSession: ObservableObject {
     /// to be able to observe this — and it cannot read it through `signal`, because a nested
     /// `ObservableObject` does not republish. See the sink in `init()`.
     @Published private(set) var hasRemoteVideo = false
+
+    /// Where the server says it is, when that is not where this device was set up for.
+    ///
+    /// Non-nil means the deployment moved under this device: an administrator switched the
+    /// server between its private and public configurations, and the app is still dialling the
+    /// one it was enrolled against. It carries the *server's* mode rather than a flag because
+    /// what the person has to do about it depends on where the server went — a private network
+    /// needs Tailscale, and either one needs the address that only a new code carries.
+    @Published private(set) var serverMovedTo: ConnectionMode?
     @Published private(set) var isSpeakerOn = true
     /// Surfaced rather than swallowed. A socket that has quietly died looks exactly
     /// like a quiet one, and this project has already lost a measurement to that.
@@ -804,6 +813,28 @@ final class CallSession: ObservableObject {
             let bootstrap = try await client.bootstrap()
             me = bootstrap.user
             contacts = bootstrap.contacts
+
+            // How the server says it is reached, against how this device was set up. Asked on
+            // every load rather than once, because the administrator can switch it at any time
+            // and the app has no other way to find out: the address changes with the mode, so a
+            // device left pointing at the old one is a device nobody can reach to tell.
+            //
+            // A refusal here is not a failure — a server that does not answer this is a server
+            // this app can still use, and `serverMovedTo` stays as it was.
+            if let reported = try? await client.serverMode() {
+                let server = ConnectionMode.named(by: reported)
+                // Only a device that *knows* what it was set up for can have been moved: one that
+                // has never settled on a mode is not displaced by anything, it is the state the
+                // onboarding screen exists for, and it has a screen of its own already.
+                if let server, let mine = AppSettings.connectionMode, server != mine {
+                    log("the server is reached as \(server.rawValue), and this device is set up "
+                        + "for \(mine.rawValue)")
+                    serverMovedTo = server
+                } else {
+                    serverMovedTo = nil
+                }
+            }
+
             phase = .ready
             startEvents()
 
@@ -1057,6 +1088,22 @@ final class CallSession: ObservableObject {
         }
 
         signal.connect(room: target.room)
+    }
+
+    /// Sets this device up again from nothing: the enrollment, the address and the mode.
+    ///
+    /// What the "your Crossbar has moved" screen offers, and the only thing that clears what a
+    /// moved server leaves behind. Every one of those three belongs to the deployment they were
+    /// issued by — the key and the id were issued *for* it, the address was its, and the mode is
+    /// the one it has left — so a device pointing at a server it is no longer set up for has
+    /// nothing worth keeping.
+    func forgetServer() async {
+        await tearDown()
+        DeviceAuth.shared.forget()
+        AppSettings.serviceAddress = nil
+        AppSettings.connectionMode = nil
+        serverMovedTo = nil
+        log("forgotten — this device has to be set up again")
     }
 
     func setMuted(_ muted: Bool) {

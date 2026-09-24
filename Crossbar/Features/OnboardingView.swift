@@ -54,9 +54,9 @@ struct OnboardingView: View {
             .sheet(isPresented: $showingManual) {
                 ManualJoinView(kind: $kind, code: $code) {
                     if code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        // Nothing to enroll, which is the case this path exists for: a server
-                        // that does not hand out codes, where the kind is the whole of what it
-                        // needed and the address is the one the app was built with.
+                        // Nothing to enroll. Only a public deployment gets here — the private
+                        // option will not let this button be pressed without a code, because a
+                        // private server is reached at an address only the code carries.
                         onChoose(kind)
                     } else {
                         Task { await join() }
@@ -154,6 +154,19 @@ struct OnboardingView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+
+            // A private deployment is two steps and everybody expects one. The code has pointed
+            // the app at the server; the network that carries the request to it is Tailscale's,
+            // and it has to approve this device before anything gets through. Said here, before
+            // the screen that asks, so the second step does not arrive as a surprise.
+            if AppSettings.connectionMode == .privateNetwork {
+                Text("Next: Tailscale has to approve this device before Crossbar can reach your "
+                     + "private network.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("onboarding.tailscaleNext")
+            }
         }
         .accessibilityElement(children: .combine)
     }
@@ -170,9 +183,15 @@ struct OnboardingView: View {
         do {
             try await deviceAuth.enroll(code: entered)
             isDone = true
-            // The enrollment settled both of these from the code, so what it stored is what
-            // this app now runs as.
-            onChoose(AppSettings.connectionMode ?? kind)
+            // The enrollment settled both of these from the code, so what it stored is what this
+            // app now runs as.
+            //
+            // Written down as well as handed over. A code that carried no mode — the bare token
+            // an administrator can paste — leaves this device with none, and a mode that lived
+            // only in the view would be a device that asked to be set up again on every launch.
+            let settled = AppSettings.connectionMode ?? kind
+            AppSettings.connectionMode = settled
+            onChoose(settled)
         } catch let refusal as DeviceAuthError {
             failure = refusal.failureMessage
         } catch {
@@ -222,7 +241,13 @@ private struct ManualJoinView: View {
                 } header: {
                     Text("Enrollment code")
                 } footer: {
-                    Text("Request an enrollment code from your Crossbar network administrator.")
+                    // A private network is reached at an address this app has no way to work out,
+                    // so the code is not optional there — it is the only thing that carries the
+                    // address. A public deployment has one it can fall back on.
+                    Text(kind == .privateNetwork
+                         ? "Request an enrollment code from your Crossbar network administrator. "
+                         + "A private network is reached at an address only the code carries."
+                         : "Request an enrollment code from your Crossbar network administrator.")
                 }
             }
             .navigationTitle("Manual Setup")
@@ -240,6 +265,8 @@ private struct ManualJoinView: View {
                         dismiss()
                         onJoin()
                     }
+                    .disabled(kind == .privateNetwork
+                              && code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("onboarding.useServer")
                 }
             }

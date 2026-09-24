@@ -460,6 +460,20 @@ final class FamilyCallClient {
         return (shape["authenticated"] as? Bool ?? false, shape["configured"] as? Bool ?? false, name)
     }
 
+    /// `GET /api/health` — how the server says it is reached.
+    ///
+    /// The one question that has to be answerable *before* anything has authenticated, which is
+    /// why the server leaves this route open: a device that is set up for a deployment which has
+    /// since moved may not be able to authenticate at all, and this is how it finds out that is
+    /// what happened rather than guessing at a network fault.
+    func serverMode() async throws -> String? {
+        let (data, response) = try await data(for: request("GET", "api/health"))
+        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        log("GET api/health -> HTTP \(code) mode=\(shape["mode"] as? String ?? "none")")
+        return shape["mode"] as? String
+    }
+
     /// `GET /api/push/config` — whether the service can ring a phone whose app is
     /// closed at all.
     ///

@@ -24,7 +24,17 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            if mode == nil {
+            if let moved = session.serverMovedTo {
+                ServerMovedView(mode: moved) {
+                    Task {
+                        await session.forgetServer()
+                        // The mode is what this screen is standing in front of, so it is also
+                        // what has to go back to nothing for onboarding to appear: it is seeded
+                        // from the setting that `forgetServer` has just cleared.
+                        mode = nil
+                    }
+                }
+            } else if mode == nil {
                 // Nothing is dialled before this choice is made. The mode is what decides
                 // whether this app carries its own network, so a load that ran first would be
                 // choosing one of the two deployments on the person's behalf — the guess this
@@ -50,14 +60,17 @@ struct ContentView: View {
 
             case .needsLogin:
                 ContentUnavailableView {
-                    Label("Approve this device", systemImage: "person.badge.key.fill")
+                    Label("Approve this device on Tailscale", systemImage: "person.badge.key.fill")
                 } description: {
+                    // Tailscale by name, and as a second step rather than the same one. This is
+                    // the part of a private deployment nobody expects: the enrollment code
+                    // pointed the app at the server, and this is what lets the request reach it.
                     Text(session.tailnetLoginURL == nil
-                         ? "Crossbar is starting its connection. The sign-in page will appear "
-                         + "here as soon as it is ready."
-                         : "Your Crossbar has to recognise this device before "
-                         + "Crossbar can reach it. Approve it in the page that opens, and the "
-                         + "app carries on by itself.")
+                         ? "Crossbar is bringing up the network it carries. The sign-in page will "
+                         + "appear here as soon as it is ready."
+                         : "This Crossbar is reached over a private network, so Tailscale has to "
+                         + "approve this device before the app can reach it. Approve it in the "
+                         + "page that opens, and the app carries on by itself.")
                 } actions: {
                     if session.tailnetLoginURL != nil {
                         Button("Open the sign-in page") { session.node.openLoginPage() }
