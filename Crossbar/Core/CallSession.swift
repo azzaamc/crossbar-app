@@ -62,6 +62,13 @@ final class CallSession: ObservableObject {
     @Published private(set) var history: [RecentCall] = []
     @Published private(set) var isMuted = false
     @Published private(set) var isCameraEnabled = true
+
+    /// Whether anybody on this call has sent video, mirrored from the signalling client.
+    ///
+    /// The call screen is one of two layouts depending on whether there is a picture, so it has
+    /// to be able to observe this — and it cannot read it through `signal`, because a nested
+    /// `ObservableObject` does not republish. See the sink in `init()`.
+    @Published private(set) var hasRemoteVideo = false
     @Published private(set) var isSpeakerOn = true
     /// Surfaced rather than swallowed. A socket that has quietly died looks exactly
     /// like a quiet one, and this project has already lost a measurement to that.
@@ -170,7 +177,13 @@ final class CallSession: ObservableObject {
         // both, so arming is attempted whenever the tracks change.
         signal.$remoteVideo
             .sink { [weak self] tracks in
-                guard let self, !tracks.isEmpty else { return }
+                guard let self else { return }
+                // Mirrored for the call screen, which is a different layout depending on
+                // whether there is a picture — and a nested `ObservableObject` does not
+                // republish, so a view reading `signal` through this session would never learn
+                // that one had arrived. The same reason `tailnetState` is mirrored.
+                self.hasRemoteVideo = !tracks.isEmpty
+                guard !tracks.isEmpty else { return }
                 self.armPiP()
             }
             .store(in: &cancellables)

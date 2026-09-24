@@ -51,6 +51,8 @@ enum Theme {
     enum Avatar {
         static let row: CGFloat = 44
         static let detail: CGFloat = 96
+        /// The audio call screen, where it is the only thing drawn above the names.
+        static let call: CGFloat = 140
     }
 
     /// A symbol at the weight and scale Crossbar draws symbols at, everywhere.
@@ -78,6 +80,16 @@ enum Theme {
 /// placeholder silhouette on every row says less than a letter does. The circle takes the
 /// accent so that a list of people reads as one family of things.
 struct Avatar: View {
+    /// The letter a person's circle shows.
+    ///
+    /// Here rather than at each call site: three screens draw one of these, and an initial
+    /// computed three ways is three chances to disagree about somebody's letter. The first
+    /// character of the trimmed name, upper-cased — and `prefix` of an empty name is nothing,
+    /// so a person with no name gets an empty circle rather than a crash.
+    static func initial(of name: String) -> String {
+        String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
+    }
+
     let initial: String
     var diameter: CGFloat = Theme.Avatar.row
     /// Whether to draw attention to it — a call in progress, an unread thing.
@@ -136,9 +148,7 @@ struct PersonRow: View {
     /// sent one. Audio takes the handset, which is the icon this row has always had.
     let call: (Bool) -> Void
 
-    private var initial: String {
-        String(name.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
-    }
+    private var initial: String { Avatar.initial(of: name) }
 
     var body: some View {
         HStack(spacing: Theme.Space.snug) {

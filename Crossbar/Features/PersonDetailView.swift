@@ -26,9 +26,7 @@ struct PersonDetailView: View {
     @ObservedObject var session: CallSession
     let contact: FamilyContact
 
-    private var initial: String {
-        String(contact.displayName.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
-    }
+    private var initial: String { Avatar.initial(of: contact.displayName) }
 
     /// The one thing this app knows about where they are, and nothing about whether a call
     /// would reach them — it always reaches them. See the type's own note.

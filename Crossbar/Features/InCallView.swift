@@ -11,6 +11,12 @@ import SwiftUI
 /// for — but only once there is somebody's picture to watch, and never while a call is still
 /// ringing, when the controls are all there is. A tap brings them back, and a screen reader is
 /// told the same thing by the action on the video.
+///
+/// **Two screens live in here, and what decides between them is whether the call has a
+/// picture.** With one it is the picture, filling the screen, controls over the bottom of it.
+/// Without one it is the person the call is with, their name, and how long it has been going —
+/// no frame, no placeholder, and nothing apologising for the absence of a camera. Starting
+/// video mid-call is what moves a call from the second to the first, and it is one tap.
 struct InCallView: View {
     @ObservedObject var session: CallSession
 
@@ -21,22 +27,12 @@ struct InCallView: View {
 
     var body: some View {
         VStack(spacing: Theme.Space.snug) {
-            heading
-
-            CallVideoGrid(
-                signal: session.signal,
-                localTrack: session.media.videoTrack,
-                // A disabled track renders black, and a black tile cannot be told from a
-                // frozen one — the local preview has to be told which it is showing.
-                localCameraOff: !session.isCameraEnabled,
-                // PiP grows out of the tile the user is watching, and the session arms it
-                // while this screen is in front — which is the only time it can be armed.
-                onRemoteViewReady: { session.noteRemoteTileView($0) }
-            )
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .onTapGesture { toggleControls() }
-            .accessibilityAction(named: "Show call controls") { showControls = true }
+            if showsVideo {
+                heading
+                videoStage
+            } else {
+                audioStage
+            }
 
             if showControls {
                 controls
@@ -46,6 +42,64 @@ struct InCallView: View {
         }
         .padding(.horizontal, Theme.Space.normal)
         .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: showControls)
+    }
+
+    // MARK: - The two screens
+
+    /// Whether this call has a picture in it, which is what decides which screen it gets.
+    ///
+    /// Three separate things can put video in a call and any one of them is enough: it was
+    /// placed or answered as a video call, the camera has been turned on since, or the far end
+    /// has started sending. That last one is why this cannot be the call's kind on its own — a
+    /// person on an audio call can turn their camera on, and the video layout is the only one
+    /// that can show them. The rule matters most in the other direction, though: with none of
+    /// the three there is no picture to make room for, and the audio screen makes room for
+    /// nothing.
+    private var showsVideo: Bool {
+        session.isVideoCall || session.isCameraEnabled || session.hasRemoteVideo
+    }
+
+    /// The picture, when there is one.
+    private var videoStage: some View {
+        CallVideoGrid(
+            signal: session.signal,
+            localTrack: session.media.videoTrack,
+            // A disabled track renders black, and a black tile cannot be told from a
+            // frozen one — the local preview has to be told which it is showing.
+            localCameraOff: !session.isCameraEnabled,
+            // PiP grows out of the tile the user is watching, and the session arms it
+            // while this screen is in front — which is the only time it can be armed.
+            onRemoteViewReady: { session.noteRemoteTileView($0) }
+        )
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { toggleControls() }
+        .accessibilityAction(named: "Show call controls") { showControls = true }
+    }
+
+    /// An audio call, which has no picture and does not pretend to have one.
+    ///
+    /// This used to be the video screen with a camera-off tile in it, and that reads as a video
+    /// call that failed rather than as an audio call: a black rectangle where a face ought to
+    /// be, in a frame built to hold one, with a caption underneath apologising for it. There is
+    /// no frame here at all. Nothing is being sent and nothing is being received, so the only
+    /// thing there is to show is who the call is with.
+    ///
+    /// The initial appears only when there is one other person, and nothing is drawn when there
+    /// are more: a circle with one of three names in it is picking one of them, and the heading
+    /// underneath names everybody anyway.
+    private var audioStage: some View {
+        VStack(spacing: Theme.Space.normal) {
+            if others.count == 1, let person = others.first {
+                Avatar(
+                    initial: Avatar.initial(of: person),
+                    diameter: Theme.Avatar.call,
+                    isProminent: true
+                )
+            }
+            heading
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Who, and what is happening
@@ -112,9 +166,11 @@ struct InCallView: View {
 
     /// Whether the controls may get out of the way at all.
     ///
-    /// Only on a call with somebody else's picture on it. With no remote video the controls
-    /// are the whole of the screen, and one that hides when it is the only thing there is a
-    /// control the user has to hunt for.
+    /// Only ever offered by the video stage, and only on a call with somebody else on it. An
+    /// audio call has nothing to reveal behind its controls, so its screen does not hide them
+    /// and never asks this. What it guards is a video call that is still ringing: the controls
+    /// are the whole of the screen there, and a tap that made them vanish would be taking away
+    /// the only thing there is.
     private var canHideControls: Bool { !others.isEmpty && isConnected }
 
     private func toggleControls() {
