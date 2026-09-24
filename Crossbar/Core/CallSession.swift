@@ -120,6 +120,9 @@ final class CallSession: ObservableObject {
     private var pipSourceView: UIView?
     private var cancellables = Set<AnyCancellable>()
 
+    /// The two taps a call earns, for the two moments only this session knows about.
+    private let haptics = CallHaptics()
+
     /// Whether the call in progress was placed from here.
     ///
     /// Needed because CallKit's two directions are told apart by which API reports the
@@ -171,6 +174,53 @@ final class CallSession: ObservableObject {
                 self.armPiP()
             }
             .store(in: &cancellables)
+
+        // The haptics for a call this device joins and a call it was in that has finished.
+        //
+        // Observed here, in the session, rather than by a view through `onChange`: these are
+        // moments of the *call*, not of a screen. A view is on screen for a fraction of a call's
+        // life — the person answering from the lock screen is looking at none of this app's
+        // views at the moment the call connects, and the call screen has gone by the time the
+        // end of it is worth saying — while this subscription lives exactly as long as the
+        // session does. The session is also the only thing that knows the difference between a
+        // call that connected and one that was declined, cancelled or failed, which is exactly
+        // the difference these two taps are for.
+        //
+        // The one bit watched is `isInJoinedCall`, not the phase's own idea of a call: see that
+        // property for the case where the two differ. Reduced to a bit before it is compared, so
+        // that the repeated `.inCall` assignments arriving with every status update are not
+        // events; `dropFirst` discards the state this subscription starts in, which is the
+        // `.loading` phase — not a call ending, and not a join.
+        $phase
+            .map { [weak self] _ in self?.isInJoinedCall ?? false }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] joined in
+                guard let self else { return }
+                if joined {
+                    self.haptics.joined()
+                } else {
+                    self.haptics.left()
+                }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// Whether the phase is a call **this device** has joined.
+    ///
+    /// Not the same question as `Self.isInCall(phase)`, and the difference is a real state
+    /// rather than a hypothetical one. A person may have more than one device on their account,
+    /// and a call answered on one of them is marked active for all of them: the `.callStatus`
+    /// event reaches this device while it is still ringing, and the session moves to `.inCall`
+    /// for a call this device has no media in — the same gap `deviceCallID` exists to keep
+    /// `adopt` from rejoining through. A tap for that would be marking a join that did not
+    /// happen, on a phone whose screen is the only place the call exists. `deviceCallID` is the
+    /// call this device actually joined, so where it does not name the call in the phase, this
+    /// session is showing a call it is not in, and a call that is not in it cannot connect or
+    /// end.
+    private var isInJoinedCall: Bool {
+        guard case .inCall(let call) = phase else { return false }
+        return call.id == deviceCallID
     }
 
     /// Reports the camera state the **system** allows, without touching what the user chose.
@@ -835,8 +885,13 @@ final class CallSession: ObservableObject {
         guard let call = phase.call else { return }
         do {
             let envelope = try await client.respond(callId: call.id, accepted: true)
-            phase = .inCall(envelope.call)
+            // Before the phase, because the phase is what says this device is in the call, and
+            // whatever reads that — the haptics in `init()`, the screen — reads it the moment it
+            // is published. `deviceCallID` is this session's own record of the call this device
+            // joined, and a phase that arrived before it would be claiming a join for a call the
+            // app had not written down yet. See `isInJoinedCall`.
             deviceCallID = envelope.call.id
+            phase = .inCall(envelope.call)
             // Deliberately no `reportConnected` here. CallKit marks an answered incoming
             // call connected when its answer action is fulfilled, and the API used to
             // report a connection is `reportOutgoingCall` — the wrong direction for a
@@ -905,8 +960,10 @@ final class CallSession: ObservableObject {
         do {
             log("rejoining an active call")
             let envelope = try await client.join(callId: call.id)
-            phase = .inCall(envelope.call)
+            // Written down before the phase, for the reason `accept()` gives: the phase is the
+            // claim that this device is in the call, and `deviceCallID` is the record of it.
             deviceCallID = envelope.call.id
+            phase = .inCall(envelope.call)
             if let callID = UUID(uuidString: envelope.call.id) { callKitCallID = callID }
             connect(using: envelope.joinUrl)
         } catch {
@@ -1191,5 +1248,46 @@ final class CallSession: ObservableObject {
         }
         if let data = (line + "\n").data(using: .utf8) { logHandle?.write(data) }
         #endif
+    }
+}
+
+/// The two taps a call earns: one for joining it, and one for it being over.
+///
+/// Both are played for a moment rather than for a screen, so neither is kept. A
+/// `UIFeedbackGenerator` that has been prepared holds the Taptic Engine awake — that is what
+/// preparing it *means* — and two moments that can be hours apart are no reason to keep it
+/// running. Each method below makes the generator it needs, prepares it, plays it, and lets it
+/// go at the end of the call it was made in, which is the only way to release one: the class has
+/// no `unprepare`, and a generator alive is a generator the engine is warm for.
+@MainActor
+final class CallHaptics {
+    /// A call this device has joined — and that is exactly when it is played.
+    ///
+    /// A tap when the phone merely rings, or when an offer is sent, would be saying something
+    /// that has not happened; the caller could still give up, the far end could still decline.
+    /// So this is called from the session's own transition into a call, which is where an answer
+    /// has been accepted and this device is in the room, and nowhere else. See the subscription
+    /// in `CallSession.init()`.
+    ///
+    /// An impact rather than a notification: joining is a thing happening under the finger rather
+    /// than an outcome being judged, and `.medium` is the weight behind a state the person asked
+    /// for and has now got.
+    func joined() {
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.prepare()
+        generator.impactOccurred()
+    }
+
+    /// A call this device was in that has finished.
+    ///
+    /// The `.success` pattern is the quiet end of it: nothing failed and nothing is being
+    /// reported, the call simply closed, and the tap is there for a moment at which the screen
+    /// showing the call has already gone. Nothing is played for a call that was declined,
+    /// cancelled before it connected, or refused — none of those ever reached `joined()`, and a
+    /// tap there would be marking an end to something that never started.
+    func left() {
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(.success)
     }
 }
