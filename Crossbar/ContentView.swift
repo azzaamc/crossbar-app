@@ -26,15 +26,12 @@ struct ContentView: View {
         Group {
             if let moved = session.serverMovedTo {
                 ServerMovedView(mode: moved) {
-                    Task {
-                        await session.forgetServer()
-                        // The mode is what this screen is standing in front of, so it is also
-                        // what has to go back to nothing for onboarding to appear: it is seeded
-                        // from the setting that `forgetServer` has just cleared.
-                        mode = nil
-                    }
+                    // Set up again. Everything below follows from that: the session clears the
+                    // enrollment, the address and the mode, and marks the device as one that has
+                    // to be set up — which is what puts the onboarding screen on.
+                    Task { await session.forgetServer() }
                 }
-            } else if mode == nil {
+            } else if mode == nil || session.needsSetup {
                 // Nothing is dialled before this choice is made. The mode is what decides
                 // whether this app carries its own network, so a load that ran first would be
                 // choosing one of the two deployments on the person's behalf — the guess this

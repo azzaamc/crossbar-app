@@ -10,6 +10,9 @@ import SwiftUI
 struct PeopleView: View {
     @ObservedObject var session: CallSession
 
+    /// Whether the "set this device up again" confirmation is showing.
+    @State private var confirmingSetUpAgain = false
+
     var body: some View {
         List {
             connection
@@ -33,6 +36,19 @@ struct PeopleView: View {
         .navigationTitle("People")
         .refreshable { await session.refresh() }
         .overlay { emptyState }
+        .confirmationDialog("Set this device up again?", isPresented: $confirmingSetUpAgain,
+                            titleVisibility: .visible) {
+            Button("Set up again", role: .destructive) {
+                Task { await session.forgetServer() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            // The same sentence the other two places that do this use, because it is the same
+            // act and the same cost: the key is deleted, and only the administrator can let this
+            // device back in.
+            Text("The key this device holds is deleted and cannot be recovered. Your administrator "
+                 + "will need to invite it again.")
+        }
     }
 
     /// Where somebody is, in words.
@@ -78,6 +94,15 @@ struct PeopleView: View {
                 .accessibilityElement(children: .combine)
 
                 Button("Try again") { Task { await session.load() } }
+
+                // The way out for the case this screen is usually showing. An administrator who
+                // switches the server between its two configurations leaves this device dialling
+                // an address that belongs to the other one, and then nothing here can reach
+                // anything — so the app cannot *tell* the person that is what happened. It can
+                // offer the only thing that fixes it, which is being set up again with the new
+                // details. The confirmation says what it costs, because it costs the key.
+                Button("Set this device up again") { confirmingSetUpAgain = true }
+                    .accessibilityIdentifier("people.setUpAgain")
             }
         } else if session.eventsDown {
             // The stream is the only way a call can arrive, so this is not a detail: with it

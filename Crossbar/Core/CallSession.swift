@@ -78,6 +78,14 @@ final class CallSession: ObservableObject {
     /// what the person has to do about it depends on where the server went — a private network
     /// needs Tailscale, and either one needs the address that only a new code carries.
     @Published private(set) var serverMovedTo: ConnectionMode?
+
+    /// Set when this device has been taken back to nothing and has to be set up again.
+    ///
+    /// The app root shows onboarding for it, which is the only screen that can do anything
+    /// about it. It is a published flag rather than a read of `AppSettings.connectionMode`,
+    /// because the setting is not observable and the state is already seeded from it — the
+    /// value read at launch would go on saying this device is set up long after it is not.
+    @Published private(set) var needsSetup = false
     @Published private(set) var isSpeakerOn = true
     /// Surfaced rather than swallowed. A socket that has quietly died looks exactly
     /// like a quiet one, and this project has already lost a measurement to that.
@@ -1103,6 +1111,7 @@ final class CallSession: ObservableObject {
         AppSettings.serviceAddress = nil
         AppSettings.connectionMode = nil
         serverMovedTo = nil
+        needsSetup = true
         log("forgotten — this device has to be set up again")
     }
 
