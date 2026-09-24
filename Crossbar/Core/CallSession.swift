@@ -1023,7 +1023,26 @@ final class CallSession: ObservableObject {
                 + " not the invitation's \(target.origin.absoluteString)")
         signal.media = media
         signal.peerName = me?.displayName
-        log(media.startCapture())
+
+        // The call's kind decides whether the camera runs. Until now it decided nothing: every
+        // call started capture, so an audio call turned the camera on, drew this person their
+        // own face, and offered a video track nobody had asked for.
+        //
+        // Capture is the whole of it, and the reason switching to video mid-call needs no
+        // renegotiation. The peer connection is built with the video track either way — the
+        // track exists from `CallMediaSource.init`, not from capture — so the m-lines are the
+        // same for both kinds of call and the camera is on exactly when capture is running.
+        // Turning it on later is one `startCapture`, and the far end's own camera button
+        // works the same way.
+        isCameraEnabled = phase.call?.isVideo ?? true
+        media.videoTrack.isEnabled = isCameraEnabled
+        if isCameraEnabled {
+            log(media.startCapture())
+        } else {
+            media.stopCapture()
+            log("an audio call — the camera is not started, and the video track carries nothing")
+        }
+
         signal.connect(room: target.room)
     }
 

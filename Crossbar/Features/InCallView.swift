@@ -129,8 +129,9 @@ struct InCallView: View {
     /// screen is a control the user cannot reach, and on a call screen that is the one failure
     /// that matters, so the row steps down to a tighter one rather than being clipped.
     ///
-    /// An audio call drops the two camera buttons, which are not tight fits but controls for
-    /// something that call cannot do: `kind` came back with the call, so the row knows.
+    /// An audio call is one button lighter than a video call rather than two: there is nothing
+    /// to flip while nothing is being sent, and the camera button stays, because turning an
+    /// audio call into a video one is something it can do.
     private var controls: some View {
         ViewThatFits(in: .horizontal) {
             controlRow(spacing: Theme.Space.normal, diameter: Theme.Control.regular)
@@ -147,14 +148,26 @@ struct InCallView: View {
                 isActive: session.isMuted
             ) { session.toggleMute() }
 
-            if session.isVideoCall {
-                control(
-                    session.isCameraEnabled ? "video.fill" : "video.slash.fill",
-                    session.isCameraEnabled ? "Camera off" : "Camera on",
-                    diameter: diameter,
-                    isActive: !session.isCameraEnabled
-                ) { session.toggleCamera() }
+            // One control in both kinds of call, because it is one question and now one state:
+            // whether this device is sending video. An audio call starts with the camera off
+            // and this button turns the call into a video one; a video call starts with it on
+            // and the same button stops it. Nothing is renegotiated either way — see
+            // `CallSession.connect` — so switching is one tap, which is how the far end's own
+            // camera button behaves too.
+            //
+            // Highlighted only while a *video* call has its camera off, which is a state worth
+            // noticing. An audio call's camera is off because that is what the call is, and a
+            // button flagging that would be flagging the call the person asked for.
+            control(
+                session.isCameraEnabled ? "video.slash.fill" : "video.fill",
+                session.isCameraEnabled ? "Camera off" : "Start video",
+                diameter: diameter,
+                isActive: session.isVideoCall && !session.isCameraEnabled
+            ) { session.toggleCamera() }
 
+            // Flip only while there are two cameras' worth of choice to make: a flip button for
+            // a camera that is not running is a control for something the call is not doing.
+            if session.isCameraEnabled {
                 control("camera.rotate.fill", "Flip", diameter: diameter) { session.switchCamera() }
             }
 
