@@ -2,11 +2,11 @@ import SwiftUI
 import Vision
 import VisionKit
 
-/// Scanning an enrolment code off a screen.
+/// Scanning an enrollment code off a screen.
 ///
 /// The camera is the point of a QR code: the code is long, and copying it by hand is how
 /// it gets mistyped. What this decodes goes exactly where a pasted one goes — there is one
-/// way to spend an enrolment code and it is `DeviceAuth.enroll` — so nothing here reads the
+/// way to spend an enrollment code and it is `DeviceAuth.enroll` — so nothing here reads the
 /// text, and `EnrollmentCode` decides what it is.
 ///
 /// VisionKit's scanner rather than a capture session of our own: it is the system's camera

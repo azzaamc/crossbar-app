@@ -70,13 +70,13 @@ enum DeviceKeychain {
 /// the signature. Nothing here is a credential in the "secret you send" sense — there is
 /// no key to steal from the service, and no shared secret for two deployments to share.
 ///
-/// The key is generated on first enrolment and never regenerated behind the service's
-/// back: a new key is an unknown device, and the enrolment code that vetted it is spent.
+/// The key is generated on first enrollment and never regenerated behind the service's
+/// back: a new key is an unknown device, and the enrollment code that vetted it is spent.
 @MainActor
 final class DeviceIdentity {
     /// What the service calls this device until it answers with a name of its own.
     ///
-    /// The device's own name, not a generated id: enrolment is a person showing a code to
+    /// The device's own name, not a generated id: enrollment is a person showing a code to
     /// a person, and "Azzaam's iPhone" is how the person on the other end recognises which
     /// device is asking to join.
     static var defaultDeviceName: String {
@@ -96,7 +96,7 @@ final class DeviceIdentity {
     var isEnrolled: Bool { deviceId != nil && key != nil }
 
     /// The public half, base64 of its SPKI DER encoding — which is the encoding the
-    /// service's enrolment route takes (`publicKey` in `POST /api/auth/enroll`).
+    /// service's enrollment route takes (`publicKey` in `POST /api/auth/enroll`).
     var publicKeyBase64: String? {
         key?.publicKey.derRepresentation.base64EncodedString()
     }
@@ -118,11 +118,11 @@ final class DeviceIdentity {
         return try key.signature(for: data).derRepresentation
     }
 
-    // MARK: - Enrolment
+    // MARK: - Enrollment
 
     /// Creates this device's key if it has none.
     ///
-    /// Called immediately before enrolment and nowhere else, so the key the service is
+    /// Called immediately before enrollment and nowhere else, so the key the service is
     /// told about is the key that will sign. Creating it lazily at the first signature
     /// instead would let a device believe it is enrolled while holding a key the service
     /// has never seen, and the failure would arrive as a rejected signature rather than as
@@ -164,8 +164,8 @@ final class DeviceIdentity {
     /// Records the id the service issued for this device's key.
     ///
     /// The name is deliberately not kept. It is a fact about the phone rather than about the
-    /// enrolment — iOS knows it and says so whenever it is asked — and a copy taken at
-    /// enrolment goes on describing a phone that has been renamed since.
+    /// enrollment — iOS knows it and says so whenever it is asked — and a copy taken at
+    /// enrollment goes on describing a phone that has been renamed since.
     func enroll(as id: String) {
         deviceId = id
         DeviceKeychain.set(id, for: AppSettings.Key.deviceID)

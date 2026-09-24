@@ -18,6 +18,8 @@ enum AppSettings {
         static let signallingOrigin = "crossbar.signallingOrigin"
         static let embeddedNode = "crossbar.embeddedNode"
         static let connectionMode = "crossbar.connectionMode"
+        /// The release whose "what is new" has been read, so it is not shown twice.
+        static let lastSeenVersion = "crossbar.lastSeenVersion"
 
         /// The rest are not defaults but keychain accounts, all under the one service:
         /// this device's signing key and handle, the id and name the service issued for
@@ -34,7 +36,7 @@ enum AppSettings {
 
     /// The service's address, when someone has set one.
     ///
-    /// Writable because an enrolment code carries the address of the service it enrols
+    /// Writable because an enrollment code carries the address of the service it enrolls
     /// with: the code is what points the app at its own backend, and having someone type
     /// the same host a second time is how the two end up disagreeing.
     static var serviceAddress: String? {
@@ -65,6 +67,22 @@ enum AppSettings {
                 return
             }
             UserDefaults.standard.set(newValue.rawValue, forKey: Key.connectionMode)
+        }
+    }
+
+    /// The release whose "what is new" has been shown, so that it is shown once.
+    ///
+    /// The release rather than the build: a new build of the same release has the same notes, and
+    /// showing them again for it would be the app repeating itself to somebody who read them
+    /// yesterday.
+    static var lastSeenVersion: String? {
+        get { trimmed(UserDefaults.standard.string(forKey: Key.lastSeenVersion)) }
+        set {
+            guard let release = trimmed(newValue) else {
+                UserDefaults.standard.removeObject(forKey: Key.lastSeenVersion)
+                return
+            }
+            UserDefaults.standard.set(release, forKey: Key.lastSeenVersion)
         }
     }
 

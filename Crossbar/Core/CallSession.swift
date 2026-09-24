@@ -608,7 +608,7 @@ final class CallSession: ObservableObject {
     /// The device id is the service's own, issued when this device enrolled — the token is filed
     /// against the device that signed the request. A device that has not enrolled has nothing to
     /// file it under, and that is a state to write down rather than a failure to report: the
-    /// thing that has to happen is an enrolment, not another try.
+    /// thing that has to happen is an enrollment, not another try.
     private func uploadPushToken(_ token: String, kind: String) async {
         guard let deviceId = DeviceAuth.shared.deviceId else {
             log("a \(kind) push token arrived before this device is enrolled — nothing to file it under")
@@ -842,8 +842,8 @@ final class CallSession: ObservableObject {
         let publicServer = AppSettings.connectionMode == .publicServer
         guard authenticated else {
             return publicServer
-                ? "This server did not accept this device. If it asks devices to enrol, "
-                    + "paste the enrolment code you were given in Settings."
+                ? "This server did not accept this device. If it asks devices to enroll, "
+                    + "paste the enrollment code you were given in Settings."
                 : "The service did not recognise this device's tailnet identity."
         }
         return publicServer

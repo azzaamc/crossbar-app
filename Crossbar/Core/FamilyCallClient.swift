@@ -216,7 +216,7 @@ enum FamilyEvent: Equatable {
 /// how a deployment detail drifts from the one thing that used it. The environment
 /// override is the same one every instrument here uses, so a different host needs no edit.
 enum FamilyCallService {
-    /// The compiled default: this household's deployment. A build nobody has configured
+    /// The compiled default: this deployment. A build nobody has configured
     /// still works, which matters because this app belongs to the person using it rather
     /// than to an administrator.
     static let compiledDefault = URL(string: "https://qatar-vpn.tailea67b0.ts.net:8443")!

@@ -99,7 +99,7 @@ final class TailnetNode: ObservableObject {
     /// An auth key, when one has been stored.
     ///
     /// The login page is the path this is built around — a first run sends someone to
-    /// Tailscale and that is the whole enrolment. A key is the shortcut for repeated
+    /// Tailscale and that is the whole enrollment. A key is the shortcut for repeated
     /// device runs, where a fresh install would otherwise mean a fresh approval every
     /// time. It is stored in this app's defaults, never compiled in and never logged.
     private static let authKeyDefaultsKey = "TailscaleAuthKey"
@@ -127,7 +127,7 @@ final class TailnetNode: ObservableObject {
     ///
     /// Two questions have to be answered yes, and they are not the same question. The first
     /// is the **connection mode**: carrying a tailnet is what a private deployment *is*,
-    /// while a household whose server answers at a hostname has no network for this app to
+    /// while a deployment whose server answers at a hostname has no network for this app to
     /// carry, and bringing one up there would be a second network nobody asked for. The
     /// second is the **switch in Settings**, which is a preference inside the private mode
     /// — someone on their own network may still prefer to dial it with the Tailscale app

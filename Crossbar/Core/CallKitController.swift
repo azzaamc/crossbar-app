@@ -44,7 +44,7 @@ final class CallKitController: NSObject, CXProviderDelegate, CXCallObserverDeleg
         let configuration = CXProviderConfiguration(localizedName: "Crossbar")
         configuration.supportsVideo = true
         configuration.maximumCallGroups = 1
-        // The household calls are two to four people; the extra headroom costs
+        // The calls here are two to four people; the extra headroom costs
         // nothing and a rejected join is invisible to everyone but the person who
         // could not get in.
         configuration.maximumCallsPerCallGroup = 4

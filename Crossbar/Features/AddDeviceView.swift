@@ -4,8 +4,8 @@ import SwiftUI
 /// Hands a second phone its way into Crossbar, without an administrator in the middle.
 ///
 /// A device that is already enrolled is the authority on the identity it holds — that is what the
-/// enrolment it holds already means — so the code is asked for here rather than from whoever
-/// administers the household's server. It is always for the person this device belongs to: the
+/// enrollment it holds already means — so the code is asked for here rather than from whoever
+/// administers your Crossbar. It is always for the person this device belongs to: the
 /// service reads the invitee from the session, so a device can invite nobody else, and this screen
 /// has no field in which to try.
 ///
@@ -120,7 +120,7 @@ struct AddDeviceView: View {
         } header: {
             Text("The code")
         } footer: {
-            Text("It enrols one device, once, and it is only ever for you — a device can invite "
+            Text("It enrolls one device, once, and it is only ever for you — a device can invite "
                  + "nobody but the person it belongs to. The QR code also carries your server's "
                  + "address; typed on its own, the code below is the token by itself.")
         }

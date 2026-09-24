@@ -2,8 +2,8 @@ import Foundation
 
 /// How this app reaches its service — a decision, not a detail.
 ///
-/// Crossbar is deployed two ways and they are not two addresses for one thing. A private
-/// household server is reachable only over the tailnet, and this app carries that network
+/// Crossbar is deployed two ways and they are not two addresses for one thing. A server on a
+/// private network is reachable only over the tailnet, and this app carries that network
 /// itself so that a device needs nothing else installed. A public server answers at a
 /// hostname on the internet and is reached the ordinary way. Which one this device belongs
 /// to decides whether a node is brought up at all, whether requests leave through it, and
@@ -11,15 +11,15 @@ import Foundation
 /// and never inferred.
 ///
 /// Inferred from what, exactly? Nothing observable says it. A `*.ts.net` name is one
-/// household's private deployment, but a public server may sit on a tailnet too, and an
-/// address that answers proves something is reachable rather than which network carried
-/// it. A node that is up but not yet authorised answers every request with a refusal that
-/// looks exactly like a broken server. Guessing one way puts a second network on a device
-/// that never asked for one; guessing the other leaves someone unable to reach their
-/// service with no sign-in page to fix it. So the onboarding screen asks, once, in plain
-/// words, and this is what it writes down.
+/// private deployment, but a public server may sit on a tailnet too, and an address that
+/// answers proves something is reachable rather than which network carried it. A node that
+/// is up but not yet authorised answers every request with a refusal that looks exactly
+/// like a broken server. Guessing one way puts a second network on a device that never
+/// asked for one; guessing the other leaves someone unable to reach their service with no
+/// sign-in page to fix it. So the onboarding screen asks, once, in plain words, and this is
+/// what it writes down.
 enum ConnectionMode: String, CaseIterable {
-    /// This household runs its own network, and the app carries it.
+    /// A server on a network the app carries itself.
     case privateNetwork
 
     /// A Crossbar server at a hostname, reached the ordinary way.
@@ -37,23 +37,27 @@ enum ConnectionMode: String, CaseIterable {
         }
     }
 
-    /// What this mode is called on screen. One spelling, because two screens name it.
+    /// What this mode is called where somebody chooses between them.
     var title: String {
         switch self {
-        case .privateNetwork: return "This household's own network"
-        case .publicServer: return "A Crossbar server"
+        case .privateNetwork: return "Private network (Tailscale)"
+        case .publicServer: return "Public internet (HTTPS)"
         }
     }
 
     /// The same thing again as a sentence, for the screen that shows what is in force.
+    ///
+    /// Both say what the server is reached *over* and nothing else. The mechanism is the whole
+    /// of what the difference means to somebody choosing between them — which network carries
+    /// the request, and what protects it on the way — and anything more is a description of the
+    /// deployment's paperwork rather than of the choice.
     var summary: String {
         switch self {
         case .privateNetwork:
-            return "Reached over your household's private network, which this app carries "
-                 + "with it so that nothing else has to be installed."
+            return "The server is reached over a private Tailscale network (a tailnet), carried "
+                 + "by the official Tailscale framework embedded in this app."
         case .publicServer:
-            return "Reached at a server address, the ordinary way. This app carries no "
-                 + "network of its own in this mode."
+            return "The server is reached over the public internet, using HTTPS encryption."
         }
     }
 }

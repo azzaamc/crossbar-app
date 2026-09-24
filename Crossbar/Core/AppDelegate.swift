@@ -56,8 +56,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, PKPushRegistryDelegate
         // The permission a missed call needs is asked for at the moment this app is first able
         // to deserve it, and never at launch on its own account. `$isEnrolled` is what carries
         // that moment: it arrives with whatever is already true, so an app set up on a previous
-        // run is registered at this launch, and it fires when an enrolment lands — which is the
-        // instant a person has just finished telling this app where its household is. See
+        // run is registered at this launch, and it fires when an enrollment lands — which is the
+        // instant a person has just finished telling this app where its Crossbar is. See
         // `askForMissedCalls()`, which is what the two facts it depends on are.
         DeviceAuth.shared.$isEnrolled
             .sink { [weak self] _ in self?.askForMissedCalls() }

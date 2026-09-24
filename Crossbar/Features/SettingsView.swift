@@ -68,9 +68,9 @@ struct SettingsView: View {
 
             if deviceAuth.isEnrolled {
                 // The name the system has for this device, read now rather than replayed from
-                // what enrolment stored: renaming the phone is something a person does once and
+                // what enrollment stored: renaming the phone is something a person does once and
                 // would expect to see here without enrolling the device again. It is also the
-                // name the service holds, because enrolment sends this same value.
+                // name the service holds, because enrollment sends this same value.
                 LabeledContent("This device", value: DeviceIdentity.defaultDeviceName)
                     .accessibilityIdentifier("settings.deviceName")
 
@@ -85,7 +85,7 @@ struct SettingsView: View {
 
                 // The camera or the keyboard; both end up in this one field.
                 HStack(spacing: Theme.Space.snug) {
-                    TextField("Enrolment code", text: $enrollmentCode, prompt: Text("Enrolment code"))
+                    TextField("Enrollment code", text: $enrollmentCode, prompt: Text("Enrollment code"))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("settings.enrollmentCode")
@@ -148,7 +148,7 @@ struct SettingsView: View {
 
             // Only where there is an identity to invite from. An invitation is issued *by* a
             // device — the service reads whose it is from the session — so a deployment that does
-            // not enrol devices has nobody for this row to act as, and its invitations come from
+            // not enroll devices has nobody for this row to act as, and its invitations come from
             // whoever installed it. A row that could only ever fail is worse than no row.
             if deviceAuth.isEnrolled {
                 NavigationLink("Add another device") {
@@ -286,7 +286,7 @@ struct SettingsView: View {
 ///
 /// Every line is checkable against the code: calls are peer to peer and the server arranges them
 /// rather than carrying them, a relay is used when a network leaves two devices no other way to
-/// reach each other, and the directory the server keeps is the household itself. Anything
+/// reach each other, and the directory the server keeps is the people on it. Anything
 /// stronger than that — anonymous, impossible to intercept — would be a claim this app cannot
 /// keep, so none of it is here.
 struct PrivacyView: View {
@@ -305,7 +305,7 @@ struct PrivacyView: View {
             }
 
             Section("What your server keeps") {
-                Text("The household's directory: who is in it, which devices have joined, and "
+                Text("Your Crossbar's directory: who is in it, which devices have joined, and "
                      + "when calls happened. That is what it is for. It does not record calls, "
                      + "and nothing in this app can.")
             }

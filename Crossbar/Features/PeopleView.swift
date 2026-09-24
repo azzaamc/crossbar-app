@@ -121,7 +121,7 @@ struct PeopleView: View {
                 ContentUnavailableView(
                     "No one is here yet",
                     systemImage: "person.2",
-                    description: Text("People appear here once the household's administrator adds them. "
+                    description: Text("People appear here once your Crossbar's administrator adds them. "
                         + "Ask them to add or invite someone."))
             }
         }

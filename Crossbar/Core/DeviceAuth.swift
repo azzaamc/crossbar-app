@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-/// The client half of Crossbar's device identity: enrol this device with a code, then
+/// The client half of Crossbar's device identity: enroll this device with a code, then
 /// exchange a signed challenge for a session token.
 ///
 /// The service's half is `/api/auth/*`. The one part of it that cannot be guessed is the
@@ -30,7 +30,7 @@ final class DeviceAuth: ObservableObject {
     @Published private(set) var deviceId: String?
     @Published private(set) var isEnrolled = false
 
-    /// Where the enrolment, challenge and session requests leave by.
+    /// Where the enrollment, challenge and session requests leave by.
     ///
     /// Set by `FamilyCallClient` to the carrier its own requests use. In the embedded
     /// node's case the service is reachable over the node's loopback and nowhere else, so
@@ -46,7 +46,7 @@ final class DeviceAuth: ObservableObject {
     /// Whether the service last answered the device-auth routes at all.
     ///
     /// Remembered so a service that does not implement them is asked once rather than on
-    /// every request. Set back to true by an explicit enrolment, which is someone saying
+    /// every request. Set back to true by an explicit enrollment, which is someone saying
     /// that this service does use them.
     private var serverUsesDeviceAuth = true
 
@@ -92,9 +92,9 @@ final class DeviceAuth: ObservableObject {
         return authenticated
     }
 
-    // MARK: - Enrolment
+    // MARK: - Enrollment
 
-    /// Enrols this device from an enrolment code.
+    /// Enrolls this device from an enrollment code.
     ///
     /// The code may be the service's JSON payload — what a QR code carries — or a bare
     /// token. When it names a service, that address is applied here: the code is how the
@@ -110,7 +110,7 @@ final class DeviceAuth: ObservableObject {
         }
 
         // Which kind of deployment this is, settled before anything is dialled: the mode
-        // decides whether the app brings up a network of its own, so an enrolment that ran
+        // decides whether the app brings up a network of its own, so an enrollment that ran
         // first would be knocking on the wrong door.
         if let mode = parsed.mode, mode != AppSettings.connectionMode {
             AppSettings.connectionMode = mode
@@ -139,7 +139,7 @@ final class DeviceAuth: ObservableObject {
         serverUsesDeviceAuth = true
         mirrorIdentity()
 
-        // Enrolment answers with a session already, and taking it saves the challenge
+        // Enrollment answers with a session already, and taking it saves the challenge
         // exchange that would otherwise follow within the same second. A service that
         // answers without one is not an error — the device is enrolled either way — so the
         // ordinary route is taken instead.
@@ -148,7 +148,7 @@ final class DeviceAuth: ObservableObject {
         }
     }
 
-    /// Whether the service at the current address asks a device to enrol before it will
+    /// Whether the service at the current address asks a device to enroll before it will
     /// answer anything — asked by the screen that has to say so *before* a failure does.
     ///
     /// Asked rather than assumed, because the two deployments differ exactly here and the
@@ -164,7 +164,7 @@ final class DeviceAuth: ObservableObject {
     /// `nil` when the service could not be asked at all, which is not a statement about the
     /// service: the caller carries on and lets the ordinary path report the refusal, with
     /// the address in it.
-    func requiresEnrolment() async -> Bool? {
+    func requiresEnrollment() async -> Bool? {
         guard let result = try? await call("POST", "api/auth/challenge", body: ["deviceId": ""]) else {
             return nil
         }
@@ -176,7 +176,7 @@ final class DeviceAuth: ObservableObject {
     func forget() {
         identity.forget()
         discardSession()
-        // Whoever enrols next is telling the app about a service that does use these
+        // Whoever enrolls next is telling the app about a service that does use these
         // routes, so a previous "it does not" does not survive that.
         serverUsesDeviceAuth = true
         mirrorIdentity()
@@ -375,7 +375,7 @@ final class DeviceAuth: ObservableObject {
     }
 }
 
-/// Why an enrolment was refused, in words a person can act on.
+/// Why an enrollment was refused, in words a person can act on.
 ///
 /// The codes are the service's; the sentences are this app's. `ENROLLMENT_USED` is not
 /// something to show someone holding a phone, and every one of these has a different next
@@ -398,15 +398,15 @@ enum DeviceAuthError: Error, LocalizedError {
             : .refused(status: status, code: code ?? "UNKNOWN", message: message ?? "")
     }
 
-    /// What to show when enrolment fails.
+    /// What to show when enrollment fails.
     var failureMessage: String {
         switch self {
         case .codeInvalid:
-            "That does not look like an enrolment code. Paste the whole line, or the payload a QR code carries."
+            "That does not look like an enrollment code. Paste the whole line, or the payload a QR code carries."
         case .noKey:
             "This device could not create a signing key, so it cannot be enrolled."
         case .unsupportedServer:
-            "This service does not use device enrolment, so there is nothing to enrol."
+            "This service does not use device enrollment, so there is nothing to enroll."
         case .malformed(let reason):
             reason
         case .transport(let reason):
@@ -422,11 +422,11 @@ enum DeviceAuthError: Error, LocalizedError {
             case "ENROLLMENT_INVALID":
                 "That code is not valid for this service. Check it was meant for this one."
             case "DEVICE_KEY_INVALID":
-                "The service would not accept this device's key. Forget this device and enrol again."
+                "The service would not accept this device's key. Forget this device and enroll again."
             case "RATE_LIMITED":
                 "Too many attempts. Wait a minute and try again."
             default:
-                message.isEmpty ? "The service refused the enrolment (HTTP \(status))." : message
+                message.isEmpty ? "The service refused the enrollment (HTTP \(status))." : message
             }
         }
     }
@@ -434,7 +434,7 @@ enum DeviceAuthError: Error, LocalizedError {
     var errorDescription: String? { failureMessage }
 }
 
-/// What someone pastes into the enrolment field, or what a QR code carries.
+/// What someone pastes into the enrollment field, or what a QR code carries.
 struct EnrollmentCode {
     let token: String
     /// The service's address when the code names one, which is how this app is pointed at its
@@ -477,7 +477,7 @@ private extension String {
     /// The value with the whitespace around it removed, or nil when nothing is left.
     ///
     /// Pasted codes arrive with newlines and spaces attached often enough that trimming is
-    /// the difference between a working enrolment and an unexplained one.
+    /// the difference between a working enrollment and an unexplained one.
     var nonBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

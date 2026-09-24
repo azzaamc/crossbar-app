@@ -9,7 +9,7 @@ import SwiftUI
 /// the call, and that happens at a launch that may show no screen at all.
 ///
 /// It also decides whether there is anything to show at all: until someone has said
-/// whether this device belongs to a household's own network or to a server at a hostname,
+/// whether this device belongs to a private network or to a server at a hostname,
 /// the app has no route to dial and asks. That answer is read here rather than through the
 /// session, because it is the thing that decides whether the session has anything to load.
 struct ContentView: View {
@@ -18,6 +18,9 @@ struct ContentView: View {
     /// Seeded from what is stored, then kept here: the onboarding screen is the only thing
     /// that changes it while this view is on screen, and it says so through `onChoose`.
     @State private var mode = AppSettings.connectionMode
+
+    /// What is new in this build, when there is something this build has not shown yet.
+    @State private var releaseNotes: ReleaseNotes?
 
     var body: some View {
         Group {
@@ -31,6 +34,11 @@ struct ContentView: View {
                 product
             }
         }
+        // The app first, and this second: what is new is worth reading once somebody is looking
+        // at the thing it is about. It answers once per release — `takeForCurrentBuild` records
+        // the version as it answers — so this is the launch *after* an update, not every launch.
+        .task { releaseNotes = ReleaseNotes.takeForCurrentBuild() }
+        .sheet(item: $releaseNotes) { ReleaseNotesView(notes: $0) }
     }
 
     /// What the product shows, once there is a route to reach it by.
@@ -47,7 +55,7 @@ struct ContentView: View {
                     Text(session.tailnetLoginURL == nil
                          ? "Crossbar is starting its connection. The sign-in page will appear "
                          + "here as soon as it is ready."
-                         : "Your household's network has to recognise this device before "
+                         : "Your Crossbar has to recognise this device before "
                          + "Crossbar can reach it. Approve it in the page that opens, and the "
                          + "app carries on by itself.")
                 } actions: {

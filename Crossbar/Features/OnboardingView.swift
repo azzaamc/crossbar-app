@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The first thing anybody sees, and the only question this app has to ask.
 ///
-/// The question is not which transport to use: that is the household administrator's business,
+/// The question is not which transport to use: that is your Crossbar administrator's business,
 /// and the code they hand over answers it. So the screen is one thing — a code. Scan it or paste
 /// it, and the app configures itself: which server, which kind of network, and who this device is.
 ///
@@ -54,7 +54,7 @@ struct OnboardingView: View {
             .sheet(isPresented: $showingManual) {
                 ManualJoinView(kind: $kind, code: $code) {
                     if code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        // Nothing to enrol, which is the case this path exists for: a server
+                        // Nothing to enroll, which is the case this path exists for: a server
                         // that does not hand out codes, where the kind is the whole of what it
                         // needed and the address is the one the app was built with.
                         onChoose(kind)
@@ -93,7 +93,7 @@ struct OnboardingView: View {
             Button {
                 isScanning = true
             } label: {
-                Label("Scan the code", systemImage: "qrcode.viewfinder")
+                Label("Scan your enrollment code", systemImage: "qrcode.viewfinder")
                     .font(.body.weight(.semibold))
                     .frame(maxWidth: .infinity)
                     .frame(height: 34)
@@ -110,14 +110,14 @@ struct OnboardingView: View {
                     Text("Or paste the code instead")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    TextField("Enrolment code", text: $code, prompt: Text("Type or paste the code"))
+                    TextField("Enrollment code", text: $code, prompt: Text("Type or paste the code"))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .multilineTextAlignment(.center)
                         .font(.callout.monospaced())
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.large)
-                        .accessibilityLabel("Enrolment code")
+                        .accessibilityLabel("Enrollment code")
                         .accessibilityIdentifier("onboarding.code")
                 }
 
@@ -170,7 +170,7 @@ struct OnboardingView: View {
         do {
             try await deviceAuth.enroll(code: entered)
             isDone = true
-            // The enrolment settled both of these from the code, so what it stored is what
+            // The enrollment settled both of these from the code, so what it stored is what
             // this app now runs as.
             onChoose(AppSettings.connectionMode ?? kind)
         } catch let refusal as DeviceAuthError {
@@ -199,28 +199,30 @@ private struct ManualJoinView: View {
             Form {
                 Section {
                     Picker("Kind", selection: $kind) {
-                        Text("Private network (Tailscale)").tag(ConnectionMode.privateNetwork)
-                        Text("Public internet (HTTPS)").tag(ConnectionMode.publicServer)
+                        // The names come from the mode itself, so the sentence underneath and
+                        // the option above it cannot come to describe different things.
+                        ForEach(ConnectionMode.allCases, id: \.self) { mode in
+                            Text(mode.title).tag(mode)
+                        }
                     }
                     .pickerStyle(.inline)
                     // Without this the picker draws its own label as the first row, which
                     // reads as an option that cannot be selected.
                     .labelsHidden()
                 } header: {
-                    Text("How it is reached")
+                    Text("Crossbar Server Configuration")
                 } footer: {
                     Text(kind.summary)
                 }
 
                 Section {
-                    TextField("Code", text: $code, prompt: Text("Enrolment code"))
+                    TextField("Code", text: $code, prompt: Text("Enrollment code"))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } header: {
-                    Text("Enrolment code")
+                    Text("Enrollment code")
                 } footer: {
-                    Text("A code carries the address of the server it belongs to, so this is "
-                         + "usually the only thing to fill in.")
+                    Text("Request an enrollment code from your Crossbar network administrator.")
                 }
             }
             .navigationTitle("Manual Setup")

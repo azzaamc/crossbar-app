@@ -139,7 +139,7 @@ struct InCallView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// Everyone on the call except the user. For a household call that is usually one name;
+    /// Everyone on the call except the user. For a call here that is usually one name;
     /// when it is more, all of them, because "Call with Mum" is wrong when Dad is there too.
     private var others: [String] {
         guard let call = session.phase.call else { return [] }
