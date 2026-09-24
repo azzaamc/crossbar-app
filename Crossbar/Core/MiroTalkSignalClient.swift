@@ -357,9 +357,22 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
             "peer_name": peerName ?? "Crossbar \(label)",
             "peer_avatar": "",
             "peer_token": NSNull(),
+            // Whether this device is sending video, read from the track rather than hard-set:
+            // `CallSession` keeps that flag in step with the call's kind *and* with the camera
+            // button, so this is the one expression the two cannot disagree about. It matters
+            // to the far end — a room told `peer_video_status: true` by an audio call draws a
+            // black rectangle and waits for frames that are never sent, which is the same
+            // confusion the camera path was built to avoid, and being told `false` is what
+            // makes MiroTalk's own client draw an avatar instead.
+            //
+            // `peer_video` stays true for both kinds of call, and deliberately. The connection
+            // does carry video — the m-lines are identical, because the track exists from
+            // `CallMediaSource.init` rather than from capture — so what changes is the camera,
+            // and a peer that turns video on mid-call announces that with `peerStatus` against
+            // this same room. `false` here would be claiming the call cannot do what it can.
             "peer_video": true,
             "peer_audio": true,
-            "peer_video_status": true,
+            "peer_video_status": media?.videoTrack.isEnabled ?? false,
             "peer_audio_status": true,
             "peer_screen_status": false,
             "peer_hand_status": false,
