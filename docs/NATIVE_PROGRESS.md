@@ -1,6 +1,8 @@
 # Crossbar native progress
 
-Last audited: 2026-09-17 (Asia/Karachi)
+Last audited: 2026-09-17 (Asia/Karachi), except the push and notification path, which was
+re-verified against the project and against a device on 2026-09-24 — see the verification
+record for exactly which rows that covers.
 
 ## Status in one sentence
 
@@ -10,11 +12,15 @@ video tiles and controls, and CallKit driven by the product flow rather than a d
 probe — over an engine that places and joins real calls to a real family member,
 carrying audio and video both ways.
 
-It cannot yet **receive** a call with the app closed. Ringing needs APNs and a
-server-side device-token model, neither of which exists, and shipping to anyone else
-needs a paid Apple Developer Program membership: the current free personal team
-provisions one device and expires every seven days. Instruments, reproduction commands
-and the list of what is *not* measured are in `ARCHITECTURE_B_PROBE.md`.
+It **can** now be rung with the app closed, and told about a call it missed, on both sides
+of the wire: PushKit, the CallKit report, two device tokens filed separately, and the
+service's routes for them. Both tokens were filed from a signed build on a real device on
+2026-09-24, which is what the verification record below now shows. What has *not* been
+observed is delivery — no push has been seen arriving, so a ring on a locked phone and a
+missed-call notification are implemented but unmeasured. Shipping to anyone else needs a
+paid Apple Developer Program membership: the current free personal team provisions one
+device and expires every seven days. Instruments, reproduction commands and the list of
+what is *not* measured are in `ARCHITECTURE_B_PROBE.md`.
 
 As of 2026-09-19 the app also **carries its own tailnet**, so it no longer needs the
 Tailscale app installed and signed in on the phone. `Core/TailnetNode.swift` brings up an
@@ -60,12 +66,12 @@ worktree.
 | Minimum deployment target | iOS 27.0 |
 | Device families | iPhone and iPad (`1,2`) |
 | Signing | Automatic; an Apple development team is selected in the project |
-| Generated Info.plist | Yes |
+| Generated Info.plist | Generated, from `Crossbar/Info.plist` plus `INFOPLIST_KEY_*` build settings |
 | Privacy strings | Camera and microphone usage descriptions present |
-| Entitlements file | None |
-| Capabilities | None configured |
-| Background modes | None configured |
-| PushKit/APNs | Not implemented; no capability or entitlement |
+| Entitlements file | `Crossbar/Crossbar.entitlements` — `aps-environment` only, as `$(APS_ENVIRONMENT)` |
+| Capabilities | None toggled in the project; the APNs entitlement is written by hand in the entitlements file |
+| Background modes | `voip` and `audio`, declared in `Crossbar/Info.plist` |
+| PushKit/APNs | Implemented. `aps-environment` is per configuration (Debug → `development`, Release → `production`); a VoIP push rings a sleeping phone, and a second alert token carries a missed call. Both tokens are filed with the service — see the verification record for what has been observed |
 | Packages | `stasel/WebRTC` 153.0.0 via SwiftPM, pinned in `Package.resolved` (revision `4266157c`). The xcframework is a binary artifact fetched at build time — not vendored in the repository |
 | Linked third-party frameworks | `WebRTC.framework` (BSD-3-Clause plus a Google patent grant), embedded in the app bundle and linked as `@rpath/WebRTC.framework/WebRTC` |
 | Persistence | None; no SwiftData/Core Data |
@@ -211,8 +217,12 @@ its entries have since been built; what follows is what is actually absent now.
 - **Inviting a second participant, and the group route.** Placement, answering, declining,
   rejoining and ending have all run for real calls. Nothing can start a call with more than
   one invitee, and `FamilyGroup` is decoded and logged but never drawn.
-- **PushKit, APNs, VoIP token registration, notification extension, or the backend routes
-  that would register a native device.** A suspended or terminated app does not ring.
+- **A push that has actually been delivered.** PushKit, APNs, both device tokens and the
+  service's routes for them exist and are committed, and a signed build filed both tokens
+  against the service on a real device on 2026-09-24 — but no VoIP push and no missed-call
+  notification has been seen arriving, so whether a sleeping phone rings is not measured.
+  There is no notification-service extension, and neither push needs one: neither carries a
+  mutable payload.
 - **Any measurement of video quality.** Rendering works; frame rate, resolution, latency
   and recovery from packet loss are unmeasured, and camera switching, orientation and
   size negotiation are untested.
@@ -326,6 +336,58 @@ Results obtained so far are recorded as P8 in `ARCHITECTURE_A_PROBE.md`. The
 CallKit, audio-session, teardown, and lifecycle items remain untested and are
 marked as such there.
 
+### Push tokens filed from a signed build (2026-09-24)
+
+Device: `Azzaam’s iPhone` (UDID `600A99C4-FB71-5C63-A3F3-E5A25515D41B`), iOS 27.0. A
+Debug build of the app as committed at `b303b5d`, installed and launched with
+XcodeBuildMCP's device build-and-run. The evidence is the app's own log, pulled off the
+device with `devicectl device copy from --domain-type appDataContainer
+--domain-identifier com.abdullahchaudhry.Crossbar --source Documents/session.log` — read
+from the file after the fact rather than off a screen:
+
+```
+dialling direct — A Crossbar server
+GET api/session (requesting)
+POST https://call.azzaamc.com/api/devices/push-token
+POST https://call.azzaamc.com/api/devices/push-token
+  -> HTTP 200, 14 bytes
+  filed this device's voip push token for the sandbox environment: saved=true
+  -> HTTP 200, 14 bytes
+  filed this device's alert push token for the sandbox environment: saved=true
+GET api/session -> HTTP 200 authenticated=true name=Abdullah
+GET https://call.azzaamc.com/api/bootstrap -> HTTP 200, 393 bytes
+  bootstrap: 2 contacts, 0 ongoing, 0 open
+GET https://call.azzaamc.com/api/calls/history -> HTTP 200, 3639 bytes
+GET api/events -> HTTP 200
+```
+
+What this establishes:
+
+- The permission path ran to its end. `registerForRemoteNotifications()` is reached only
+  when the authorisation is not denied — either a prompt was answered yes, or a decision
+  already in place allowed it — and a token came back, which is what the two uploads are.
+  The build's entitlement is `development`, which is why both tokens are filed for
+  `sandbox` rather than `production`.
+- **Both** kinds of token are filed and the service accepted both: two
+  `POST /api/devices/push-token` calls, `HTTP 200`, `saved=true`, one per kind. The
+  service's two-column split is therefore exercised against a real device, not only
+  against its tests.
+- The ordinary session loaded normally behind them — identity, two contacts, a history of
+  3639 bytes, and the event stream — so nothing in the push path delayed or broke a start.
+- `dialling direct` says which route carried it, and it is not the embedded node: this run
+  went straight to the service.
+
+What it does **not** establish:
+
+- That anything was delivered. No VoIP push and no missed-call notification has been seen
+  arriving; a filed token is the precondition for delivery, not delivery.
+- Which revision the deployed service is at. These two writes being *accepted* is all the
+  log says; it is not evidence that the missed-call sender is live at that address.
+- Anything about the foreground-presentation rule, the notification tap handler, or the
+  haptics, none of which can be reached without a delivered push or a real two-party call.
+  `simctl push` was attempted as a substitute and refused: "Repository could not save
+  notification. Source is not authorized."
+
 ## Evidence classification
 
 | Capability | Compiled | Simulator tested | Physical iPhone tested |
@@ -350,7 +412,7 @@ marked as such there.
 | Family Call control plane, call lifecycle (native) | Yes | — | **Yes, for what a two-person call runs** — two real calls to a real family member: `POST /api/calls` returned 201 with a `joinUrl`, the room was parsed from it, the invitee answered on MiroTalk's own browser client, `call-status` arrived as `active` over SSE, the native client joined the room, audio and video crossed both ways with the remote video rendered, and `POST /api/calls/:id/end` returned 200. `/join`, `/invite`, a decline and the group route remain unexercised |
 | Remote video rendering (native) | Yes | — | **Yes, on real calls** — a remote track from MiroTalk's own browser client decoded and drawn natively, showing a different person in a different room beside the local capture, alongside roughly 2.4 Mbps of inbound video measured per kind |
 | Product shell (native UI and CallKit) | Yes | — | **Yes** — a real call placed from the product UI through CallKit, answered on MiroTalk's own browser client, carrying audio and video both ways; ringing, accepting, declining and ending all verified on device, plus recovery of an invitation that arrived while the app was suspended. Audio-session configuration and speaker routing corrected, and confirmed by ear |
-| Incoming call while the app is suspended | Yes | — | **No, and not fixable in the client.** iOS suspends the app when the screen locks, which kills the signalling socket, and only a push can wake a suspended app. A locked phone does not ring until the app is opened — at which point the waiting invitation is found by re-reading `/api/bootstrap`. Needs APNs and a server-side device-token model, neither of which exists |
+| Incoming call while the app is suspended | Yes | — | **No, and not fixable in the client.** iOS suspends the app when the screen locks, which kills the signalling socket, and only a push can wake a suspended app. A locked phone does not ring until the app is opened — at which point the waiting invitation is found by re-reading `/api/bootstrap`. Needs APNs and a server-side device-token model, neither of which exists. **Superseded 2026-09-24:** both now exist and are committed, and a signed build on this same device filed both of its tokens with the service — so this row's "No" still stands as a *measurement*, but no longer as a statement about what the client can do |
 | Room id parsed from the `joinUrl` | Yes | — | **Yes** — production `joinUrl`s from two real calls each yielded their room and signalling origin, and the client joined those rooms |
 | Native capture teardown (Architecture B spike) | Yes | — | **Yes** — after Stop, `capture stopped` is logged and the status-bar camera/mic privacy indicators are absent, which is the objective evidence capture was released. The preview keeps its last rendered frame, so the preview alone proves nothing |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
@@ -373,7 +435,7 @@ marked as such there.
 | Picture-in-Picture on leaving a video call | Yes | — | **Yes, after two corrections** — `AVPictureInPictureVideoCallViewController` armed while the call screen is in front, so the system opens the window on backgrounding and closes it on return (AVKit does not dismiss it itself). The first version showed a **still picture** because a `RTCMTLVideoView` renders with Metal, which is not driven in the background; the window now uses an `AVSampleBufferDisplayLayer` fed by an I420→NV12 conversion, Apple's own recommendation for video-call PiP. It also took the **camera** away, because iOS 16 puts camera access in PiP behind `AVCaptureSession.isMultitaskingCameraAccessEnabled`; with that set, a call in PiP keeps transmitting — measured: 20 fps into the window with 0 dropped while backgrounded, and the far end's `currentTime` advancing throughout. Only a call with no window falls back to audio |
 | Background/lock/resume | Yes | No | **Revised 2026-09-19, and the earlier reading was incomplete** — the spike's `audioUnit=1` through lock and background was real but was measuring the seam loopback, which sets `isAudioEnabled` itself; the *call* path did not, so a probe call recorded and played nothing (`totalAudioEnergy` 0.000 in every poll) and iOS froze the process the moment the app was left: stats stopped, the far end's video froze, MiroTalk dropped the peer by +65 s. With audio actually running (manual-audio gate opened) **and** `audio` declared in `UIBackgroundModes`, the same swipe-away leaves the call up: 41 polls and 6 socket pings continued in the background, audio crossed both ways at ~6 KB per 3 s, `totalAudioEnergy` became non-zero, and video stopped on its own because iOS takes the camera. The far end was left staring at a frozen frame until camera status signalling was added, above |
 | Lock during a CallKit call | Yes | No | **No, and CallKit is the cause — measured 2026-09-20.** With a real two-party call up (a browser client answered a call the phone placed, two peers in the room, remote video rendering into PiP at 20 fps with 0 dropped), pressing the lock button ended the call: the app logged `callkit: performing end`, i.e. the system asked *it* to end the call, having delivered **no** `willResignActive` and **no** `didEnterBackground` first. The control is the same app, same day, same call, **with no CallKit call behind it** (the app had joined an active call of its own, and `CallKit` rejected the teardown as an unknown call): locking produced `device locked`, `resigning active` and `entered the background`, all with `phase=inCall`; unlocking produced `returning to the foreground` and `device unlocked`, the socket re-dialled, and the call was **still up** — the server logged `peer_left … ended=false` and then `call_joined … peers: 2`. So the lock costs the camera and the signalling socket, and recovers the socket on unlock; it does not end the call. CallKit **requires** the `voip` background mode (removing it fails `CXStartCallAction` with `requesttransaction error 1`, `Unentitled`, on the device), and that mode is meant to be PushKit-backed — which needs `aps-environment`, and so the paid membership. Fix deferred until then; the diagnostics that produced this live in `CallKitController` (a `CXCallObserver`, the app's state at the moment of an end action) and `CallSession.wireDeviceLock` |
-| PushKit/APNs | No | No | No — and the lock behaviour above is blocked on it: the app holds the `voip` background mode CallKit requires with no PushKit registration behind it, which a free personal team cannot provision |
+| PushKit/APNs | Yes | No | **Implemented and committed; delivery not observed.** The app starts the PushKit registry at launch and files both of its tokens — the VoIP one that rings it and an ordinary alert token for a call it missed — with the service. Measured on a signed build on a device, 2026-09-24: two `POST /api/devices/push-token` calls answered `HTTP 200 ... saved=true`, one per kind, both for the `sandbox` environment, followed by a normal session load. What no device has seen is a push being *delivered*, so the lock behaviour above is no longer blocked on a missing mechanism — it is unmeasured with one present |
 
 ## Immediate maintenance issue
 
