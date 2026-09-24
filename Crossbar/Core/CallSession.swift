@@ -14,6 +14,17 @@ import WebRTC
 /// that state rather than competing with it.
 @MainActor
 final class CallSession: ObservableObject {
+    /// The one session this process has.
+    ///
+    /// Shared rather than owned by a screen, because two things need it now and neither can
+    /// outrank the other: the root view, which is this session's screen, and the app delegate,
+    /// which iOS tells about a call **before any screen exists** — a VoIP push can launch this
+    /// app while it is closed and locked, and the report to CallKit has to come from the object
+    /// that owns the CallKit provider. One session per process was always the arrangement — it
+    /// owns the provider, the media engine and the network, none of which can be had twice —
+    /// and this is what makes it reachable rather than merely true.
+    static let shared = CallSession()
+
     /// Where the session is. Not a boolean: an outgoing call and an incoming one need
     /// different affordances, and collapsing them is how a UI ends up offering to
     /// answer a call the user started.
@@ -84,6 +95,25 @@ final class CallSession: ObservableObject {
     @Published private(set) var tailnetLoginURL: String?
     private var eventsTask: Task<Void, Never>?
     private var callKitCallID: UUID?
+
+    /// The load in flight, so that a second caller joins it rather than starting one. See
+    /// `load()` for why there are two callers at all.
+    private var loadTask: Task<Void, Never>?
+
+    /// A call the person has already answered, waiting for this session to find out which call
+    /// it is. Set and consumed by `answerPending`, which explains it.
+    private var pendingAnswer: UUID?
+
+    /// The call the most recent VoIP push named.
+    ///
+    /// Kept because a push is the only thing that says **which** call is being placed to this
+    /// device, and the service answers with everything that is open rather than with that one:
+    /// `/api/bootstrap` lists every call this person has not answered yet, and an invitation
+    /// left over from earlier still reads `invited`. Ringing is then a choice between them, and
+    /// the choice matters — CallKit was told the pushed call's id, so ringing a different call
+    /// shows the phone a call it cannot answer while the one being made is not on screen at all.
+    /// See `adopt`, which uses this to pick the pushed call out of the list.
+    private var pushedCallID: UUID?
 
     /// The Picture-in-Picture window, armed while a call has video worth showing.
     let pip = CallPiPController()
@@ -385,9 +415,14 @@ final class CallSession: ObservableObject {
             self.callKitCallID = callID
             Task { await self.createCall(toContactID: handle, video: video) }
         }
-        callKit.onAnswer = { [weak self] _ in
-            self?.log("CallKit answered")
-            Task { await self?.accept() }
+        callKit.onAnswer = { [weak self] callID in
+            guard let self else { return }
+            self.log("CallKit answered")
+            // Handed to the pending-answer path rather than answered from here, because the
+            // answer can arrive before this app knows which call it is for — see
+            // `answerPending`, which is the one place that decides what an answer becomes.
+            self.pendingAnswer = callID
+            Task { await self.answerPending() }
         }
         callKit.onEnd = { [weak self] _ in
             guard let self else { return }
@@ -431,6 +466,119 @@ final class CallSession: ObservableObject {
         }
     }
 
+    // MARK: - A call that arrived while the app was not running
+
+    /// Rings for the call a VoIP push named, and gets this app into a state where it can be
+    /// answered.
+    ///
+    /// Called **synchronously** from the push handler in `AppDelegate`, and the order inside is
+    /// the whole point of the method. The report to CallKit is the first statement, with nothing
+    /// in front of it: iOS 13 and later end an app that takes a VoIP push without reporting a
+    /// call, and stop delivering VoIP pushes to an app that does it repeatedly. Nothing here may
+    /// be awaited before that line, which is why this method takes the three values the report
+    /// needs rather than reading anything for itself.
+    ///
+    /// Reporting is only half of answering, though. CallKit can say a call exists while this app
+    /// knows nothing about it, and `accept()` responds to a `FamilyCall` — so the second half is
+    /// a load, which is what asks the service which call this person is invited to. `/api/bootstrap`
+    /// is the only thing that says so, and it is asked here rather than waited for: the person
+    /// may answer from the lock screen before the root view has even been built, and the answer
+    /// is held until the load lands. See `answerPending`.
+    func reportPushedCall(callID: UUID, callerName: String, video: Bool) {
+        callKit.reportIncoming(callID: callID, callerName: callerName, video: video)
+        log("a VoIP push reported \(callID.uuidString.prefix(8)) from \(callerName) — video=\(video)")
+        // Kept so that the load below rings *this* call rather than whichever open invitation
+        // the service happens to list first. See `pushedCallID`.
+        pushedCallID = callID
+
+        // A call already in progress, or one already ringing, needs no load: whatever rings for
+        // it is the event stream, which is up whenever a load has finished, and loading over a
+        // live call would take its screen down and put it back.
+        guard phase.call == nil else { return }
+
+        // Nowhere to dial. A push can only have arrived for an enrolled device, but this app
+        // deliberately does not decide how to reach a service on someone's behalf — the first
+        // screen asks — so an app that has not been told has nothing to load against.
+        guard AppSettings.connectionMode != nil else {
+            log("a call was pushed to an app with no connection mode chosen — nothing to load")
+            return
+        }
+
+        // A load is not free: it re-reads the state and re-dials the event stream. It is asked
+        // for anyway, and it is the reason a call that arrives while the stream is down still
+        // rings properly — `/api/bootstrap` is the only thing that knows about a call whose
+        // event was delivered once, to nobody.
+        Task { await load() }
+    }
+
+    /// Files this device's VoIP push token with the service, which is how a call reaches a phone
+    /// whose app is closed.
+    ///
+    /// Asked through this session's client for the same reason the device invitation is: that
+    /// client carries the family network's own route, and one built in the push layer would dial
+    /// the system's route while everything else went down the node's. See
+    /// `createDeviceInvitation`.
+    ///
+    /// PushKit announces this on every launch, so nothing is retried or remembered here: a
+    /// service that is unreachable when it is asked is asked again by the next launch.
+    ///
+    /// The device id is the service's own, issued when this device enrolled — the token is filed
+    /// against the device that signed the request. A device that has not enrolled has nothing to
+    /// file it under, and that is a state to write down rather than a failure to report: the
+    /// thing that has to happen is an enrolment, not another try.
+    func uploadVoIPPushToken(_ token: String) async {
+        guard let deviceId = DeviceAuth.shared.deviceId else {
+            log("a VoIP token arrived before this device is enrolled — nothing to file it under")
+            return
+        }
+
+        do {
+            try await client.uploadPushToken(
+                deviceId: deviceId,
+                token: token,
+                environment: PushEnvironment.current,
+                kind: "voip"
+            )
+        } catch {
+            log("could not file this device's VoIP token: \(error.localizedDescription)")
+        }
+    }
+
+    /// What the person's answer becomes, once and in one place.
+    ///
+    /// CallKit's answer button is live from the moment a call is on screen, and on the path this
+    /// arrangement exists for the call is on screen before this app has asked the service
+    /// anything: the push reports it, and the load that names it is still running. So an answer
+    /// can genuinely arrive first, and dropping it is not an option — the person has answered,
+    /// and the far end would ring on while the system showed a connected call. It is held while
+    /// a load is in flight, and performed at the end of that load, which is where `load()` calls
+    /// this method.
+    ///
+    /// The call is matched by identity rather than assumed to be the one this device happens to
+    /// be invited to. The answer names the call the *system* showed, and accepting a different
+    /// call would put this phone into a call nobody answered for. When what was answered is not
+    /// a call this device can join, it is ended — a call with an answer behind it and no media
+    /// in front of it is worse than one that never rang, because the caller is told they were
+    /// answered.
+    private func answerPending() async {
+        guard let answered = pendingAnswer else { return }
+
+        if let running = loadTask, !running.isCancelled {
+            log("the answer is waiting for the load in flight — it will be performed when that lands")
+            return
+        }
+
+        pendingAnswer = nil
+        guard let call = phase.call, UUID(uuidString: call.id) == answered else {
+            log("a call was answered that this device has no call for — ending it")
+            callKit.end(callID: answered)
+            return
+        }
+
+        log("performing the answer that arrived before the call was known")
+        await accept()
+    }
+
     // MARK: - Load
 
     /// How many times a load is tried before anything is said about failing.
@@ -443,7 +591,47 @@ final class CallSession: ObservableObject {
     private static let loadAttempts = 3
     private static let loadRetryDelay = Duration.seconds(4)
 
+    /// Asks for a load, joining one that is already running.
+    ///
+    /// There are two callers now and they are not in a queue: the root view asks when its screen
+    /// comes up, and the push path asks when a call arrives — which is usually while that screen
+    /// is still being built. A second load over the first would be a second `/api/bootstrap`, a
+    /// second event stream and a second report of the same invitation, so the second caller
+    /// waits for the first rather than duplicating it.
+    ///
+    /// A load that has been **cancelled** is not joined, and that is why the running load is
+    /// held as a task rather than as a boolean: the root view's `.task(id:)` is cancelled when
+    /// the connection mode changes, and the load taken out for the mode that was replaced must
+    /// not be the load the new mode is given. Cancelling the caller cancels the work it started,
+    /// which is what the handler below does — a task started here does not inherit cancellation
+    /// from whoever is awaiting it.
     func load() async {
+        if let running = loadTask, !running.isCancelled {
+            log("a load is already running — joining it rather than starting a second")
+            await running.value
+            return
+        }
+
+        let task = Task { await self.runLoad() }
+        loadTask = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        // Only if it is still the current one: a load that was replaced has already been
+        // overtaken, and clearing the newer task here would lose track of it.
+        if loadTask == task { loadTask = nil }
+
+        // A load that was replaced is not an end, and the answer belongs to the load that
+        // replaced it. Every way a load *can* end arrives here, which is why this is the one
+        // place that asks what an answer that arrived too early has become.
+        guard !task.isCancelled else { return }
+        await answerPending()
+    }
+
+    /// One load's worth of work, retries included.
+    private func runLoad() async {
         phase = .loading
         notice = nil
         eventsDown = false
@@ -700,6 +888,13 @@ final class CallSession: ObservableObject {
         isMuted = false
         isCameraEnabled = true
         isSpeakerOn = true
+        // An answer that was being held for a call that has just been ended is not an answer to
+        // anything any more — the call it named is over, and performing it later would join a
+        // different call under the same name. See `answerPending`. The pushed call goes with it:
+        // it is what the next ring would be matched against, and a call that is over must not be
+        // preferred over the next one to arrive.
+        pendingAnswer = nil
+        pushedCallID = nil
         if case .failed = phase { return }
         phase = .ready
     }
@@ -839,7 +1034,19 @@ final class CallSession: ObservableObject {
     private func adopt(_ bootstrap: FamilyBootstrap) async {
         guard phase.call == nil else { return }
         contacts = bootstrap.contacts
-        if let invited = bootstrap.calls.first(where: { $0.myStatus == "invited" }) {
+        // The call a push named is taken first when it is in the list. The list holds every call
+        // this person has not answered — an invitation left over from earlier still reads
+        // `invited` — and ringing the wrong one puts a call on the system UI that cannot be
+        // answered, because CallKit was told the id of the other. Without a push there is
+        // nothing to prefer and the first invitation stands, as it always has. See `pushedCallID`.
+        let pushed = pushedCallID.flatMap { id in
+            bootstrap.calls.first { $0.myStatus == "invited" && UUID(uuidString: $0.id) == id }
+        }
+        if let invited = pushed ?? bootstrap.calls.first(where: { $0.myStatus == "invited" }) {
+            if pushed == nil, let pushedCallID {
+                log("the call the push named (\(pushedCallID.uuidString.prefix(8))) is not open on "
+                    + "this device — ringing the first invitation instead")
+            }
             log("an invitation was waiting for this device — ringing it")
             ring(invited)
         } else if let ongoing = bootstrap.ongoingCalls.first(where: {
@@ -881,7 +1088,10 @@ final class CallSession: ObservableObject {
         if let callID = UUID(uuidString: call.id) {
             callKitCallID = callID
             callKit.reportIncoming(callID: callID, callerName: displayName(for: call.callerId))
-            log("reported to CallKit")
+            // Handed over rather than reported: a call that arrived by push has already been
+            // reported by the app delegate, and `CallKitController` says so instead of asking
+            // the system twice for the same call.
+            log("handing the call to CallKit")
         } else {
             log("call id is not a UUID — CallKit cannot be told about it")
         }
@@ -963,7 +1173,14 @@ final class CallSession: ObservableObject {
 
     // MARK: - Logging
 
-    private func log(_ line: String) {
+    /// A line into this app's own log, which is the instrument this project measures with.
+    ///
+    /// Internal rather than private because the push path writes here too, and push handling
+    /// lives in `AppDelegate`: a VoIP push that left no trace would be indistinguishable from
+    /// one that never arrived, which is already the hardest failure on this project to see.
+    /// Nothing is logged before the session exists — the first write truncates the file, as it
+    /// always has — so a launch that a push caused starts its log with what the push did.
+    func log(_ line: String) {
         #if DEBUG
         if logHandle == nil {
             let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

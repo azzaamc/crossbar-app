@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The environment APNs will mint this app's device tokens for.
+	     A build setting rather than a literal, because one file has to serve both
+	     configurations and the two are genuinely different entitlements: `development`
+	     produces sandbox tokens, `production` produces production ones, and a token offered
+	     to the wrong push endpoint is refused with nothing useful said about why. The project
+	     sets the value per configuration (Debug → development, Release → production), and the
+	     app reads this same entitlement back at runtime to say which environment its token
+	     belongs to — see `PushEnvironment` in `Core/AppDelegate.swift`. -->
+	<key>aps-environment</key>
+	<string>$(APS_ENVIRONMENT)</string>
+</dict>
+</plist>

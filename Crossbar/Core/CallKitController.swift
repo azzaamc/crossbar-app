@@ -75,12 +75,30 @@ final class CallKitController: NSObject, CXProviderDelegate, CXCallObserverDeleg
         return callID
     }
 
+    /// Calls this app has already reported to CallKit.
+    ///
+    /// Two things can report the same call within a second of each other and neither is wrong:
+    /// a VoIP push reports the call it names, and the event stream delivers the same call as
+    /// `incoming-call` to an app that is already connected — which a phone in the foreground
+    /// routinely is, and the two race. CallKit refuses the second report with
+    /// `callUUIDAlreadyExists`, and the refusal reached the person as a notice on screen about
+    /// a call that was ringing perfectly well. Reporting a call is idempotent by construction;
+    /// saying so here is the second half of the first report rather than a suppression.
+    ///
+    /// Like `ended` below, this is bookkeeping about what this object has *told the system*,
+    /// not a second opinion about which call is happening.
+    private var reported: Set<UUID> = []
+
     /// Rings on the system UI.
     ///
-    /// This is what makes the phone behave like a phone — but only while the app is
-    /// running. A suspended app receives nothing, which is why a real incoming call
-    /// still needs APNs and a device-token model that does not exist yet.
+    /// This is what makes the phone behave like a phone — and it is the whole of what a VoIP
+    /// push needs from this app, since the push itself is reported by `AppDelegate` before
+    /// CallKit's own deadline for it.
     func reportIncoming(callID: UUID, callerName: String, video: Bool = true) {
+        guard reported.insert(callID).inserted else {
+            onLog?("\(callID.uuidString.prefix(8)) has already been reported — not reporting it twice")
+            return
+        }
         let update = CXCallUpdate()
         update.remoteHandle = CXHandle(type: .generic, value: callerName)
         update.localizedCallerName = callerName

@@ -560,6 +560,38 @@ final class FamilyCallClient {
         log("  ended \(callId), status=\(envelope.call.status)")
     }
 
+    /// `POST /api/devices/push-token` — where the service should send this device's calls.
+    ///
+    /// The route that makes a closed app ring. A call reaches an open client over the event
+    /// stream; a client with no stream open has nothing watching for one, and this is the only
+    /// address the service is given that it can use by itself.
+    ///
+    /// Device-authenticated like every other route from an enrolled device, and the device id is
+    /// in the body beside the token for the reason the session cannot be trusted to imply it:
+    /// the token belongs to this **device** rather than to the person, and a person with two
+    /// phones has two of them. Which device is asking comes from the signature; which device the
+    /// token is for is what the body says.
+    ///
+    /// `environment` and `kind` are not defaulted here. The service reads an omitted `kind` as
+    /// `alert`, which is the right reading of an older client and the wrong one for this: a VoIP
+    /// token filed as an alert token is a phone that is never rung for a call. And the
+    /// environment is the one whose APNs minted the token — the wrong one is refused at APNs
+    /// with no one told, so it is a parameter rather than something guessed at here.
+    @discardableResult
+    func uploadPushToken(deviceId: String, token: String, environment: String, kind: String) async throws -> Bool {
+        let ack = try await send(
+            request("POST", "api/devices/push-token", body: [
+                "deviceId": deviceId,
+                "token": token,
+                "environment": environment,
+                "kind": kind,
+            ]),
+            as: PushTokenAck.self
+        )
+        log("  filed this device's \(kind) push token for the \(environment) environment: saved=\(ack.saved)")
+        return ack.saved
+    }
+
     /// `POST /api/devices/enrollment` — an invitation for one more device of this person's.
     ///
     /// The body is empty and the invitee is not a parameter, both deliberately: whose invitation
@@ -706,6 +738,15 @@ final class FamilyCallClient {
 /// `GET /api/calls/:id` and `/end` answer `{call}` with no `joinUrl`.
 private struct CallOnlyEnvelope: Decodable {
     let call: FamilyCall
+}
+
+/// `POST /api/devices/push-token` answers `{"saved": true}`.
+///
+/// Decoded rather than assumed from the status. The status is about the request; this field is
+/// about the token, and the log line that reports it is the only place on the device that says
+/// whether the service kept the address it was given.
+private struct PushTokenAck: Decodable {
+    let saved: Bool
 }
 
 // MARK: - Decoding the event stream

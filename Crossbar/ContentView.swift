@@ -2,16 +2,18 @@ import SwiftUI
 
 /// The app root.
 ///
-/// Owns the one call session and shows whichever screen that state calls for, so no
-/// screen has to know how another is reached — and so there is exactly one place that
-/// decides what "in a call" looks like.
+/// Shows whichever screen the one call session calls for, so no screen has to know how another
+/// is reached — and so there is exactly one place that decides what "in a call" looks like. The
+/// session itself is not created here: it is `CallSession.shared`, because the app delegate
+/// needs the same one before this view exists — a locked phone rings because a VoIP push reports
+/// the call, and that happens at a launch that may show no screen at all.
 ///
 /// It also decides whether there is anything to show at all: until someone has said
 /// whether this device belongs to a household's own network or to a server at a hostname,
 /// the app has no route to dial and asks. That answer is read here rather than through the
 /// session, because it is the thing that decides whether the session has anything to load.
 struct ContentView: View {
-    @StateObject private var session = CallSession()
+    @StateObject private var session = CallSession.shared
 
     /// Seeded from what is stored, then kept here: the onboarding screen is the only thing
     /// that changes it while this view is on screen, and it says so through `onChoose`.
