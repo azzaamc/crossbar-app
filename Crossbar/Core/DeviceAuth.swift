@@ -28,7 +28,6 @@ final class DeviceAuth: ObservableObject {
 
     /// Mirrored for the views, which cannot observe `DeviceIdentity` through this object.
     @Published private(set) var deviceId: String?
-    @Published private(set) var deviceName: String?
     @Published private(set) var isEnrolled = false
 
     /// Where the enrolment, challenge and session requests leave by.
@@ -136,7 +135,7 @@ final class DeviceAuth: ObservableObject {
             throw DeviceAuthError.malformed("The service enrolled this device but did not name it.")
         }
 
-        identity.enroll(as: id, name: device["name"] as? String ?? DeviceIdentity.defaultDeviceName)
+        identity.enroll(as: id)
         serverUsesDeviceAuth = true
         mirrorIdentity()
 
@@ -245,7 +244,6 @@ final class DeviceAuth: ObservableObject {
 
     private func mirrorIdentity() {
         deviceId = identity.deviceId
-        deviceName = identity.deviceName
         isEnrolled = identity.isEnrolled
     }
 

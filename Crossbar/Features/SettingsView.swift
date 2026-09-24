@@ -14,15 +14,6 @@ struct SettingsView: View {
     @ObservedObject var session: CallSession
     @ObservedObject private var deviceAuth = DeviceAuth.shared
 
-    /// The connection mode, as this screen is showing it.
-    ///
-    /// Kept here rather than read from the setting on every pass, because the setting is written
-    /// by the screen this one pushes: a value that screen changed is not one this screen is told
-    /// about, and a row read straight from the defaults would go on describing the mode that was
-    /// in force when Settings was opened. It is seeded on the way in, and the pushed screen
-    /// reports what it stored.
-    @State private var mode = AppSettings.connectionMode
-
     @State private var confirmingSignOut = false
     @State private var confirmingForgetDevice = false
     @State private var enrollmentCode = ""
@@ -76,7 +67,11 @@ struct SettingsView: View {
             }
 
             if deviceAuth.isEnrolled {
-                LabeledContent("This device", value: deviceAuth.deviceName ?? "Enrolled")
+                // The name the system has for this device, read now rather than replayed from
+                // what enrolment stored: renaming the phone is something a person does once and
+                // would expect to see here without enrolling the device again. It is also the
+                // name the service holds, because enrolment sends this same value.
+                LabeledContent("This device", value: DeviceIdentity.defaultDeviceName)
                     .accessibilityIdentifier("settings.deviceName")
 
                 Button("Forget this device", role: .destructive) {
@@ -131,8 +126,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("You")
-        } footer: {
-            Text("Your name comes from your Crossbar. This device holds a key it made itself.")
         }
     }
 
@@ -143,15 +136,11 @@ struct SettingsView: View {
             LabeledContent("Crossbar", value: serverName)
                 .accessibilityIdentifier("settings.serverName")
 
-            LabeledContent("Status", value: connectionWord)
-                .accessibilityIdentifier("settings.connectionMode")
-
             NavigationLink("Change server") {
                 // The mode is stored, not bound, so the root screen — which loads whenever the
                 // mode changes — cannot see a change made here: it was not the one that changed
-                // it. So this screen asks for the reload itself and takes back what was chosen.
-                OnboardingView { chosen in
-                    mode = chosen
+                // it. So this screen asks for the reload itself rather than waiting to be told.
+                OnboardingView { _ in
                     Task { await session.load() }
                 }
             }
@@ -169,10 +158,6 @@ struct SettingsView: View {
             }
         } header: {
             Text("Crossbar Server")
-        } footer: {
-            Text(mode?.summary
-                 ?? "This app reaches one Crossbar server: your household's. The code you were "
-                 + "sent points it there.")
         }
     }
 
@@ -180,17 +165,6 @@ struct SettingsView: View {
     private var serverName: String {
         let address = AppSettings.serviceAddress ?? FamilyCallService.compiledDefault.absoluteString
         return URL(string: address)?.host ?? address
-    }
-
-    /// Whether this device can reach its server, in a word.
-    private var connectionWord: String {
-        switch session.phase {
-        case .ready: return "Connected"
-        case .loading: return "Connecting…"
-        case .needsLogin: return "Waiting for approval"
-        case .ringing, .outgoing, .inCall: return "In a call"
-        case .failed: return "Not connected"
-        }
     }
 
     // MARK: - Privacy
@@ -246,9 +220,6 @@ struct SettingsView: View {
                 .accessibilityIdentifier("settings.signOut")
         } header: {
             Text("Advanced")
-        } footer: {
-            Text("If Crossbar is not connecting, this is where to look. The line above is what "
-                 + "the server said when it last refused.")
         }
     }
 

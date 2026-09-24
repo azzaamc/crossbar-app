@@ -134,12 +134,20 @@ struct PresenceDot: View {
 
 /// Somebody you can call, as a row.
 ///
-/// Takes what it needs and nothing more: a name, whether they are on Crossbar, and what to do
-/// when the row is tapped. It deliberately does not take the session, so that the layout of a
-/// list of people can be seen — and changed — without a service to talk to.
+/// Takes what it needs and nothing more: a name, whether they are on Crossbar, where they are
+/// in words, and what to do when the row rings them. It deliberately does not take the session,
+/// so that the layout of a list of people can be seen — and changed — without a service to talk
+/// to.
+///
+/// There is no chevron and nothing to tap through to. A row here already does the one thing
+/// this app does to a person, and the page that used to sit behind it held nothing else.
 struct PersonRow: View {
     let name: String
+    /// Whether their app is open, for the dot. `status` says the same thing and more; this is
+    /// the half a glance can take in.
     let isOnline: Bool
+    /// Where they are, in words — "On Crossbar now", or when they were last seen.
+    var status: String = ""
     /// Called when a call button beside the row is tapped, never when the row is. `true` is a
     /// video call.
     ///
@@ -157,14 +165,19 @@ struct PersonRow: View {
                 PresenceDot(isOnline: isOnline)
             }
 
-            Text(name)
-                .font(.body.weight(.medium))
-                .lineLimit(1)
-                // The dot is the only place this app says whether somebody's app is open, and
-                // a dot is nothing to a screen reader. The meaning rides on the name instead,
-                // so the row says it whether or not it can be seen — and it says that much and
-                // no more, because calling this person works whether or not they are here.
-                .accessibilityLabel("\(name), \(isOnline ? "on Crossbar now" : "not on Crossbar now")")
+            VStack(alignment: .leading, spacing: Theme.Space.hairline) {
+                Text(name)
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
+                Text(status)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            // One thing to listen to rather than two. The status already says what the dot
+            // means, and a name followed by a fragment about the same person is a row that has
+            // to be puzzled at rather than heard.
+            .accessibilityElement(children: .combine)
 
             Spacer(minLength: Theme.Space.tight)
 
@@ -199,8 +212,8 @@ struct PersonRow: View {
 
 #Preview("People") {
     List {
-        PersonRow(name: "Mum", isOnline: true) { _ in }
-        PersonRow(name: "Dad", isOnline: false) { _ in }
-        PersonRow(name: "Abdullah", isOnline: true) { _ in }
+        PersonRow(name: "Mum", isOnline: true, status: "On Crossbar now") { _ in }
+        PersonRow(name: "Dad", isOnline: false, status: "Last seen 4 hours ago") { _ in }
+        PersonRow(name: "Abdullah", isOnline: false, status: "Not on Crossbar now") { _ in }
     }
 }

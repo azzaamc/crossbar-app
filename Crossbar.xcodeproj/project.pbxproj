@@ -52,7 +52,6 @@
 		5F2B24B3305C0E17003DE8DC /* Exceptions for "Crossbar" folder in "Crossbar" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Crossbar.entitlements,
 				Info.plist,
 			);
 			target = 5F8EA679305AAF08005261F6 /* Crossbar */;

@@ -27,7 +27,6 @@ enum AppSettings {
         static let deviceSigningKey = "crossbar.device.signingKey"
         static let deviceSigningKeyHandle = "crossbar.device.signingKeyHandle"
         static let deviceID = "crossbar.device.deviceId"
-        static let deviceName = "crossbar.device.deviceName"
         static let deviceSessionToken = "crossbar.device.sessionToken"
         static let deviceSessionIssuedAt = "crossbar.device.sessionIssuedAt"
         static let deviceSessionExpiresAt = "crossbar.device.sessionExpiresAt"

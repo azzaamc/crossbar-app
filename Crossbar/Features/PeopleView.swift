@@ -16,12 +16,12 @@ struct PeopleView: View {
 
             Section {
                 ForEach(session.contacts) { contact in
-                    NavigationLink {
-                        PersonDetailView(session: session, contact: contact)
-                    } label: {
-                        PersonRow(name: contact.displayName, isOnline: contact.online) { video in
-                            session.placeCall(to: contact, video: video)
-                        }
+                    PersonRow(
+                        name: contact.displayName,
+                        isOnline: contact.online,
+                        status: presence(of: contact)
+                    ) { video in
+                        session.placeCall(to: contact, video: video)
                     }
                 }
             } header: {
@@ -33,6 +33,23 @@ struct PeopleView: View {
         .navigationTitle("People")
         .refreshable { await session.refresh() }
         .overlay { emptyState }
+    }
+
+    /// Where somebody is, in words.
+    ///
+    /// This is the one thing the person screen held that this list did not, and the screen is
+    /// gone — a row here already rings somebody, so a page whose only other content was a way
+    /// to ring them was a tap that bought nothing. What was worth keeping is this: the dot
+    /// beside the name is the glanceable half, and this is the half that says *when*.
+    ///
+    /// Deliberately not called reachability, and not a statement about whether a call would
+    /// work. A call rings their phone through a push whether or not Crossbar is open on it, so
+    /// there is no state of theirs in which calling them fails to arrive. What being on
+    /// Crossbar now tells you is the other thing: that they are likelier to pick up.
+    private func presence(of contact: FamilyContact) -> String {
+        if contact.online { return "On Crossbar now" }
+        if let ago = Reading.ago(contact.lastSeen) { return "Last seen \(ago)" }
+        return "Not on Crossbar now"
     }
 
     /// Why the list might not be telling the whole truth, when it is not.

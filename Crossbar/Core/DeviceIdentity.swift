@@ -87,9 +87,6 @@ final class DeviceIdentity {
     /// The id the service issued for this device's public key.
     private(set) var deviceId: String?
 
-    /// The name the service holds for it.
-    private(set) var deviceName: String?
-
     private var key: SigningKey?
 
     /// Whether this device has both halves of an identity: a key, and an id for it.
@@ -106,7 +103,6 @@ final class DeviceIdentity {
 
     init() {
         deviceId = DeviceKeychain.string(for: AppSettings.Key.deviceID)
-        deviceName = DeviceKeychain.string(for: AppSettings.Key.deviceName)
         key = Self.loadKey()
     }
 
@@ -165,12 +161,14 @@ final class DeviceIdentity {
         key = .software(software)
     }
 
-    /// Records what the service issued for this device's key.
-    func enroll(as id: String, name: String) {
+    /// Records the id the service issued for this device's key.
+    ///
+    /// The name is deliberately not kept. It is a fact about the phone rather than about the
+    /// enrolment — iOS knows it and says so whenever it is asked — and a copy taken at
+    /// enrolment goes on describing a phone that has been renamed since.
+    func enroll(as id: String) {
         deviceId = id
-        deviceName = name
         DeviceKeychain.set(id, for: AppSettings.Key.deviceID)
-        DeviceKeychain.set(name, for: AppSettings.Key.deviceName)
     }
 
     /// Destroys this device's identity: the key, and everything the service issued for it.
@@ -183,10 +181,8 @@ final class DeviceIdentity {
         DeviceKeychain.remove(AppSettings.Key.deviceSigningKey)
         DeviceKeychain.remove(AppSettings.Key.deviceSigningKeyHandle)
         DeviceKeychain.remove(AppSettings.Key.deviceID)
-        DeviceKeychain.remove(AppSettings.Key.deviceName)
         key = nil
         deviceId = nil
-        deviceName = nil
     }
 
     // MARK: - Storage
