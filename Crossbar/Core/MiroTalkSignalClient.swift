@@ -117,7 +117,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     /// Who this peer appears as to the rest of the room.
     ///
     /// The standalone instrument labels itself `Crossbar A/B/C` because it is not an
-    /// authenticated client. The product flow sets the enrolled family display name,
+    /// authenticated client. The product flow sets the enrolled person's display name,
     /// which is what everyone else in the call actually sees.
     var peerName: String?
 
@@ -338,7 +338,7 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
 
     /// The payload shape is taken from the audited contract
     /// (`docs/MIROTALK_CORE_AUDIT.md`, "join payload"). `peer_name` is the enrolled
-    /// family display name in the product flow; the instrument falls back to its own
+    /// person's display name in the product flow; the instrument falls back to its own
     /// label because it is not an authenticated client.
     private func emitJoin() {
         let version = ProcessInfo.processInfo.operatingSystemVersionString
@@ -856,7 +856,7 @@ extension MiroTalkSignalClient: RTCPeerConnectionDelegate {
                 // The screen said "join sent — awaiting addPeer/serverInfo" for a whole
                 // call, because `state` was last written during the join and nothing
                 // moved it afterwards. A label that describes the join rather than the
-                // call is the same family of lie as a log line that reports a failure
+                // call is the same kind of lie as a log line that reports a failure
                 // without saying what failed.
                 self.state = "in a call"
                 self.startStatsPolling()

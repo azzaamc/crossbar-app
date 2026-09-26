@@ -45,7 +45,7 @@ Every requirement below is marked:
 | D1 | One person may use multiple devices, and the server can tell them apart. | **[GAP]** |
 | D2 | Call membership is **per device**, not per person. Measured failure: a call resolved from `/api/bootstrap` is identical for every client authenticating as the same person, so an Xcode preview appeared as a third participant in a real call (2026-09-18). The client had to invent a device-scoped `UserDefaults` key to compensate. | **[GAP]** — client workaround at `Core/CallSession.swift:102-122` |
 | D3 | A device has a stable identifier the server issues, used for resume, presence and push. | **[GAP]** |
-| D4 | Push credentials are per device and per environment (APNs sandbox vs production). | **[GAP]** |
+| D4 | Push credentials are per device and per environment (APNs sandbox vs production). | **[EXISTS]** as of 2026-09-24 — each device carries its own token and the environment that issued it (`push_token`/`push_environment`, `voip_token`/`voip_environment`), and APNs picks its host from that environment, because a token from a debug build is not valid at the production one. |
 | D5 | The server must tolerate the same person being signed in on a device that is not in the call: a second device must be able to ring, and must be able to be ignored. | **[GAP]** |
 
 ---
@@ -173,7 +173,7 @@ almost none of this (see the failure model in
 | # | Requirement | Status |
 | --- | --- | --- |
 | X1 | Foreground ringing over the event stream. | **[EXISTS]** |
-| X2 | **Background ringing for the native app.** Today it does not exist: iOS suspends the app, the socket dies, and only a push can wake it. The client can only find a waiting invitation by re-reading `/api/bootstrap` at launch, so a locked phone does not ring. | **[GAP]** — needs APNs/VoIP push plus a device-token model |
+| X2 | **Background ringing for the native app.** iOS suspends the app and its socket dies, so only a push can wake it; short of that, the client finds a waiting invitation only by re-reading `/api/bootstrap` at launch. | **[EXISTS]** as of 2026-09-24: the server files two tokens per device (`voip` for a ringing call, `alert` for a missed one), `admin.js devices` prints a **RING** column and `admin.js status` an **APNs** line, and a test call logged `push_dispatched … phones: 1, dropped: 0`. **Still unmeasured:** a ring arriving on an app that is closed — every ring observed so far has been with the app open. |
 | X3 | Ringing for the PWA via Web Push/VAPID. | **[EXISTS]** — credentials present, delivery logs show one failure |
 | X4 | The server must be able to ring **one person on all their devices** and stop ringing when one of them answers. | **[GAP]** |
 | X5 | A call that expired while a device was unreachable must be visible as a missed call rather than vanishing. | **[DECISION]** — `missed` exists as a status; there is no missed-call list UI |
@@ -197,7 +197,7 @@ Classification of what the server must keep, and where.
 | SDP / ICE payloads | **never stored** | privacy and size |
 
 Storage shape: the current deployment uses a single SQLite file in WAL mode with
-8 tables, which is proportionate to a household. **No requirement in this document
+8 tables, which is proportionate to a directory. **No requirement in this document
 justifies adding a second datastore, a cache, or a message bus.**
 
 ---
@@ -235,7 +235,7 @@ shared video playback, active-room listings, and MiroTalk's own browser client.
 
 Multi-region deployment, horizontal scaling, multi-process signalling, message
 brokers, external caches, Kubernetes, and enterprise tenancy are also
-non-requirements: the evidence supports a household of three people with 2–4 way
+non-requirements: the evidence supports a directory of three people with 2–4 way
 calls.
 
 ---
@@ -250,7 +250,7 @@ These cannot be settled by evidence; each changes the design materially.
 4. **Per-participant leave.** Add it (C5, N7), or keep call-wide end and accept that one person hanging up in a four-way call ends it for all?
 5. **TURN.** No relay (calls fail on restrictive NAT pairs), or operate one (requires a decision about who sees relayed media)?
 6. **The PWA's media engine.** Keep MiroTalk running for the PWA (no change), or replace/retire the PWA when MiroTalk goes away?
-7. **APNs.** Commit to a paid Apple Developer membership and a device-token model (X2), or ship with "the app must be open to ring"?
+7. **APNs.** Commit to a paid Apple Developer membership and a device-token model (X2), or ship with "the app must be open to ring"? — **taken**, 2026-09-24: the membership, the per-device token model and the APNs configuration all exist, and the push is dispatched and accepted; what is unmeasured is delivery to an app that is closed (X2).
 8. **Audio-only calls** (C10).
 
 Recommendations for each are in

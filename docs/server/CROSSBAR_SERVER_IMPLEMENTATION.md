@@ -17,23 +17,32 @@ Companions: [`CROSSBAR_SERVER_ARCHITECTURE.md`](CROSSBAR_SERVER_ARCHITECTURE.md)
 /Users/azzaam/Desktop/MASTER/PERSONAL/crossbar/server
 ├── src/
 │   ├── server.js      composition root: one process, one listener, one store
-│   ├── config.js      every process.env read; refuses a non-loopback bind
+│   ├── config.js      every process.env read; refuses a non-loopback bind; the mode switch
 │   ├── log.js         structured lines; redaction by construction
 │   ├── identity.js    who is asking — proxy header, loopback only, dev stand-in
+│   ├── auth.js        device keys: enrolment, challenge-response, sessions, revocation
+│   ├── directory.js   the directory file: what it may be, and every edit to it
 │   ├── db.js          SQLite: people, contacts, devices, calls, participants
 │   ├── calls.js       the call state machine, as pure functions
 │   ├── lifecycle.js   the rules — create, respond, join, invite, leave, end
 │   ├── events.js      the SSE stream and presence
 │   ├── signal.js      Engine.IO v4 / Socket.IO v5 subset, rooms, relay, limits
 │   ├── validate.js    per-event schemas
-│   ├── api.js         HTTP routes, SSE, static, security headers
-│   └── push.js        Web Push for browser clients
+│   ├── api.js         HTTP routes, SSE, static, security headers, the console's routes
+│   ├── ice.js         the ICE list each device is handed; relay credentials that expire
+│   ├── apns.js        APNs: ringing a phone that is asleep
+│   ├── push.js        Web Push for browser clients
+│   ├── diagnostics.js what `admin.js doctor` checks — DNS, TLS, HTTPS, WSS, STUN, TURN
+│   └── admin.js       the operator CLI, the mode switch among its commands
 ├── public/
 │   ├── call/          the browser call client (index.html, call.js, call.css)
+│   ├── admin/         the operator console: the same operations as the CLI, in a browser
 │   └── newcall.html   where the client lands after a call, which is how the PWA
 │                      knows the user hung up
-├── test/              38 tests over the state machine, HTTP, and the protocol
-├── data/              family.example.json (the shape), family.json (yours, untracked),
+├── deploy/            Caddy, coturn and the systemd units, the two mode units among them
+├── test/              131 tests over the state machine, HTTP, the protocol, device
+│                      identity, the directory file, push, and the two modes
+├── data/              directory.example.json (the shape), directory.json (yours, untracked),
 │                      crossbar.sqlite (created on run)
 └── .env               local development only
 ```
@@ -70,6 +79,18 @@ That route exists **only** when `ALLOW_DEV_IDENTITY` is set, only on a loopback
 listener, and only for a login that is already allowed. Production sets none of
 it; identity then comes from the proxy's injected headers, as it does today.
 
+A deployment, as opposed to a laptop, runs in **one of two modes**, and which one is
+a line in `.env` rather than a different build: `private` is reached through Tailscale
+Serve onto the loopback listener, `public` through a reverse proxy on a public
+hostname with a device key required. The mode is also what decides which front door is
+open, and the switch is automated rather than remembered — `node src/admin.js mode
+private|public`, or the same switch in the console, rewrites the generated block of
+`.env`, and the restart that follows puts the box into that mode's shape:
+`crossbar.service` wants two root oneshots, each gated on the mode the file holds, so
+exactly one of them stops the mode being left and opens the mode being entered. Nothing
+about the shape is remembered between starts. `deploy/README.md` is the operator's half
+of this — what each unit does, and the three traps found in making them behave.
+
 ---
 
 ## 3. What is different from what it replaces
@@ -77,7 +98,7 @@ it; identity then comes from the proxy's injected headers, as it does today.
 | | MiroTalk + Family Call | This server |
 | --- | --- | --- |
 | Processes | two | one |
-| Files that matter | 2,870-line `server.js` plus a 6-module control plane | 12 small modules |
+| Files that matter | 2,870-line `server.js` plus a 6-module control plane | 18 small modules |
 | Room/peer state | in memory, lost on restart, no call concept | in memory for presence, in SQLite for calls |
 | Joining a room | the room name is the credential | identity + participation in the call |
 | Relay | blind: any socket to any socket id, unsanitised, uncapped | participant-scoped, schema-validated, size-capped |
@@ -97,6 +118,10 @@ it; identity then comes from the proxy's injected headers, as it does today.
 node --test --test-timeout=15000
 # tests 39   pass 39   fail 0
 ```
+
+That is this section's checkpoint. The count has grown with every addition since,
+in the two later sections below — §8.5 records the next one at 66 — and `npm test`
+reports **131** as of 2026-09-24.
 
 Covering, with the ones that found real bugs called out:
 
@@ -174,8 +199,11 @@ Then, in the same call:
   and that is a media-plane gap rather than a server one.
 - **Web Push delivery.** The code path exists and reports itself disabled without
   VAPID keys; no notification has been delivered.
-- **APNs**, which the developer programme unlocks and which is what makes a locked
-  phone ring at all.
+- **A ring arriving on an app that is closed.** APNs is configured and a VoIP push is
+  dispatched and accepted by it (`push_dispatched … phones: 1, dropped: 0`,
+  2026-09-24), but every ring observed so far has been with the app open, so the
+  socket may have carried it. Delivery to a phone whose app is closed has not been
+  seen; see §8.8.
 
 ---
 
@@ -212,9 +240,9 @@ Recorded because each one is a thing the design had wrong:
    call through the frame with media crossing both ways.
 9. **Two deployment-hygiene faults**, found by deploying rather than by testing:
    the committed lockfile named the package by its pre-rename name, so every
-   `npm install` on the Pi rewrote it; and the household file was tracked, so the
+   `npm install` on the Pi rewrote it; and the directory file was tracked, so the
    deployment's real copy — the one naming actual people — showed up as a
-   modification. The lock is regenerated, `npm ci` is used, and the household file
+   modification. The lock is regenerated, `npm ci` is used, and the directory file
    is now untracked with a committed example beside it.
 
 10. **Safari's end-of-candidates looked malformed.** WebKit marks the end of its ICE
@@ -236,12 +264,15 @@ joins a call.
 
 ## 6. What is deliberately not built
 
-No TURN (a symmetric-NAT pair will fail, and says so), no ICE restart, no APNs
-delivery (the `devices` table holds the token and environment; the Apple
-membership does not exist), no media path of any kind, no cache, no queue, no
-second datastore, and none of MiroTalk's product surface — no chat, whiteboard,
-file transfer, recording, transcription, polls, lobby, room passwords, presenter
-role, or room listing.
+No TURN (a symmetric-NAT pair will fail, and says so), no ICE restart, no media path
+of any kind, no cache, no queue, no second datastore, and none of MiroTalk's product
+surface — no chat, whiteboard, file transfer, recording, transcription, polls, lobby,
+room passwords, presenter role, or room listing.
+
+APNs is no longer on that list. The key, the topic and a token per device exist, and a
+push is dispatched and accepted by APNs (2026-09-24). What is *not* claimed is delivery
+to an app that is closed, which no ring so far has exercised — §8.8 has the
+measurements.
 
 Audio-only calls have a `kind` column and no way to ask for it.
 
@@ -291,29 +322,58 @@ client → Internet → TCP 443 → Caddy (TLS, WSS, header hygiene) → 127.0.0
 ### 8.2 What an operator does
 
 ```bash
-node src/admin.js status                     # mode, origin, counts
+node src/admin.js status                     # mode, origin, counts, and whether APNs is configured
 node src/admin.js users                      # people, and who administers
 node src/admin.js enroll --user mum          # one-time invitation: JSON payload and token
 node src/admin.js enrollments                # every invitation and its state
-node src/admin.js devices                    # every device, with state and last seen
+node src/admin.js revoke-enrollment <id>     # withdraw one that has not been used
+node src/admin.js devices [--user <id>]      # every device: state, last seen, and whether it can be rung
+node src/admin.js rename-device <id> <label> # give a device a name a person recognises
 node src/admin.js revoke-device dev_xxx      # that device stops working; the person does not
+node src/admin.js remove-device dev_xxx      # take a revoked device out of the records
+node src/admin.js mode                       # both configurations, and which one is in force
+node src/admin.js mode private|public        # switch this deployment to that one
+node src/admin.js password                   # set the console's password, prompted
+node src/admin.js ring --from ringtest --to abdullah   # a test call, through the live server
 node src/admin.js doctor                     # DNS, TLS, HTTPS, WSS, STUN, TURN
 ```
 
+`ring` is the one command that exercises the whole path rather than one part of it: it
+places a call **through** the running server, over the loopback that server already
+treats as its proxy, so the sockets and APNs are both reached — a call made anywhere
+else would ring nothing, because the live process is the one holding the connections
+and the push credentials. `--from` has to be a person with a login, because a login is
+how a request is believed here, which is what the directory's one test person exists
+for (§8.8).
+
 The same operations exist over HTTP under `/api/admin/*` for an administrator — which
-is what the authorization tests exercise — and there is deliberately no admin web UI.
+is what the authorization tests exercise — and `public/admin/` is the same operations
+in a browser, served by this server on its own origin at `/admin` rather than by a
+second listener. The console authenticates with `CROSSBAR_ADMIN_PASSWORD_HASH` (set it
+with `node src/admin.js password`) so it is reachable from a browser that has enrolled
+no device key, and it is the place the directory, the contacts, the settings and the mode are
+edited. One edit it currently refuses in private mode — a directory that has a person without a
+login — is an open item, measured 2026-09-24 and written up in `deploy/README.md`. §8.8 records
+what the console shows about a device that cannot be rung.
 
 ### 8.3 Configuration reference
 
-New settings. Existing ones (`HOST`, `PORT`, `PUBLIC_ORIGIN`, `ICE_STUN_URL`,
-`DATA_DIR`, `FAMILY_CONFIG_PATH`, `WEB_ROOT`, `MAX_PARTICIPANTS`, `CALL_RING_SECONDS`,
-`ALLOW_SELF_CALLS`, `ALLOW_DEV_IDENTITY`, `DEV_IDENTITIES`, `AUTO_ENROL_IDENTITIES`)
-are unchanged, so an existing `.env` keeps working.
+New settings. The ones that describe the server rather than the way in (`HOST`, `PORT`,
+`ICE_STUN_URL`, `DATA_DIR`, `DIRECTORY_CONFIG_PATH`, `WEB_ROOT`, `MAX_PARTICIPANTS`,
+`CALL_RING_SECONDS`, `ALLOW_SELF_CALLS`, `ALLOW_DEV_IDENTITY`, `DEV_IDENTITIES`,
+`AUTO_ENROL_IDENTITIES`) are unchanged, so an existing `.env` keeps working for them.
+
+Where the deployment is reached moved into the mode's own block, which the switch copies
+into the generated section of the file: the origin the server acts on is
+`NETWORK_MODE_PRIVATE_ORIGIN` or `NETWORK_MODE_PUBLIC_ORIGIN`, with a plain `ORIGIN` as the
+override for a run that is not a deployment, and the hostname is `NETWORK_MODE_<MODE>_HOSTNAME`.
+The `PUBLIC_ORIGIN` line the generated section carries is that copy, not the input.
+`.env.example` shows where each of them goes.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CROSSBAR_NETWORK_MODE` | `private` | `private` or `public`; the trust posture |
-| `CROSSBAR_PUBLIC_HOSTNAME` | — | required in public mode; `PUBLIC_ORIGIN` must name it |
+| `CROSSBAR_PUBLIC_HOSTNAME` | — | the switch's copy of the mode block's hostname; required in public mode, where the origin must name it |
 | `CROSSBAR_REQUIRE_DEVICE_AUTH` | `true` public, `false` private | whether a device key is required, not merely available |
 | `CROSSBAR_SESSION_SECRET` | — | signs session tokens; required whenever device auth is on |
 | `CROSSBAR_SESSION_TTL_SECONDS` | `43200` | how long a session lasts |
@@ -326,7 +386,7 @@ are unchanged, so an existing `.env` keeps working.
 | `CROSSBAR_TURN_TTL_SECONDS` | `600` | lifetime of a relay credential |
 
 Unsafe combinations are **refused at startup** rather than warned about: public mode
-without a hostname or a session secret, `PUBLIC_ORIGIN` that does not name the public
+without a hostname or a session secret, an origin that does not name the public
 hostname, `TRUST_TAILSCALE_HEADERS` on in public mode, `ALLOW_DEV_IDENTITY` on in
 public mode, and a TURN host with no shared secret.
 
@@ -348,7 +408,7 @@ this change picks them up with no rebuild and no manual step.
   other device keeps working), authorization (a non-admin is refused; an administrator
   is not; a member cannot revoke somebody else's device), relay credentials (expiry,
   the HMAC shape coturn expects, refused with no session, refused for a revoked
-  device), and health. `test/family.test.js` adds three for the household file being
+  device), and health. `test/directory-store.test.js` adds three for the directory file being
   able to move a login between people.
 - The 40 pre-existing tests are unchanged and still pass — that is the private-mode
   regression, and it is the evidence that nothing about the current deployment moved.
@@ -382,7 +442,7 @@ this change picks them up with no rebuild and no manual step.
 - **A native-to-native call with media, 2026-09-21** — the first, and the case all the
   earlier ones missed by pairing a phone with a browser. Both ends iPhones; the callee
   admitted by her own device key (`signal_admitted … userId=mum
-  deviceId=dev_hHH6Gxo_QbDHdEaT`) and the caller on the tailnet identity her household
+  deviceId=dev_hHH6Gxo_QbDHdEaT`) and the caller on the tailnet identity her directory
   file names. Video ran both ways at 30 fps for about fifty seconds with no dropped
   frames. Both phones reached the server through the app's own embedded node, on their
   own tailnets — the arrangement the product intends, exercised end to end from a second
@@ -399,7 +459,7 @@ this change picks them up with no rebuild and no manual step.
   negotiated, the browser rendering both phones' video and each phone carrying a remote
   stream. One phone was admitted by its device key
   (`signal_admitted … userId=mum deviceId=dev_hHH6Gxo_QbDHdEaT`), the other on the
-  tailnet identity its household file names — the two ways in, in one room.
+  tailnet identity its directory file names — the two ways in, in one room.
 
 ### 8.6 Not verified
 
@@ -428,3 +488,48 @@ recorded here so it is not discovered twice.
 
 That matters for the shape of a public deployment: until then, enrolling a phone needs
 the app, and the browser client is a private-mode participant only.
+
+### 8.8 Push, the phones that cannot be rung, and the test person (2026-09-24)
+
+`POST /api/devices/push-token` files **two** tokens per device, in separate columns:
+`kind: "voip"` for a ringing call and `kind: "alert"` for a missed one. That split is what
+lets an operator see the failure that matters — `adminDevice` exposes `hasVoipToken`
+("whether this phone can be rung while it is asleep") beside `hasPushToken`,
+`admin.js devices` prints a **RING** column, `admin.js status` prints an **APNs** line, and
+the console's Devices table says `none` for a device that can be neither rung nor notified,
+where it used to draw the same empty cell a working phone got. All four exist because the
+state they report is otherwise invisible from the caller's end, where a phone that cannot be
+rung looks exactly like one nobody answered.
+
+The state is real and was measured. A phone that enrolled at 16:19 still had
+`voip_token = null` at 17:31, on a launch whose `presence_broadcast` proves the load
+itself was fine. The cause is in the app rather than here, but the shape of it is worth
+recording next to the column: PushKit announces the VoIP token once per launch, *before*
+any load runs, so a device enrolling during that launch is announced before it exists —
+the upload had nothing to file against — and the transport is not up yet either, so for a
+private deployment the request went out over the direct route to an address only the app's
+own network can resolve. The app now holds the token across both failures and files it
+once a load has settled, clearing it only when the service accepts it. The next launch
+filed it — `dev_RhB3R7UuH9TqbmBJ … RING yes` — and a test call produced
+`push_dispatched … phones: 1, dropped: 0`.
+
+`node src/admin.js ring --from <id> --to <id>` is the check for that path, and it needs no
+second person. It places a call **through** the live server over the loopback the server
+treats as its proxy, so both the sockets and APNs are reached. `--from` has to be a person
+with a login, and that is why the directory keeps one test person who has one: `ringtest`
+("Ring Test"), with the placeholder login `ringtest@example.com` and contacts with
+`abdullah`. The directory file as it was before that change is kept at
+`data/directory.json.before-ringtest`. Verified with it on 2026-09-24, in private mode:
+`call_created callerId="ringtest" inviteeIds=["abdullah"]` → `push_dispatched phones=1
+dropped=0` → `call_accepted userId="abdullah"` → `signal_admitted
+deviceId="dev_RhB3R7UuH9TqbmBJ" peers=1` → a browser joined as a second peer
+(`deviceId="web-dc8b12e1-…"`) → `call_ended` with both peers leaving cleanly. Ring, answer,
+signalling and a two-peer room all work in private mode.
+
+**Still unmeasured: a ring arriving on an app that is closed.** Every ring observed today
+happened with the app open, so the socket may have carried it. The push was dispatched and
+accepted by APNs; delivery to a locked phone has not been seen. The entitlement and the
+configuration were both verified and are both correct — the built app carries
+`aps-environment = development`, and the server reports `APNs configured
+(com.abdullahchaudhry.Crossbar)` — so the absence of a token was never about either of
+them.

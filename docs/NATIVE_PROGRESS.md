@@ -1,8 +1,9 @@
 # Crossbar native progress
 
-Last audited: 2026-09-17 (Asia/Karachi), except the push and notification path, which was
-re-verified against the project and against a device on 2026-09-24 — see the verification
-record for exactly which rows that covers.
+Last audited: 2026-09-17 (Asia/Karachi), except the push and notification path, the setup
+sequence and the embedded node's recovery, which were re-verified against the project and
+against a device on 2026-09-24 — see the verification record for exactly which rows that
+covers.
 
 ## Status in one sentence
 
@@ -15,12 +16,18 @@ carrying audio and video both ways.
 It **can** now be rung with the app closed, and told about a call it missed, on both sides
 of the wire: PushKit, the CallKit report, two device tokens filed separately, and the
 service's routes for them. Both tokens were filed from a signed build on a real device on
-2026-09-24, which is what the verification record below now shows. What has *not* been
-observed is delivery — no push has been seen arriving, so a ring on a locked phone and a
-missed-call notification are implemented but unmeasured. Shipping to anyone else needs a
-paid Apple Developer Program membership: the current free personal team provisions one
-device and expires every seven days. Instruments, reproduction commands and the list of
-what is *not* measured are in `ARCHITECTURE_B_PROBE.md`.
+2026-09-24 — but that was an earlier device, and the device enrolled at 16:19 that day had
+still filed no VoIP token at 17:31: PushKit announces a token once per launch *before any
+load runs*, so on a private deployment the announcement went out over the direct route to an
+address only the app's own network can resolve. The app now holds a token it could not file
+and files it once a load has settled, so the next launch filed it — `dev_RhB3R7UuH9TqbmBJ …
+RING yes` — and a test call produced `push_dispatched … phones: 1, dropped: 0`. What has
+*not* been observed is delivery — no push has been seen arriving, so a ring on a locked
+phone and a missed-call notification are implemented but unmeasured. Shipping to anyone else
+needs a paid Apple Developer Program
+membership: the current free personal team provisions one device and expires every seven
+days. Instruments, reproduction commands and the list of what is *not* measured are in
+`ARCHITECTURE_B_PROBE.md`.
 
 As of 2026-09-19 the app also **carries its own tailnet**, so it no longer needs the
 Tailscale app installed and signed in on the phone. `Core/TailnetNode.swift` brings up an
@@ -71,7 +78,7 @@ worktree.
 | Entitlements file | `Crossbar/Crossbar.entitlements` — `aps-environment` only, as `$(APS_ENVIRONMENT)` |
 | Capabilities | None toggled in the project; the APNs entitlement is written by hand in the entitlements file |
 | Background modes | `voip` and `audio`, declared in `Crossbar/Info.plist` |
-| PushKit/APNs | Implemented. `aps-environment` is per configuration (Debug → `development`, Release → `production`); a VoIP push rings a sleeping phone, and a second alert token carries a missed call. Both tokens are filed with the service — see the verification record for what has been observed |
+| PushKit/APNs | Implemented. `aps-environment` is per configuration (Debug → `development`, Release → `production`); a VoIP push rings a sleeping phone, and a second alert token carries a missed call. Both tokens are filed with the service, and a token PushKit announces before the app can file it — which is what every launch does — is held until a load has settled rather than dropped. See the verification record for what has been observed |
 | Packages | `stasel/WebRTC` 153.0.0 via SwiftPM, pinned in `Package.resolved` (revision `4266157c`). The xcframework is a binary artifact fetched at build time — not vendored in the repository |
 | Linked third-party frameworks | `WebRTC.framework` (BSD-3-Clause plus a Google patent grant), embedded in the app bundle and linked as `@rpath/WebRTC.framework/WebRTC` |
 | Persistence | None; no SwiftData/Core Data |
@@ -81,7 +88,7 @@ credentials in handoff documents. A Personal Team is sufficient for the next
 local physical-device probe, subject to Xcode provisioning.
 
 The iOS 27.0 minimum is inherited from the generated project. It has not been
-selected from the household device inventory and should not be treated as a
+selected from the directory device inventory and should not be treated as a
 product decision.
 
 ## Current file map
@@ -110,7 +117,7 @@ product decision.
 
 Compiled in Release as well as Debug — product code cannot depend on Debug-only files.
 
-- `Crossbar/Core/FamilyCallClient.swift`: the control plane — identity, contacts,
+- `Crossbar/Core/ServiceClient.swift`: the control plane — identity, contacts,
   create, respond, join, end, and the `/api/events` stream — plus `JoinTarget`, which
   recovers the room id and signalling origin from the `joinUrl`.
 - `Crossbar/Core/TailnetNode.swift`: the family network the app carries itself. Brings up
@@ -147,7 +154,7 @@ Reachable from Settings → Advanced → Instruments rather than owning the app.
   protocol does, with no control plane involved.
 - `Crossbar/Prototype/BackendReachabilityProbe.swift`: a bare `URLSession` GET used to
   establish that tailnet Serve injects the identity header for a non-browser client.
-- `Crossbar/Prototype/FamilyCallFlow.swift`: the control-plane debug surface, kept
+- `Crossbar/Prototype/CallFlow.swift`: the control-plane debug surface, kept
   because it exercises paths the product shell does not.
 - `Crossbar/Prototype/CallKitManager.swift`, `CallProbeModel.swift`,
   `WebMediaEngine.swift`, `RuntimeProbe.html`: the Architecture A probe, retained as
@@ -216,13 +223,15 @@ its entries have since been built; what follows is what is actually absent now.
 
 - **Inviting a second participant, and the group route.** Placement, answering, declining,
   rejoining and ending have all run for real calls. Nothing can start a call with more than
-  one invitee, and `FamilyGroup` is decoded and logged but never drawn.
+  one invitee, and `DirectoryGroup` is decoded and logged but never drawn.
 - **A push that has actually been delivered.** PushKit, APNs, both device tokens and the
   service's routes for them exist and are committed, and a signed build filed both tokens
-  against the service on a real device on 2026-09-24 — but no VoIP push and no missed-call
-  notification has been seen arriving, so whether a sleeping phone rings is not measured.
-  There is no notification-service extension, and neither push needs one: neither carries a
-  mutable payload.
+  against the service on a real device on 2026-09-24. A device enrolled later the same day
+  filed nothing until the app was changed to hold a token announced before any load could
+  file it; its next launch filed the VoIP token, and a test call dispatched a push. No VoIP
+  push and no missed-call notification has been seen *arriving*, so whether a sleeping phone
+  rings is not measured. There is no notification-service extension, and neither push needs
+  one: neither carries a mutable payload.
 - **Any measurement of video quality.** Rendering works; frame rate, resolution, latency
   and recovery from packet loss are unmeasured, and camera switching, orientation and
   size negotiation are untested.
@@ -388,6 +397,79 @@ What it does **not** establish:
   `simctl push` was attempted as a substitute and refused: "Repository could not save
   notification. Source is not authorized."
 
+### The device enrolled later that day, and the four faults it found (2026-09-24)
+
+A second device was set up against the private deployment later the same day, and it is the
+run behind the rest of this record. It filed no push token, and could not bring its network
+up at all until the state an earlier run had left behind was cleared. Four separate faults
+were behind that, and the ring at the end of this section is what says they are fixed.
+
+**A token announced before anything could file it.** PushKit announces the VoIP token once
+per launch, *before any load runs*, and both of the ways the upload can then fail are races
+the app loses by construction. A device that enrols during that same launch is announced
+before it exists, so the upload has nothing to file against; and the transport is not up
+yet, so on a private deployment the request leaves by the direct route, for an address only
+the app's own network can resolve. The token was dropped, and `AppDelegate`'s "the next
+launch is the retry" is false for a phone that is only backgrounded, because a backgrounded
+app is not launched again. Measured: a phone that enrolled at 16:19 still had `voip_token =
+null` at 17:31, on a launch whose `presence_broadcast` shows the load itself was fine. Now
+`CallSession.heldPushTokens` holds the token across **both** failures and
+`fileHeldPushTokens()` files it once a load has settled, clearing it only when the service
+accepts it — so a failure is retried by the next load rather than lost. Measured after the
+fix: the next launch filed it (`dev_RhB3R7UuH9TqbmBJ … RING yes`), and a test call produced
+`push_dispatched … phones: 1, dropped: 0`.
+
+**Setup enrolled before there was a network to enrol through.** The enrolment is the first
+request this app ever makes, and on a private deployment it can only be made through the
+network the app carries — so dialling it first meant the first screen anybody sees answered
+"could not reach the service". Now `DeviceAuth.settle(from:)` reads the code without
+dialling (the address and the mode it names), `CallSession.attachForSetup()` builds the
+network through the one place that chooses a route (`attachTransport`, the same decision a
+load makes), and `OnboardingView` enrols only after the carrier exists — showing the wait as
+itself, "Bringing up your private network…", and offering the Tailscale approval page on
+that screen.
+
+**`needsSetup` was never cleared.** `forgetServer()` set the flag and nothing unset it, and
+while it is set the root view shows onboarding *instead of* the app — so a device that was
+set up again finished onboarding onto a screen that put it straight back there, permanently,
+because the load that would have cleared the flag only runs in the branch the flag blocks.
+Measured: "You're in" arrived, the enrolment was done, and `/api/bootstrap` never ran. Now
+`CallSession.setupCompleted()` clears it, called from `ContentView`'s onboarding closure,
+because answering the question and being set up are the same moment.
+
+**The embedded node would not load the state it keeps its identity in.** A bring-up failure
+the framework reports as *local* — `connectionClosed`, `badInterfaceHandle`,
+`internalError` — means the node cannot load its state directory, and the existing
+one-rebuild recovery cannot fix that, because the rebuild reuses the very directory that
+will not load. Measured: a state directory two days old failed every bring-up with
+`TailscaleError` code 3 — `connectionClosed`, "The underlying connection was closed", thrown
+only by the local-API connection layer — until it was cleared. `TailnetNode.attach()` now
+clears the state and tries once more. A **posix** error is the network and is deliberately
+*not* cleared, because that would cost an approval and fix nothing. `TailnetNode.reset()` is
+the same clearing asked for by hand: it removes the state directory and any stored auth key,
+and it exists because `signOut()` needs a *running* node to ask, which a node that will not
+start cannot be. Deleting the app would work, and this is that without losing everything
+else on the device. The setup screen offers it when setup fails, with its cost stated — the
+device gets a new identity and must be approved again — and that button was also the evidence
+that the state directory was the cause: pressing it is what got past the failure.
+
+**And then it rang.** The fixed build was verified end to end in private mode, with the call
+placed from the service's own machine as `ringtest`, the directory's permanent test person:
+
+```
+call_created callerId="ringtest" inviteeIds=["abdullah"]
+push_dispatched phones=1 dropped=0
+call_accepted userId="abdullah"
+signal_admitted deviceId="dev_RhB3R7UuH9TqbmBJ" peers=1
+call_ended
+```
+
+A browser joined in the middle as a second peer (`deviceId="web-dc8b12e1-…"`), and both peers
+left cleanly at the end. Ring, answer, signalling and a two-peer room all work in private
+mode. What it does not show is delivery: the rings observed happened with the app **open**, so
+the socket may have carried them. The push was dispatched and accepted by APNs, and nothing
+has been seen arriving on a locked phone.
+
 ## Evidence classification
 
 | Capability | Compiled | Simulator tested | Physical iPhone tested |
@@ -412,7 +494,7 @@ What it does **not** establish:
 | Family Call control plane, call lifecycle (native) | Yes | — | **Yes, for what a two-person call runs** — two real calls to a real family member: `POST /api/calls` returned 201 with a `joinUrl`, the room was parsed from it, the invitee answered on MiroTalk's own browser client, `call-status` arrived as `active` over SSE, the native client joined the room, audio and video crossed both ways with the remote video rendered, and `POST /api/calls/:id/end` returned 200. `/join`, `/invite`, a decline and the group route remain unexercised |
 | Remote video rendering (native) | Yes | — | **Yes, on real calls** — a remote track from MiroTalk's own browser client decoded and drawn natively, showing a different person in a different room beside the local capture, alongside roughly 2.4 Mbps of inbound video measured per kind |
 | Product shell (native UI and CallKit) | Yes | — | **Yes** — a real call placed from the product UI through CallKit, answered on MiroTalk's own browser client, carrying audio and video both ways; ringing, accepting, declining and ending all verified on device, plus recovery of an invitation that arrived while the app was suspended. Audio-session configuration and speaker routing corrected, and confirmed by ear |
-| Incoming call while the app is suspended | Yes | — | **No, and not fixable in the client.** iOS suspends the app when the screen locks, which kills the signalling socket, and only a push can wake a suspended app. A locked phone does not ring until the app is opened — at which point the waiting invitation is found by re-reading `/api/bootstrap`. Needs APNs and a server-side device-token model, neither of which exists. **Superseded 2026-09-24:** both now exist and are committed, and a signed build on this same device filed both of its tokens with the service — so this row's "No" still stands as a *measurement*, but no longer as a statement about what the client can do |
+| Incoming call while the app is suspended | Yes | — | **No, and not fixable in the client.** iOS suspends the app when the screen locks, which kills the signalling socket, and only a push can wake a suspended app. A locked phone does not ring until the app is opened — at which point the waiting invitation is found by re-reading `/api/bootstrap`. Needs APNs and a server-side device-token model, neither of which exists. **Superseded 2026-09-24:** both now exist and are committed, and a signed build on an earlier device filed both of its tokens with the service — so this row's "No" still stands as a *measurement*, but no longer as a statement about what the client can do |
 | Room id parsed from the `joinUrl` | Yes | — | **Yes** — production `joinUrl`s from two real calls each yielded their room and signalling origin, and the client joined those rooms |
 | Native capture teardown (Architecture B spike) | Yes | — | **Yes** — after Stop, `capture stopped` is logged and the status-bar camera/mic privacy indicators are absent, which is the objective evidence capture was released. The preview keeps its last rendered frame, so the preview alone proves nothing |
 | Native in-call UI for a started call | Yes | Not supported | Not observed (P8.11) |
@@ -435,7 +517,10 @@ What it does **not** establish:
 | Picture-in-Picture on leaving a video call | Yes | — | **Yes, after two corrections** — `AVPictureInPictureVideoCallViewController` armed while the call screen is in front, so the system opens the window on backgrounding and closes it on return (AVKit does not dismiss it itself). The first version showed a **still picture** because a `RTCMTLVideoView` renders with Metal, which is not driven in the background; the window now uses an `AVSampleBufferDisplayLayer` fed by an I420→NV12 conversion, Apple's own recommendation for video-call PiP. It also took the **camera** away, because iOS 16 puts camera access in PiP behind `AVCaptureSession.isMultitaskingCameraAccessEnabled`; with that set, a call in PiP keeps transmitting — measured: 20 fps into the window with 0 dropped while backgrounded, and the far end's `currentTime` advancing throughout. Only a call with no window falls back to audio |
 | Background/lock/resume | Yes | No | **Revised 2026-09-19, and the earlier reading was incomplete** — the spike's `audioUnit=1` through lock and background was real but was measuring the seam loopback, which sets `isAudioEnabled` itself; the *call* path did not, so a probe call recorded and played nothing (`totalAudioEnergy` 0.000 in every poll) and iOS froze the process the moment the app was left: stats stopped, the far end's video froze, MiroTalk dropped the peer by +65 s. With audio actually running (manual-audio gate opened) **and** `audio` declared in `UIBackgroundModes`, the same swipe-away leaves the call up: 41 polls and 6 socket pings continued in the background, audio crossed both ways at ~6 KB per 3 s, `totalAudioEnergy` became non-zero, and video stopped on its own because iOS takes the camera. The far end was left staring at a frozen frame until camera status signalling was added, above |
 | Lock during a CallKit call | Yes | No | **No, and CallKit is the cause — measured 2026-09-20.** With a real two-party call up (a browser client answered a call the phone placed, two peers in the room, remote video rendering into PiP at 20 fps with 0 dropped), pressing the lock button ended the call: the app logged `callkit: performing end`, i.e. the system asked *it* to end the call, having delivered **no** `willResignActive` and **no** `didEnterBackground` first. The control is the same app, same day, same call, **with no CallKit call behind it** (the app had joined an active call of its own, and `CallKit` rejected the teardown as an unknown call): locking produced `device locked`, `resigning active` and `entered the background`, all with `phase=inCall`; unlocking produced `returning to the foreground` and `device unlocked`, the socket re-dialled, and the call was **still up** — the server logged `peer_left … ended=false` and then `call_joined … peers: 2`. So the lock costs the camera and the signalling socket, and recovers the socket on unlock; it does not end the call. CallKit **requires** the `voip` background mode (removing it fails `CXStartCallAction` with `requesttransaction error 1`, `Unentitled`, on the device), and that mode is meant to be PushKit-backed — which needs `aps-environment`, and so the paid membership. Fix deferred until then; the diagnostics that produced this live in `CallKitController` (a `CXCallObserver`, the app's state at the moment of an end action) and `CallSession.wireDeviceLock` |
-| PushKit/APNs | Yes | No | **Implemented and committed; delivery not observed.** The app starts the PushKit registry at launch and files both of its tokens — the VoIP one that rings it and an ordinary alert token for a call it missed — with the service. Measured on a signed build on a device, 2026-09-24: two `POST /api/devices/push-token` calls answered `HTTP 200 ... saved=true`, one per kind, both for the `sandbox` environment, followed by a normal session load. What no device has seen is a push being *delivered*, so the lock behaviour above is no longer blocked on a missing mechanism — it is unmeasured with one present |
+| PushKit/APNs | Yes | No | **Implemented and committed; delivery not observed.** The app starts the PushKit registry at launch and files both of its tokens — the VoIP one that rings it and an ordinary alert token for a call it missed — with the service. Measured on a signed build on a device, 2026-09-24: two `POST /api/devices/push-token` calls answered `HTTP 200 ... saved=true`, one per kind, both for the `sandbox` environment, followed by a normal session load. What no device has seen is a push being *delivered*, so the lock behaviour above is no longer blocked on a missing mechanism — it is unmeasured with one present. A device enrolled later the same day filed neither token until the app held one announced before a load could file it, and the launch after that filed the VoIP token |
+| Private-mode setup sequence | Yes | — | **Yes, 2026-09-24** — a device enrolled against the private deployment with its network brought up first: the screen showed that wait as itself ("Bringing up your private network…") and offered the Tailscale approval page on it, and the enrolment went out through the carrier. When the enrolment was dialled first, the same screen answered "could not reach the service" |
+| `needsSetup` cleared when onboarding finishes | Yes | — | **Yes, 2026-09-24** — a device that had been set up again opened onto the product, with `/api/bootstrap` running, once the flag was cleared from the onboarding closure. While nothing cleared it, the device finished onboarding onto the screen that returned it there for ever |
+| Embedded node recovery (state that will not load) | Yes | — | **Yes, 2026-09-24** — a state directory two days old failed every bring-up with `TailscaleError` code 3 (`connectionClosed`) until it was cleared. `TailnetNode.reset()` is the by-hand clear the setup screen offers, and `attach()` now attempts the same clear once, for the framework's local failures only |
 
 ## Immediate maintenance issue
 

@@ -12,7 +12,7 @@ import SwiftUI
 /// who is calling and offering to answer, so anything more here is the same news twice.
 struct IncomingCallView: View {
     @ObservedObject var session: CallSession
-    let call: FamilyCall
+    let call: Call
 
     private var caller: String { session.displayName(for: call.callerId) }
 

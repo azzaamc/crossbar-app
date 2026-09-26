@@ -163,7 +163,7 @@ struct SettingsView: View {
 
     /// The server's name as somebody would say it: the host, not the whole address.
     private var serverName: String {
-        let address = AppSettings.serviceAddress ?? FamilyCallService.compiledDefault.absoluteString
+        let address = AppSettings.serviceAddress ?? ServiceAddress.compiledDefault.absoluteString
         return URL(string: address)?.host ?? address
     }
 

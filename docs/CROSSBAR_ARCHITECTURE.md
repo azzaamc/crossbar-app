@@ -44,7 +44,7 @@ Family Call remains authoritative for:
 - opaque application call IDs and private MiroTalk room IDs;
 - participant invitations and authorization;
 - ringing, accept, decline, cancellation, missed-call expiry, and call status;
-- Web Push for the PWA and future native APNs registration/delivery;
+- Web Push for the PWA, and native APNs registration and delivery;
 - authenticated server-to-server calls to MiroTalk's loopback join API;
 - keeping the MiroTalk API secret off clients.
 
@@ -129,11 +129,27 @@ is why Family Call sends `name` to the join API and why the returned URL carries
 **Ringing has no native path.** Foreground ringing is SSE (`GET /api/events`);
 background ringing is W3C Web Push/VAPID with the credential stored as
 `{endpoint, p256dh, auth}` (`src/db.js:421-458`). APNs device tokens are a
-different credential class: there is no APNs table, route or client library
-anywhere, and `package.json` has exactly one dependency (`web-push`). CallKit plus
-PushKit therefore requires a device-token model server-side. This is consistent
-with PushKit being explicitly deferred; it is recorded here so the requirement is
+different credential class: at that audit there was no APNs table, route or client
+library anywhere, and `package.json` had exactly one dependency (`web-push`). CallKit plus
+PushKit therefore required a device-token model server-side. This was consistent
+with PushKit being explicitly deferred; it is recorded here so the requirement was
 not discovered late.
+
+**Corrected 2026-09-24: the device-token model exists, and the client files both tokens
+through it.** The service has `POST /api/devices/push-token`, which files two tokens per
+device — `kind: "voip"`, which rings a phone whose app is closed, and `kind: "alert"`, which
+carries a call it missed — so a device has two columns where this document recorded none,
+and `adminDevice` exposes `hasVoipToken` ("whether this phone can be rung while it is
+asleep") beside `hasPushToken`. The app starts the PushKit registry at launch and files
+both, holding a token PushKit announced before it could be filed until a load has settled,
+because PushKit announces once per launch and a phone that is only backgrounded is never
+launched again. The service reports `APNs configured (com.abdullahchaudhry.Crossbar)`, and
+the built app carries `aps-environment = development`. Measured on a real device on
+2026-09-24: a phone that enrolled at 16:19 had filed no VoIP token by 17:31, filed it on the
+next launch once the token was held, and a test call then logged `push_dispatched … phones:
+1, dropped: 0`. What remains unmeasured is delivery to a closed app — the rings observed
+happened with the app open, so the socket may have carried them. See `NATIVE_PROGRESS.md`,
+"The device enrolled later that day".
 
 **There is no leave — only a call-wide end.** `'left'` is a declared participant
 status (`src/db.js:9`) that is never written, `left_at` is only ever set to NULL,
@@ -218,7 +234,7 @@ must not automatically end the application call.
 - `CallKitManager` and AVAudioSession coordination;
 - app lifecycle and recovery policy;
 - user controls and Add Person;
-- future PushKit/APNs;
+- PushKit and APNs;
 - user-facing errors.
 
 ### Web runtime owns
@@ -797,7 +813,7 @@ path is not a fallback, it is the only path. See `TAILSCALE_KIT_PROBE.md`.
 **Decision:** Crossbar consumes server-supplied `iceServers` unchanged, as the audit
 advised. The consequence is recorded rather than glossed: a third-party STUN server
 observes each peer's reflexive address. That is accepted for now and should be
-revisited when real two-household calls exist to measure, or if TURN is introduced —
+revisited when real two-directory calls exist to measure, or if TURN is introduced —
 at which point short-lived credential design becomes the question.
 
 Sixteen specific divergence risks are catalogued in the audit, with the
@@ -826,7 +842,7 @@ independently of Crossbar.** The operative sentence carries no "public"
 qualifier: "if you modify the Program, your modified version must prominently
 offer all users interacting with it remotely through a computer network … an
 opportunity to receive the Corresponding Source of your version". The deployment
-is modified — the deliberate loopback bind — and is reached remotely by household
+is modified — the deliberate loopback bind — and is reached remotely by directory
 devices over Tailscale, which is a computer network. The artefact owed is the
 Corresponding Source **of the modified version**, so offering only the upstream
 commit would not satisfy it, and nothing in either repository records such an

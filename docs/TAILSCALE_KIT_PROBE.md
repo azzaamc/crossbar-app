@@ -734,6 +734,40 @@ after about a minute.
 the system Tailscale app's tunnel. That is how every earlier probe reached the backend,
 and it is the dependency this branch exists to remove.
 
+**The node is unusable when it cannot load the state it keeps its identity in, and that
+looks like the network (2026-09-24).** Measured on the device: a state directory two days
+old — `Documents/tailscale`, where the node keeps its machine key — failed *every* bring-up
+with `TailscaleError` code 3, `connectionClosed`, "The underlying connection was closed".
+That error is thrown only by the local-API connection layer, which is the tell: the node
+never got as far as an address of its own, so nothing about the wire contract or the control
+plane was involved, and the network underneath was fine.
+
+The recovery that existed could not help. Both of the rebuilds this branch relies on build a
+*new* node, and a new node reuses the same state directory, so a directory that will not
+load fails its replacement in exactly the same way. `CallSession.reverifyCarrier()` repairs
+a *stale loopback* on a node that is up; this one never came up at all. The state had to be
+deleted, and nothing in the app could do that, because `signOut()` asks a *running* node to
+forget its machine key and a node that will not start cannot be asked.
+
+Two things followed, both product code now:
+
+- **`TailnetNode.reset()`** clears the state directory and any stored auth key. It is the
+  recovery that needs no running node, and it is close to what deleting the app does — the
+  device gets a *new* identity in the tailnet and has to be approved again — without losing
+  everything else on the device. The setup screen offers it when setup fails, with that cost
+  stated. That button was also the evidence that the directory was the cause: pressing it is
+  what got past the failure.
+- **`TailnetNode.attach()` clears the state and tries once more** when the bring-up failed
+  with an error the framework reports as *local* — `connectionClosed`, `badInterfaceHandle`,
+  `internalError`, all of which mean the node could not get itself going, which is what an
+  unloadable state directory looks like from outside. A **posix** error is the network
+  underneath and is left alone: clearing the state for that would cost an approval and fix
+  nothing. `blamesStateDirectory` is that rule, in one place.
+
+What is measured here is the failure and the clear that got past it. The automatic
+clear-and-retry was added afterwards, for that same failure, and has not been provoked
+separately.
+
 ## Constraints found in the source, which shape the product
 
 1. **`up()` does not return until the node is authorised** — it blocks on login. An
@@ -844,32 +878,53 @@ and it is the dependency this branch exists to remove.
    created against the old one is dead the moment a rebuild happens, and a rebuild
    therefore has to be followed by re-establishing whatever was riding on it.
 
+11. **The node is up only after a load, and the app's first request at launch is not one a
+    load makes.** A private deployment is reached at an address only the node's own network
+    can resolve, so a request attempted before the carrier exists has nowhere to go. That is
+    not hypothetical: PushKit announces the VoIP token *before any load runs*, so the upload
+    went out over the direct route and the token was dropped — and nothing retries it,
+    because PushKit announces once per launch and a backgrounded app is never launched
+    again. Measured on 2026-09-24: a device enrolled at 16:19 had filed nothing by 17:31, on
+    a launch whose load itself was fine. The same ordering shapes a first run, where the
+    enrolment is the first request the app ever makes: the setup screen now brings the
+    network up before it dials, rather than sending the enrolment first and answering "could
+    not reach the service" on the first screen anybody sees. See `NATIVE_PROGRESS.md`, "The
+    device enrolled later that day".
+
 ## What is not measured
 
-- Whether the **product** dials through the node. The instrument's sockets do, and the
-  product's `FamilyCallClient` does not: `/api/session`, `/api/bootstrap` and the event
-  stream are still `URLSession.shared`, which is why the Family Call screen reports that
-  it cannot reach the service while the probe screen beside it is talking to the same
-  host through the node. That is a wiring task against the same `NodeSession`, not an
-  open question — but nothing about the product path is proven until it is done.
+- **Whether the product dials through the node — answered on 2026-09-19, and the answer is
+  yes.** When this list was written the instrument's sockets took the node while the
+  product's `FamilyCallClient` reached the network at four places on `URLSession.shared`,
+  which is why the Family Call screen reported that it could not reach the service while the
+  probe screen beside it was talking to the same host. `CallSession` now hands the one
+  carrier to both clients, and the product's own log shows all of it: `carried by the
+  embedded node — node 127.0.0.1:61174`, then `GET api/session -> HTTP 200`,
+  `GET api/bootstrap -> HTTP 200` and `GET api/events -> HTTP 200` (`NATIVE_PROGRESS.md`,
+  "Embedded node as the app's transport"). What remains unmeasured about the product's route
+  is not the route but its *timing* — the carrier exists only once a load has built it,
+  which is constraint 11 above.
 - Whether any of this holds for a call between **two devices on different networks**, one
   or both without the system Tailscale app. Two real devices have now been measured — the
   phone with no Tailscale app at all calling MiroTalk's own client on the Mac — but on one
-  LAN, where ICE nominated a host pair. The two-household case is where the
+  LAN, where ICE nominated a host pair. The two-directory case is where the
   STUN-versus-TURN question bites, and it needs two phones on two networks.
 - **What to do about media over the overlay.** This branch answers that it cannot ride
   the node as built, and the audit's STUN/TURN decision is unmoved by it: media still
   takes whatever ICE finds. Nothing here says which of a relay, TURN, or accepting the
-  public path is right for two households behind CGNAT.
+  public path is right for two directories behind CGNAT.
 - **What actually triggers the stale loopback.** 150 s survived, 600 s failed once and then
   succeeded on an identical repeat, and nothing in the logs separates the run that broke
   from the run that did not. Memory pressure is the obvious suspect — upstream's comment
   says the OS reclaims the listener, which is not a timer — and the useful number for the
   product would be the condition rather than the duration: a device that can name the
   trigger can decide when to verify, instead of verifying on every foreground.
-- Behaviour when the node is **not** available at launch — no network, control plane
-  unreachable, or the machine revoked. The instrument has only ever been run in the
-  happy path.
+- Behaviour when the node is **not** available at launch, with one case now measured. A node
+  whose state directory will not load is measured on 2026-09-24, above: the state is cleared
+  and the bring-up is retried once, and the setup screen can clear it by hand. Still
+  unmeasured: no network at all, the control plane unreachable, and a machine revoked in the
+  tailnet — the instrument has only ever been run where the node came up in the end, or where
+  its own state directory was what stopped it.
 - Four-peer behaviour, and app size on the App Store — the framework adds ~25 MB to the
   device binary.
 - The product question underneath all of this: whether every family member's device
@@ -881,18 +936,22 @@ and it is the dependency this branch exists to remove.
 The signalling path is proven and the system app is not needed for it, so what is left is
 narrower than it was.
 
-1. **Wire the product through the same `NodeSession`.** `FamilyCallClient` reaches the
-   network at four places, all `URLSession.shared`, and every one of them is a decision
-   about which tailnet carries the app: `send()` (which every JSON call funnels through),
-   `session()`, `pushConfig()`, and `events()` — the SSE stream opened with
-   `bytes(for:)`. The first three are the same shape as the signalling client's
-   `Transport` and should be mechanical. **The stream is the one to watch**: it is
-   long-lived, it is the only path an incoming call can take, and this project has already
-   lost a measurement to an SSE client that connected, reported HTTP 200, and delivered
-   nothing for twenty seconds. Whether the node's loopback proxy streams promptly or
-   buffers is unmeasured, and it is the first thing that wiring should log.
+1. **Wire the product through the same `NodeSession`.** *Done on 2026-09-19 — `CallSession`
+   hands the node's one carrier to both clients, so what follows is the reasoning that
+   shaped that wiring rather than work still outstanding, and the two behaviours it asks for
+   at the end (verify before dialling, rebuild on foreground when the verify fails) are
+   product code as well, in `CallSession.reverifyCarrier` and `TailnetNode.attach`.*
+   `FamilyCallClient` reached the network at four places, all `URLSession.shared`, and every
+   one of them was a decision about which tailnet carries the app: `send()` (which every JSON
+   call funnels through), `session()`, `pushConfig()`, and `events()` — the SSE stream opened
+   with `bytes(for:)`. The first three were the same shape as the signalling client's
+   `Transport`; **the stream was the one to watch**: it is long-lived, it was the only path an
+   incoming call could take, and this project has already lost a measurement to an SSE client
+   that connected, reported HTTP 200, and delivered nothing for twenty seconds. Whether the
+   node's loopback proxy streams promptly or buffers is unmeasured, and it is the first thing
+   that wiring should log.
 
-   Until it is done, the honest statement is that the *instrument* runs over the node —
+   Until it was done, the honest statement was that the *instrument* ran over the node —
    not the app. That boundary is measured rather than inferred, from one launch with the
    system app disconnected:
 
@@ -913,7 +972,7 @@ narrower than it was.
    intermittent and arrives without warning. The probe's gated path is the shape; the
    product's version of it is not optional.
 2. **Decide the media question on its own terms.** The node cannot carry media, so the
-   overlay is not what makes a two-household call work — the public STUN path is, exactly
+   overlay is not what makes a two-directory call work — the public STUN path is, exactly
    as before. The next measurement that would change anything is a call between two
    *different* phones with no shared LAN, where the only options are srflx hole punching
    or TURN.

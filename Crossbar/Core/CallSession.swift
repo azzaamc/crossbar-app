@@ -30,18 +30,23 @@ final class CallSession: ObservableObject {
     /// answer a call the user started.
     enum Phase: Equatable {
         case loading
-        /// The family network is waiting to be authorised. Not a failure and not a slow
+        /// The network is waiting to be authorised. Not a failure and not a slow
         /// load: nothing else can be attempted until a human opens the login page, so the
         /// screen has to say so. The URL itself is published separately, because it
         /// arrives while this phase is already in force.
         case needsLogin
+        /// The service has not answered, and the app has stopped waiting behind a launch
+        /// screen for it: the people it already has are shown while the attempts left run.
+        /// Not a failure — a failure is what this becomes when they are spent — and not
+        /// `.ready`, because nothing has been loaded.
+        case retrying(String)
         case ready
-        case outgoing(FamilyCall)
-        case ringing(FamilyCall)
-        case inCall(FamilyCall)
+        case outgoing(Call)
+        case ringing(Call)
+        case inCall(Call)
         case failed(String)
 
-        var call: FamilyCall? {
+        var call: Call? {
             switch self {
             case .outgoing(let call), .ringing(let call), .inCall(let call): return call
             default: return nil
@@ -50,8 +55,8 @@ final class CallSession: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .loading
-    @Published private(set) var me: FamilyUser?
-    @Published private(set) var contacts: [FamilyContact] = []
+    @Published private(set) var me: Person?
+    @Published private(set) var contacts: [Contact] = []
 
     /// Calls that have finished, newest first, for the Recents screen.
     ///
@@ -95,10 +100,10 @@ final class CallSession: ObservableObject {
     let media = CallMediaSource()
     let signal = MiroTalkSignalClient(label: "call")
 
-    private let client = FamilyCallClient()
+    private let client = ServiceClient()
     private let callKit = CallKitController()
 
-    /// The family network this app carries with it.
+    /// The network this app carries with it.
     ///
     /// Shared rather than owned: a node holds a device identity and a state directory, so
     /// one per process is the only arrangement that does not leave two of them fighting
@@ -110,7 +115,7 @@ final class CallSession: ObservableObject {
     /// new one, and everything dialling the old address has to be re-dialled.
     private var carrier: CallTransport?
 
-    /// The family network's state, mirrored for the views.
+    /// The network's state, mirrored for the views.
     ///
     /// Mirrored rather than read through `node` where it is drawn, because a nested
     /// `ObservableObject` does not republish: a screen observing this session would never
@@ -159,7 +164,7 @@ final class CallSession: ObservableObject {
 
     /// The call **this device** is in, if any.
     ///
-    /// Family Call's identity is a person, not a device: `/api/bootstrap` answers "am I
+    /// The service's identity is a person, not a device: `/api/bootstrap` answers "am I
     /// in a call?" identically for every client that authenticates as that person — a
     /// second phone, a simulator, an Xcode preview. So the server cannot tell this
     /// device whether *it* was in the call, and the client has to remember. Without
@@ -318,11 +323,21 @@ final class CallSession: ObservableObject {
         }
     }
 
+    /// Whether the app is still on its way to a first answer: the phases a load passes through
+    /// before it has either settled or failed.
+    private var isLoading: Bool {
+        switch phase {
+        case .loading, .retrying: return true
+        default: return false
+        }
+    }
+
     /// A short name for the phase, for a log line.
     private var phaseLabel: String {
         switch phase {
         case .loading: return "loading"
         case .needsLogin: return "needsLogin"
+        case .retrying: return "retrying"
         case .ready: return "ready"
         case .outgoing: return "outgoing"
         case .ringing: return "ringing"
@@ -376,7 +391,7 @@ final class CallSession: ObservableObject {
         pip.arm(track: track, sourceView: view)
     }
 
-    // MARK: - The family network
+    // MARK: - The network
 
     /// Follows the embedded node, and mirrors it for the screens.
     private func wireTailnet() {
@@ -391,7 +406,7 @@ final class CallSession: ObservableObject {
                 // Waiting for a human is a state to show rather than a slow load: nothing
                 // below can be attempted until someone authorises this device, so a screen
                 // that says "connecting" would be lying about what it is waiting for.
-                if url != nil, self.phase == .loading { self.phase = .needsLogin }
+                if url != nil, self.isLoading { self.phase = .needsLogin }
             }
             .store(in: &cancellables)
     }
@@ -432,7 +447,7 @@ final class CallSession: ObservableObject {
         if let call = phase.call, !signal.isSocketOpen { await resume(call) }
     }
 
-    /// How this app is reaching the family network, as one line for the screen.
+    /// How this app is reaching the network, as one line for the screen.
     ///
     /// Shown rather than only logged, because "which route is this actually using" has cost
     /// this project more measurements than any other question: the system Tailscale app is
@@ -461,7 +476,7 @@ final class CallSession: ObservableObject {
     /// The carrier everything in this app dials through.
     ///
     /// The node is the route a **private deployment** needs, not a thing this app does:
-    /// Family Call over a tailnet answers through Serve and nowhere else, so a client
+    /// The service over a tailnet answers through Serve and nowhere else, so a client
     /// without a node cannot reach it — while a server at a hostname has no network to
     /// carry and is reached the ordinary way. Which of those this device is in comes from
     /// `ConnectionMode`, and `TailnetNode.isEnabled` is where the two questions meet. A
@@ -483,6 +498,23 @@ final class CallSession: ObservableObject {
         let transport = try await node.attach()
         log("carried by the embedded node — \(transport.label)")
         return transport
+    }
+
+    /// Builds the route this device will dial through, for the screen that has to enrol before
+    /// there is anything to load.
+    ///
+    /// Onboarding runs before any load, so nothing has built a carrier yet — and on a private
+    /// deployment the enrollment is the *first* request that has to go through one. Built here
+    /// rather than by the screen, because `attachTransport` is the only thing that chooses a
+    /// route and a second chooser would be a second answer: this is that same decision, asked
+    /// early. Handing it out sets the clients' transports, which is what points the enrollment
+    /// at the node instead of at a route the node is not on.
+    ///
+    /// It returns only once the carrier has actually carried a request, so a device that has
+    /// never been authorised parks here — which is the point, and why the screen shows the
+    /// login page while this waits.
+    func attachForSetup() async throws {
+        hand(try await attachTransport())
     }
 
     // MARK: - CallKit wiring
@@ -559,7 +591,7 @@ final class CallSession: ObservableObject {
     /// needs rather than reading anything for itself.
     ///
     /// Reporting is only half of answering, though. CallKit can say a call exists while this app
-    /// knows nothing about it, and `accept()` responds to a `FamilyCall` — so the second half is
+    /// knows nothing about it, and `accept()` responds to a `Call` — so the second half is
     /// a load, which is what asks the service which call this person is invited to. `/api/bootstrap`
     /// is the only thing that says so, and it is asked here rather than waited for: the person
     /// may answer from the lock screen before the root view has even been built, and the answer
@@ -591,10 +623,48 @@ final class CallSession: ObservableObject {
         Task { await load() }
     }
 
+    /// Push tokens PushKit has given this app before it could file them.
+    ///
+    /// Held rather than dropped, because neither of the two ways an upload can fail is the
+    /// token's fault and neither is retried by anything else. PushKit announces once per launch —
+    /// so a token lost here is lost until the app is next launched, and a phone that is merely
+    /// backgrounded never is — and both failures are races this app loses by construction:
+    ///
+    ///  - **A device that enrols during the same launch** is announced before it exists, and the
+    ///    upload has nowhere to put it.
+    ///  - **A transport that is not up yet.** The upload is attempted the moment PushKit speaks,
+    ///    which is before any load has run, so for a private deployment it goes out over the
+    ///    direct route to an address that only resolves inside a network this app has not
+    ///    brought up. Measured 2026-09-24: a phone enrolled at 16:19 had filed nothing by 17:31,
+    ///    on a launch whose `presence_broadcast` proves the load itself was fine.
+    ///
+    /// Both are fixed by the same thing: keep it, and file it once a load has settled.
+    private var heldPushTokens: [String: String] = [:]
+
     /// Files this device's VoIP push token with the service, which is how a call reaches a phone
     /// whose app is closed. PushKit mints it, and a call this device has to report arrives on it.
     func uploadVoIPPushToken(_ token: String) async {
         await uploadPushToken(token, kind: "voip")
+    }
+
+    /// Files whatever PushKit has given this app that could not be filed at the time.
+    ///
+    /// Called once a load has settled, which is the first moment both halves are true: there is a
+    /// device to file against, and there is a transport that can carry the request. Nothing is
+    /// cleared unless the service accepted it, so a failure here is retried by the next load
+    /// rather than being another token this app threw away.
+    private func fileHeldPushTokens() async {
+        guard let deviceId = DeviceAuth.shared.deviceId, !heldPushTokens.isEmpty else { return }
+        for (kind, token) in heldPushTokens {
+            do {
+                try await client.uploadPushToken(deviceId: deviceId, token: token,
+                                                 environment: PushEnvironment.current, kind: kind)
+                heldPushTokens[kind] = nil
+                log("the \(kind) push token held from launch has been filed")
+            } catch {
+                log("could not file the held \(kind) push token: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Files this device's **alert** push token with the service, which is how a missed call
@@ -615,7 +685,7 @@ final class CallSession: ObservableObject {
     /// same.
     ///
     /// Asked through this session's client for the same reason the device invitation is: that
-    /// client carries the family network's own route, and one built in the push layer would dial
+    /// client carries the network's own route, and one built in the push layer would dial
     /// the system's route while everything else went down the node's. See
     /// `createDeviceInvitation`.
     ///
@@ -628,7 +698,8 @@ final class CallSession: ObservableObject {
     /// thing that has to happen is an enrollment, not another try.
     private func uploadPushToken(_ token: String, kind: String) async {
         guard let deviceId = DeviceAuth.shared.deviceId else {
-            log("a \(kind) push token arrived before this device is enrolled — nothing to file it under")
+            heldPushTokens[kind] = token
+            log("a \(kind) push token arrived before this device is enrolled — held until it is")
             return
         }
 
@@ -640,7 +711,12 @@ final class CallSession: ObservableObject {
                 kind: kind
             )
         } catch {
-            log("could not file this device's VoIP token: \(error.localizedDescription)")
+            // Held for the same reason as above, and this is the case that actually happens: at
+            // launch there is no carrier yet, so an upload attempted the moment PushKit speaks is
+            // a request over the direct route to an address only a network this app has not
+            // brought up can resolve. `fileHeldPushTokens` files it once a load has settled.
+            heldPushTokens[kind] = token
+            log("could not file this device's \(kind) push token: \(error.localizedDescription) — kept for the next load")
         }
     }
 
@@ -689,6 +765,9 @@ final class CallSession: ObservableObject {
     /// Three tries over about eight seconds covers what resolves on its own; the screen
     /// afterwards covers what does not, and now carries a way into Settings besides.
     private static let loadAttempts = 3
+    /// How many attempts are made before the app stops holding the screen. The rest are made
+    /// behind the app rather than in front of it.
+    private static let attemptsBeforeShowingTheApp = 2
     private static let loadRetryDelay = Duration.seconds(4)
 
     /// Asks for a load, joining one that is already running.
@@ -750,6 +829,16 @@ final class CallSession: ObservableObject {
                 lastReason = reason
             }
 
+            // Two attempts is as long as a launch screen is worth. Somebody who opened Crossbar
+            // to ring a house is better served by their people and an honest "not connected"
+            // than by a spinner that is telling them nothing — and the attempts left are still
+            // made, just not in front of a blank screen.
+            if attempt >= Self.attemptsBeforeShowingTheApp {
+                phase = .retrying(lastReason)
+                log("showing the app while it keeps trying — phase=retrying after "
+                    + "\(attempt) of \(Self.loadAttempts) attempts: \(lastReason)")
+            }
+
             guard attempt < Self.loadAttempts else { break }
             log("load attempt \(attempt) of \(Self.loadAttempts) did not get through — retrying")
             // A sleep that is cancelled throws, and that is the signal to stop quietly
@@ -757,6 +846,7 @@ final class CallSession: ObservableObject {
             if (try? await Task.sleep(for: Self.loadRetryDelay)) == nil { return }
         }
 
+        log("the load gave up after \(Self.loadAttempts) attempts — phase=failed: \(lastReason)")
         phase = .failed(lastReason)
     }
 
@@ -772,7 +862,15 @@ final class CallSession: ObservableObject {
     /// address, and it needs the screen that says so. Anything else is reported where the
     /// person already is — the list stays, and the connection is called out for what it is,
     /// the same way a dropped event stream is.
+    ///
+    /// The notice goes first, and that is the one thing this shares with `runLoad`: a notice
+    /// belongs to the load that published it, and a load the person asked for — this one — must
+    /// not leave the previous load's sentence on the screen as though this one had just said it.
+    /// A pull-to-refresh used to clear nothing at all, which is where the owner's report of
+    /// 2026-09-26 lands: after a move, a pull-to-refresh still showed the move's notice, and the
+    /// only thing that took it down was the next full load.
     func refresh() async {
+        notice = nil
         switch await attemptLoad() {
         case .settled, .cancelled:
             return
@@ -790,34 +888,189 @@ final class CallSession: ObservableObject {
         case retry(String)
     }
 
+    /// What one pass at the service did, and where the fault is if it did not finish.
+    ///
+    /// The four are not degrees of one failure. Two of them are about the **address** — it said
+    /// nothing, or it said no — and those are what a move this device followed has to be judged
+    /// by, because an address that will not take this device may be the wrong address rather than
+    /// the wrong device. The other two are about this device's own data, and neither implicates
+    /// the address.
+    private enum ReadOutcome {
+        /// The load finished, or was replaced. Either way this attempt is over.
+        case answered(LoadOutcome)
+        /// Nothing came back: no reply, or the request never completed.
+        case unanswered(String)
+        /// The address answered, and would not take this device.
+        case refused(String)
+        /// The address took this device; what went wrong came afterwards.
+        case failed(String)
+    }
+
     private func attemptLoad() async -> LoadOutcome {
-        // The family network comes first, because everything below it is tailnet-only and
+        // The network comes first, because everything below it is tailnet-only and
         // the carrier is now the app's own node rather than another app's tunnel.
-        do {
-            hand(try await attachTransport())
-        } catch {
-            if Self.isCancellation(error) { return .cancelled }
-            log("the network is not carrying anything: \(error.localizedDescription)")
-            // Waiting to be authorised is not a failure — it is a first run, and the screen
-            // for it is the login page. A node that is up but carries nothing is a failure,
-            // and `wireTailnet` has already set `.needsLogin` when a URL exists.
-            let waiting = tailnetLoginURL != nil && !node.state.isRunning
-            if waiting {
-                phase = .needsLogin
+        if let blocked = await attachRoute() { return blocked }
+
+        // Still nothing authenticated: a server that has moved under this device says where it
+        // went, and the address this device already holds is the only thing that can be asked —
+        // which is why the ask belongs here, before `/api/session` and before any request
+        // carries this device's identity. See `followMovedServer`.
+        if await followMovedServer() {
+            // The route follows the mode, and the mode has just changed under this load, so the
+            // carrier attached a moment ago belongs to the deployment being left. Asked again
+            // rather than kept: `attachTransport` is the only thing that chooses a route, and a
+            // node carried for the old mode is a second network on a device that no longer wants
+            // one.
+            if let blocked = await attachRoute() { return blocked }
+        }
+
+        switch await readService() {
+        case .answered(let outcome):
+            return outcome
+
+        case .failed(let reason):
+            // The service took this device, and what went wrong came afterwards. That is this
+            // device's own data rather than where it is dialling, so the address does not change
+            // because of it and another go from the same one is the right answer.
+            return .retry(reason)
+
+        case .unanswered(let reason):
+            // Nothing came back at all. This is the shape a front door that is not up yet arrives
+            // as — the connection is accepted and nothing is ever said — and it is one of the two
+            // ways a move this device followed fails.
+            guard let home = returnHome(because: reason) else { return .retry(reason) }
+            return await finishAt(home)
+
+        case .refused(let reason):
+            // An answer, and one that says this address will not take this device. Asking the same
+            // address again would only get it again, so unless there is somewhere to come back to
+            // — which there is only for a move this device followed — this is the end of the load:
+            // what has to change is the address or the device, and both live in Settings.
+            guard let home = returnHome(because: reason) else {
+                phase = .failed(refusal(authenticated: false))
                 return .settled
             }
-            return .retry("The network is up but not carrying anything.")
+            return await finishAt(home)
+        }
+    }
+
+    /// Finishes this attempt at the address this device came home to.
+    ///
+    /// Split out of `attemptLoad` for the reason `attachRoute` is: one attempt may make two passes
+    /// at the service. The second pass exists only for a move that was followed and then did not
+    /// work, and it is made here rather than left to the retry loop so that coming back costs this
+    /// attempt instead of the two after it — the loop's attempts are for a service that is still
+    /// coming up, and a move to an address that answers with nothing is not that. Both ways an
+    /// address can fail arrive here, because from the device's side they are one fact.
+    private func finishAt(_ home: String) async -> LoadOutcome {
+        // The route came home with the address, so it is taken again before anything is dialled:
+        // `attachTransport` is the only thing that chooses one, and the mode a move changed is half
+        // of that choice.
+        if let blocked = await attachRoute() { return blocked }
+        switch await readService() {
+        case .answered(.settled):
+            log("the load finished at \(home) after all — this device is where it was")
+            return .settled
+        case .answered(let outcome):
+            return outcome
+        case .failed(let reason), .unanswered(let reason):
+            return .retry(reason)
+        case .refused:
+            // Home will not take this device either, and that is not about a move: it is this
+            // device and the service it was enrolled with, which is the answer the failure screen
+            // has always given.
+            phase = .failed(refusal(authenticated: false))
+            return .settled
+        }
+    }
+
+    /// Comes back to the address this device was dialling before it followed a move.
+    ///
+    /// Answers where it went, or `nil` when no move is outstanding and there is therefore nothing
+    /// to undo — the caller then answers the failure the way it always has.
+    ///
+    /// The way home is read back out of the settings rather than carried in memory, so it is still
+    /// there for the cases that outlive the load which wrote it: a device killed between adopting
+    /// an address and loading it, and a load cancelled in between by a mode change, both come back
+    /// here on their next attempt instead of staying on the address they followed.
+    private func returnHome(because reason: String) -> String? {
+        guard let home = AppSettings.previousServiceAddress else { return nil }
+        let lost = AppSettings.serviceAddress ?? "the address it followed"
+
+        // What the device is coming home *from* is kept, in the same canonical spelling the move
+        // comparison reads, so the next load recognises the address the deployment names as one
+        // this device has already tried rather than hearing about it for the first time. Cleared
+        // by the ways out of it — a different address named, the move landing, a device set up
+        // again — never by simply having failed once.
+        AppSettings.abandonedServiceAddress = AppSettings.serviceAddress
+        AppSettings.serviceAddress = home
+        // The mode comes home with the address: it was changed by the same answer, and the route
+        // everything dials is chosen from it.
+        AppSettings.connectionMode = AppSettings.previousConnectionMode
+        AppSettings.forgetPreviousAddress()
+
+        // What the person is told, and why in these words: this app did what the deployment asked
+        // of it and the address it was sent to did not work, so the failure belongs to the move
+        // rather than to them, and nothing about it is theirs to fix.
+        notice = "Your Crossbar appeared to have moved, so this app followed it — but the new "
+            + "address did not work, and this app has come back to the one it was using. "
+            + "Nothing here needs doing."
+        log("\(lost) did not work (\(reason)) — back to \(home), which is where this device "
+            + "came from")
+        return home
+    }
+
+    /// Forgets the address this device came from, now that the address it followed has answered
+    /// for it.
+    ///
+    /// The other half of `returnHome`, and the reason following a move is safe to do at all: the
+    /// way home is kept for exactly as long as it might be needed, which is until the service at
+    /// the new address has taken this device.
+    private func forgetMove() {
+        guard let home = AppSettings.previousServiceAddress else { return }
+        AppSettings.forgetPreviousAddress()
+        // The move landed, so there is nothing left that this device tried and came home from:
+        // whatever is held here is an address it has already left behind, and holding it could
+        // only suppress the next move the deployment makes.
+        AppSettings.abandonedServiceAddress = nil
+        log("the address this app followed answered for this device — forgetting \(home), which "
+            + "was the way back")
+    }
+
+    /// One pass at the service itself: the session, and then everything a loaded app needs from it.
+    ///
+    /// The distinction between the ways it fails is the whole of the recovery above. A service that
+    /// does not answer, or that answers and will not take this device, has said something about the
+    /// **address** — the one thing a followed move has to be judged by, and the one thing this
+    /// device keeps a second answer for (`returnHome`). Anything that goes wrong after the session
+    /// is this device's own data, and moving the address would be answering the wrong question.
+    private func readService() async -> ReadOutcome {
+        let session: (authenticated: Bool, configured: Bool, name: String?)
+        do {
+            session = try await client.checkSession()
+        } catch {
+            if Self.isCancellation(error) { return .answered(.cancelled) }
+            log("load failed: \(error.localizedDescription)")
+            return .unanswered(error.localizedDescription)
+        }
+        guard session.authenticated else {
+            // An answer, and one about this device rather than about its data: the address heard
+            // the request and would not take the caller.
+            log("the service answered and would not take this device")
+            return .refused("The service did not accept this device.")
+        }
+        // The address this device is dialling has now answered *for it*, which is the whole of what
+        // "the move worked" can mean before the rest of a load has run, so the address it came from
+        // is forgotten here. Deliberately before the check below: whether this service has anywhere
+        // to put this device is a question about the device, and a server that accepted it has
+        // settled the only question the way home was kept for.
+        forgetMove()
+        guard session.configured else {
+            phase = .failed(refusal(authenticated: true))
+            return .answered(.settled)
         }
 
         do {
-            let session = try await client.checkSession()
-            guard session.authenticated, session.configured else {
-                // A refusal is an answer, and asking again would only get it again: what has
-                // to change is the address or the device, and both live in Settings.
-                phase = .failed(refusal(authenticated: session.authenticated))
-                return .settled
-            }
-
             let bootstrap = try await client.bootstrap()
             me = bootstrap.user
             contacts = bootstrap.contacts
@@ -827,10 +1080,18 @@ final class CallSession: ObservableObject {
             // and the app has no other way to find out: the address changes with the mode, so a
             // device left pointing at the old one is a device nobody can reach to tell.
             //
+            // The second ask of the same route in one load, and not a duplicate of the one
+            // above: that one is what lets a device *follow* a move, and this one is the check
+            // for a move it could not follow — a server too old to name its `origin`, whose
+            // switch therefore still ends in being set up again. Asked after authenticating
+            // because this is the comparison that is worth making only once the device has been
+            // let in: a refusal the device got instead is about whether it belongs, not about
+            // where it is.
+            //
             // A refusal here is not a failure — a server that does not answer this is a server
             // this app can still use, and `serverMovedTo` stays as it was.
-            if let reported = try? await client.serverMode() {
-                let server = ConnectionMode.named(by: reported)
+            if let health = try? await client.health() {
+                let server = ConnectionMode.named(by: health.mode)
                 // Only a device that *knows* what it was set up for can have been moved: one that
                 // has never settled on a mode is not displaced by anything, it is the state the
                 // onboarding screen exists for, and it has a screen of its own already.
@@ -844,6 +1105,10 @@ final class CallSession: ObservableObject {
             }
 
             phase = .ready
+            // Before the event stream, so a device that enrolled a moment ago — the launch
+            // PushKit announced a token on, which is when this happens — is ringable by the time
+            // anything can try to ring it.
+            await fileHeldPushTokens()
             startEvents()
 
             history = (try? await client.callHistory()) ?? []
@@ -854,11 +1119,196 @@ final class CallSession: ObservableObject {
             // was down.
             await adopt(bootstrap)
 
-            return .settled
+            return .answered(.settled)
+        } catch {
+            if Self.isCancellation(error) { return .answered(.cancelled) }
+            log("load failed: \(error.localizedDescription)")
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    /// Attaches the carrier the current mode asks for, or says why the load cannot go on.
+    ///
+    /// Answers `nil` when the route is carrying. Split out of `attemptLoad` because one attempt
+    /// may attach twice: a server that turns out to have moved changes the mode, and the mode is
+    /// half of what chooses the route (see `followMovedServer`).
+    private func attachRoute() async -> LoadOutcome? {
+        do {
+            hand(try await attachTransport())
+            return nil
         } catch {
             if Self.isCancellation(error) { return .cancelled }
-            log("load failed: \(error.localizedDescription)")
-            return .retry(error.localizedDescription)
+            log("the network is not carrying anything: \(error.localizedDescription)")
+            // Waiting to be authorised is not a failure — it is a first run, and the screen
+            // for it is the login page. A node that is up but carries nothing is a failure,
+            // and `wireTailnet` has already set `.needsLogin` when a URL exists.
+            let waiting = tailnetLoginURL != nil && !node.state.isRunning
+            if waiting {
+                phase = .needsLogin
+                return .settled
+            }
+            return .retry("The network is up but not carrying anything.")
+        }
+    }
+
+    /// Follows a server that has moved, before this load authenticates anything.
+    ///
+    /// An administrator's switch reshapes the deployment, and the address moves with it — the two
+    /// front doors are different names on different ports. The address this device already holds
+    /// is the only thing that can be asked where the new one is, so the ask is made here, on the
+    /// way into a load and before `/api/session`, and the answer is written straight into the two
+    /// settings that *are* the deployment: the address and the mode. What the app then does is
+    /// what it does on any load — dial that address — so the move costs the person nothing.
+    ///
+    /// **The device key is not touched, and that is the point.** What this device holds is an
+    /// identity rather than a token tied to a host: the service remembers the public half of its
+    /// key, and the same key authenticates at either door. `forgetServer()` is the only thing
+    /// that deletes a key, and it is not reachable from here. Re-enrolling instead would mean the
+    /// administrator issuing a code and hand-approving a device that had done nothing wrong.
+    ///
+    /// Only a device that already knows where it was set up can have been moved: with no address
+    /// stored there is nothing for the answer to differ from, and a device in that state is being
+    /// set up for the first time rather than displaced. Answers whether it adopted, which the
+    /// caller turns into a second attach — the mode is half of what chooses the route.
+    ///
+    /// Following is deliberately **not a one-way door**, and the reason is measured rather than
+    /// imagined: an address a deployment names is not always an address that answers, and a real
+    /// switch on 2026-09-26 moved this app onto a front door that was not up. Nothing an address
+    /// has just been given proves it will work — the only proof is a load that authenticates this
+    /// device, which is the very thing that may fail — so the address this device came from is
+    /// written down before the move is made, and `attemptLoad` goes back to it when the new one
+    /// answers with nothing or refuses this device. Landing on a dead address with the working one
+    /// gone is what costs an administrator a fresh invitation code and the person their
+    /// enrollment, which is the whole cost a followed move exists to avoid.
+    private func followMovedServer() async -> Bool {
+        guard let stored = AppSettings.serviceAddress, let storedURL = URL(string: stored) else {
+            return false
+        }
+        let health: ServiceHealth
+        do {
+            health = try await client.health()
+        } catch {
+            // Logged rather than dropped: a probe that never completes leaves no trace, which is
+            // indistinguishable from one that answered "no move" — and this probe is the only
+            // thing that can tell a person their Crossbar moved. The load carries on either way,
+            // because an address that cannot answer this may still be the right address.
+            log("could not ask the server where it is: \(error.localizedDescription)")
+            return false
+        }
+        guard let reported = health.origin, !reported.isEmpty else {
+            // A server older than this build, which is a peer and not a fault: D6 makes the
+            // field additive for exactly this. Nothing about the address may be assumed from
+            // its absence.
+            return false
+        }
+        // `URL(string:)` answers for a relative string too, so the scheme and host are checked
+        // rather than assumed: an `origin` this app cannot dial must leave the device where it
+        // is, not move it to a name that resolves nowhere.
+        guard let origin = URL(string: reported), origin.scheme != nil, origin.host != nil else {
+            log("the server named an origin this app cannot dial (\(reported)) — staying where it is")
+            return false
+        }
+        guard !ServiceAddress.isSameDeployment(origin, storedURL) else {
+            // The deployment names the address this device is already on, so nothing is
+            // outstanding — and a move this device once followed and came home from is spent the
+            // moment the deployment stops making it. Holding it any longer could only make the app
+            // withhold a move the deployment is making *now*.
+            if AppSettings.abandonedServiceAddress != nil {
+                AppSettings.abandonedServiceAddress = nil
+                log("the server no longer says it moved — forgetting the address this device "
+                    + "followed and came home from")
+            }
+            return false
+        }
+
+        // The move this device has already made and come home from. The deployment naming it
+        // again is *not* something the device learns for the first time: it heard it on the load
+        // that followed it, it heard it again on every load since, and each of those loads wrote
+        // the address, dialled it, failed and announced the move to the person — the same notice
+        // on a pull-to-refresh as on the load that made the move, which is what a loop looks like
+        // from the outside. So the address is asked the one question that can have changed
+        // (`/api/session`, about *this device*) before the move is made a second time, rather
+        // than made in order to find out.
+        //
+        // Deliberately not a refusal to follow: a front door that comes up minutes after the app
+        // looked — the measured shape of a real switch, 2026-09-26 — is still followed, on the
+        // first load that finds it answering. That is the whole of what this remembers, and it is
+        // why the address is kept rather than marked broken: the device stays where it works
+        // until there is somewhere better to be, which is the reverse of the load that moves
+        // first and recovers after.
+        if let abandoned = AppSettings.abandonedServiceAddress,
+           ServiceAddress.isSameDeployment(abandoned, reported) {
+            guard await takesThisDevice(origin) else {
+                log("the server still says it moved to \(reported), which this device already "
+                    + "followed and came home from — staying where it is")
+                return false
+            }
+            log("\(reported) takes this device now — following the move this device had come "
+                + "home from")
+            // And the person is told the move happened, because at this moment it does: the last
+            // thing the load that failed told them was that the app had come back, and this is the
+            // load that makes that no longer true. One notice per move that is actually made —
+            // not one per load that hears about it, which is what the loop did.
+        }
+
+        // Where this device is now is written down before where it is going, and written only once
+        // for a move that is still outstanding: what a device has to be able to get back to is
+        // where it was before it started following, not the last address it tried, so a second
+        // adoption on the way to a third address does not overwrite the way home. The mode comes
+        // with it, because a move reshapes the way in as well as the name.
+        if AppSettings.previousServiceAddress == nil {
+            AppSettings.previousServiceAddress = stored
+            AppSettings.previousConnectionMode = AppSettings.connectionMode
+        }
+        AppSettings.serviceAddress = origin.absoluteString
+        // The move has been taken, so whatever this device had tried and come home from is spent:
+        // what is left is where it is now, and the next load compares that against the same
+        // answer. A stale address left here would suppress the *next* move the deployment makes.
+        AppSettings.abandonedServiceAddress = nil
+        // The mode the answer names, when this app knows that word. An answer that names an
+        // address but no mode — or one from a build newer than this app's — still leaves the
+        // address worth following: it is what the mode is needed to *dial*, and this device
+        // already knows how it reaches its service.
+        let adopted = ConnectionMode.named(by: health.mode)
+        if let adopted, adopted != AppSettings.connectionMode {
+            AppSettings.connectionMode = adopted
+            log("the move changes how this device reaches its service — mode now \(adopted.rawValue)")
+        }
+        // What the service issued for this device, printed at the moment it is carried across:
+        // the address moving is only harmless because this does not, so the log has to show the
+        // one thing that would mean the app had re-enrolled instead of followed.
+        //
+        // The address on the right is what the device *holds*, not what the server spelled: it is
+        // the value the next load compares this answer against, so a reader checking whether an
+        // adoption survives that load is looking at the right string. What the server named is on
+        // the line above, in `health()`'s own `origin=`.
+        log("the server moved: \(stored) → \(AppSettings.serviceAddress ?? origin.absoluteString) "
+            + "— following it; server mode=\(health.mode ?? "none"), "
+            + "deviceId=\(DeviceAuth.shared.deviceId ?? "none") unchanged")
+        notice = "Your Crossbar has moved, and this app followed it. Nothing here needs doing."
+        return true
+    }
+
+    /// Whether the address a deployment names will take this device, asked of that address.
+    ///
+    /// The one question `followMovedServer` cannot answer from the answer it already has. The
+    /// address the device is on says where the deployment *believes* it is; only the address
+    /// itself can say whether this device belongs there, and `/api/session` is the route that
+    /// answers exactly that — the same ask, of the same route, that a load makes the moment it
+    /// arrives. Nothing weaker would do: a front door answering `/api/health` is a server that
+    /// exists, not one that knows this device, and moving onto it to find out is what re-made the
+    /// same move on every load.
+    ///
+    /// A failure to answer is a no. The address may still be the right one and merely not up yet,
+    /// which is what keeps this from being a rejection: nothing is written, and the next load asks
+    /// again.
+    private func takesThisDevice(_ origin: URL) async -> Bool {
+        do {
+            return try await client.checkSession(at: origin).authenticated
+        } catch {
+            log("could not ask \(origin.absoluteString) whether it takes this device: "
+                + error.localizedDescription)
+            return false
         }
     }
 
@@ -920,7 +1370,7 @@ final class CallSession: ObservableObject {
     /// `video` goes to CallKit as well as to the service. That is what makes the system's own
     /// call UI match the call: an audio call CallKit drew as a video call would offer the wrong
     /// controls on the lock screen, where this app has no say in what is drawn.
-    func placeCall(to contact: FamilyContact, video: Bool) {
+    func placeCall(to contact: Contact, video: Bool) {
         guard phase.call == nil else { return }
         notice = nil
         _ = callKit.startOutgoing(handle: contact.id, video: video)
@@ -1028,7 +1478,7 @@ final class CallSession: ObservableObject {
 
     /// Rejoins a call that is already active. `/join` is the only route that accepts a
     /// participant into an active call, and it also marks `joined_at` server-side.
-    private func resume(_ call: FamilyCall) async {
+    private func resume(_ call: Call) async {
         do {
             log("rejoining an active call")
             let envelope = try await client.join(callId: call.id)
@@ -1063,7 +1513,7 @@ final class CallSession: ObservableObject {
         // server to itself, which from here would be this phone. `signallingOrigin` settles
         // the second case; the override settles the first, and beats it.
         let signallingOrigin = AppSettings.signallingOverrideURL
-            ?? FamilyCallService.signallingOrigin(for: target.origin)
+            ?? ServiceAddress.signallingOrigin(for: target.origin)
         signal.originOverride = signallingOrigin
         // The origin actually dialled, not the one the invitation carried. When the two
         // differ, that difference is the whole explanation for a call with no media in it,
@@ -1110,9 +1560,32 @@ final class CallSession: ObservableObject {
         DeviceAuth.shared.forget()
         AppSettings.serviceAddress = nil
         AppSettings.connectionMode = nil
+        // The way home goes too. It is an address of the same deployment this device is being set
+        // up again from nothing, and a way home left behind would put it back the first time
+        // anything refused the device — which is undoing, by a side effect, the thing this screen
+        // was asked to do.
+        AppSettings.forgetPreviousAddress()
+        // And the address a move it followed ended at: it too belongs to the deployment this
+        // device is leaving, and a move from a deployment it is no longer set up for is not one it
+        // should withhold.
+        AppSettings.abandonedServiceAddress = nil
         serverMovedTo = nil
         needsSetup = true
         log("forgotten — this device has to be set up again")
+    }
+
+    /// This device has been set up: the mode is chosen, and the enrollment has settled who it
+    /// is. The counterpart to `forgetServer`, and the only thing that clears `needsSetup`.
+    ///
+    /// While that flag is set the root view shows onboarding *instead of* the app, and nothing
+    /// cleared it — so a device that was set up again finished onboarding onto a screen that put
+    /// it straight back there, permanently. Measured on 2026-09-24: "You're in" arrived, the
+    /// enrollment was done, and `/api/bootstrap` never ran, because the view that asks for it
+    /// was never shown.
+    func setupCompleted() {
+        guard needsSetup else { return }
+        needsSetup = false
+        log("this device is set up — onboarding is done")
     }
 
     func setMuted(_ muted: Bool) {
@@ -1196,7 +1669,7 @@ final class CallSession: ObservableObject {
     /// joined it: identity here is a person, not a device, so every instance authenticating
     /// as this person sees the same active call, and joining one uninvited is how an Xcode
     /// preview ended up in a live call.
-    private func adopt(_ bootstrap: FamilyBootstrap) async {
+    private func adopt(_ bootstrap: Bootstrap) async {
         guard phase.call == nil else { return }
         contacts = bootstrap.contacts
         // The call a push named is taken first when it is in the list. The list holds every call
@@ -1242,7 +1715,7 @@ final class CallSession: ObservableObject {
     ///
     /// Shared by the live event and the re-read, because a call that arrived while the
     /// stream was down has to ring exactly like one that did not.
-    private func ring(_ call: FamilyCall) {
+    private func ring(_ call: Call) {
         guard case .ready = phase else {
             log("invitation \(call.id) arrived while busy — ignored")
             return
@@ -1262,7 +1735,7 @@ final class CallSession: ObservableObject {
         }
     }
 
-    private func handle(_ event: FamilyEvent) {
+    private func handle(_ event: ServiceEvent) {
         switch event {
         case .ready:
             eventsDown = false
@@ -1318,7 +1791,7 @@ final class CallSession: ObservableObject {
 
     // MARK: - Helpers
 
-    private func isMine(_ call: FamilyCall) -> Bool {
+    private func isMine(_ call: Call) -> Bool {
         call.callerId == me?.id || (call.participants?.contains { $0.userId == me?.id } ?? false)
     }
 

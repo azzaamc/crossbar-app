@@ -36,7 +36,15 @@ struct ContentView: View {
                 // whether this app carries its own network, so a load that ran first would be
                 // choosing one of the two deployments on the person's behalf — the guess this
                 // screen exists to avoid.
-                OnboardingView { mode = $0 }
+                // Answering the question and being set up are the same moment: the screen that
+                // settles how this device reaches its service is the one that ends the question.
+                // Left to the flag alone, a device that had been set up again stayed here for
+                // ever -- onboarding drawn over a device that had just finished, so the load
+                // that would have cleared the flag never ran.
+                OnboardingView { chosen in
+                    mode = chosen
+                    session.setupCompleted()
+                }
             } else {
                 product
             }
@@ -80,6 +88,12 @@ struct ContentView: View {
 
             case .outgoing, .inCall:
                 InCallView(session: session)
+
+            case .retrying:
+                // The same app, mid-load: the people are shown while the attempts left run,
+                // with a banner saying what is happening. Nothing here is a dead end yet, so
+                // nothing here offers to fix one.
+                MainTabs(session: session)
 
             case .ready:
                 MainTabs(session: session)
@@ -135,5 +149,5 @@ private struct LaunchView: View {
 // a preview is not a harmless mock. One did exactly that on 2026-09-18: an Xcode
 // preview running on the Mac authenticated through the same Tailscale identity, decided
 // it was a participant in a live call, and joined it as a third member with no camera.
-// The family member on the other end saw someone whose video never loaded. Previews
+// The person on the other end saw someone whose video never loaded. Previews
 // belong on leaf views that take plain data, not on the root that owns the session.

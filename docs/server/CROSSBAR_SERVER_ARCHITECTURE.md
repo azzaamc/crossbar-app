@@ -205,7 +205,7 @@ clean re-attach.
 
 | Table | Change |
 | --- | --- |
-| `users`, `contacts`, `family_groups`, `group_members` | unchanged |
+| `users`, `contacts`, `groups`, `group_members` | unchanged |
 | `calls`, `call_participants` | unchanged schema; **`left` status now actually written**; add `kind` (`audio`/`video`) if §13.8 is approved |
 | `presence` | unchanged (a last-seen hint) |
 | `push_subscriptions` | unchanged (PWA/Web Push) |
@@ -298,7 +298,7 @@ is the requirement the current system does not meet (`Z2`, `Z3`, `Z4`).
 
 | Item | Choice | Why |
 | --- | --- | --- |
-| Database | the existing single SQLite file, WAL mode | a household's data; `node:sqlite` is built in; no server to operate |
+| Database | the existing single SQLite file, WAL mode | a directory's data; `node:sqlite` is built in; no server to operate |
 | Cache / broker | **none** | one process; nothing to coordinate |
 | Queue | **none** | push delivery is fire-and-forget with a logged failure, as today |
 | Files | **none** | no media, no recordings, no uploads |
@@ -320,7 +320,7 @@ year, O(10) devices. The whole database will remain far below the journal's 8 MB
 | Network change (Wi-Fi↔cellular) | dead-but-unclosed socket on both sides for ≤45 s; no ICE restart | server: identity-aware eviction removes the ghost window; media: **plainly documented as unhandled** unless ICE restart is adopted (§13.9) |
 | Tailscale path change | signalling may die; media is independent (no TUN) | unchanged; signalling recovery is the socket-loss path |
 | ICE failure | **nothing at all** anywhere — no restart, no teardown, no user-visible error | at minimum: a per-peer failure state surfaced to the UI and a bounded teardown; ICE restart is a separate, explicit decision |
-| Notification delayed | Web Push only; a native app that is closed never rings | unchanged until APNs exists; the server must not claim a call was delivered |
+| Notification delayed | Web Push only; a native app that is closed never rings | **APNs now exists** (2026-09-24): a VoIP push is dispatched and APNs accepts it, so what is unmeasured is delivery to an app that is closed rather than whether a sleeping phone can be told at all. The server must not claim a call was delivered |
 | Third participant cannot join | `invite` exists but the client cannot call it; `ROOM_MAX_PARTICIPANTS` unenforced | invite is exercised; capacity is enforced **server-side**; a refused join emits a reason the client can show |
 | Malformed message | MiroTalk can be crashed into a restart loop (`peer_id: "constructor"`) | every handler is wrapped; a malformed message is rejected and counted, never fatal; a supervisor restart policy is not a substitute for this |
 
@@ -371,7 +371,7 @@ Answering the minimalism criterion directly.
 | Authorization (admission + scoped relay) | every gap in `MIROTALK_SECURITY_MODEL.md` returns |
 | Validation/limits | a single malformed message becomes a crash or an unbounded allocation |
 | SQLite | calls, contacts, devices and push tokens vanish on restart |
-| Push | a closed app never rings (already true today) |
+| Push | a closed app is told nothing about a call — a browser is woken by Web Push and a phone by APNs, and delivery to an app that is closed is the part of both that has not been observed |
 | Observability | the next failure is undiagnosable — the state the project is in today for anything that happens on the MiroTalk side |
 | **Media path** | *not a component* — there is nothing to remove; media is P2P and the server never touches it |
 
@@ -392,7 +392,7 @@ Settled during implementation, and the answer that was chosen:
 | 7 | The PWA's media engine | **Migrated.** The server now serves its own browser call client, and the PWA drives it through the same `joinUrl`-in-a-frame contract it used for MiroTalk — so the PWA source needed no change at all. |
 | 8 | Audio-only calls | **A stored `kind` column exists**; no client requests it yet. |
 | 9 | ICE restart | **Out of scope**, documented as a media-plane gap. |
-| 10 | APNs | **`devices` table built** (with push token and environment columns); delivery deferred to the Apple Developer decision. |
+| 10 | APNs | **Built and configured** (2026-09-24). Two tokens per device — `voip` for a ringing call, `alert` for a missed one — and `adminDevice` exposes `hasVoipToken`. A ring arriving on an app that is closed is still unmeasured. |
 
 Still open, and requiring the owner rather than evidence:
 
@@ -403,7 +403,9 @@ Still open, and requiring the owner rather than evidence:
   re-attach on the same phone. Until then it relies on its existing
   `UserDefaults` guard.
 - **TURN**, if a real pair is ever measured failing without it.
-- **APNs**, which needs a paid membership before any of it can be built.
+- **APNs delivery to an app that is closed**, which no ring observed so far has
+  exercised — the key, the topic and the tokens exist and the push is accepted
+  (§10, §13.10).
 
 ---
 
@@ -431,6 +433,16 @@ What was built, how it is run, and what was verified are in
 Everything above assumes the tailnet is the only way in. That assumption is now
 explicit and configurable rather than implicit, because the same server also has to
 work on a hostname on the open internet.
+
+The mode is a line in the file rather than a property of the server, and a deployment sits
+in exactly one of the two at a time: §2's diagram, §8's first layer ("tailnet Serve
+is the only ingress") and the ingress rows of the failure model above are the *private*
+mode's shape. The switch between them is automated — `node src/admin.js mode
+private|public`, or the same switch in the console, rewrites the mode in `.env`, and the
+restart that follows is what applies it, because `crossbar.service` wants two gated root
+oneshots that close the mode being left before they open the mode being entered. Nothing
+about the shape is remembered between starts. `deploy/README.md` records what each unit
+does, and the three traps found in making them behave.
 
 ```
                          CROSSBAR CLIENT
@@ -463,11 +475,33 @@ database, one signalling implementation, both modes.
 | | private | public |
 | --- | --- | --- |
 | Transport | Tailscale Serve → loopback | Caddy → loopback |
-| `CROSSBAR_PUBLIC_HOSTNAME` | unused | required, and `PUBLIC_ORIGIN` must name it |
+| `CROSSBAR_PUBLIC_HOSTNAME` | unused | required in public mode, and the origin must name it; the switch fills it from `NETWORK_MODE_PUBLIC_HOSTNAME` |
 | `trustTailscaleHeaders` | default on | **default off, and refuses to be turned on** |
 | `allowDevIdentity` | allowed on loopback only | refused at startup |
 | `requireDeviceAuth` | default off | **default on** |
 | Relay | not needed on a tailnet | coturn, credentials issued per device |
+
+**A login is how a person is found; it is not what lets a deployment run.** A person with
+no tailnet login has no identity — they cannot reach the service, and the console lists
+them without one — and that is a state to fix rather than a reason to refuse to start, so
+the server starts with a directory whose people have no login, and the file is read and
+shown as it is. Only `directory.validate()` applies the rule, and only to what may be
+*written*: adding or changing a person asks for a login where a login is identity.
+`household.read()` and the store do not apply it, which is what lets a directory be looked
+at, and so repaired.
+
+One consequence of that split is open rather than settled, and was measured on 2026-09-24:
+in private mode the console refuses **every** directory edit while any person in the file
+lacks a login (`DIRECTORY_INVALID: … has no login, and a person is found by theirs here.`),
+so the console cannot be the place where the missing logins are added, even though it is
+the intended one. The fix offered, and not made, is for it to save with a warning.
+`deploy/README.md` has the detail and the file's name for it.
+
+The header's presence and its authority are separate questions. Serve **does** deliver
+`Tailscale-User-Login` in a tailnet — measured 2026-09-24 — and what the mode decides is
+whether the server believes it: `trustTailscaleHeaders` is the switch above. Reading "the
+proxy did not send it" out of "public mode does not trust it" is the mistake this paragraph
+exists to prevent.
 
 **Where the identity layer sits.** `src/auth.js` is transport-independent: the same
 enrolment, challenge-response and session code serves both modes, and the socket in

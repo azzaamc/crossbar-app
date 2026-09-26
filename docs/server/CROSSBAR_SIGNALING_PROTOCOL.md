@@ -61,8 +61,11 @@ The client then opens the socket and sends `join`. The server decides, in this
 order:
 
 1. **the connection's identity** — resolved from the upgrade request exactly as
-   the API resolves it (an injected header, accepted only from loopback);
-2. the person is enrolled in this household;
+   the API resolves it: a device that has enrolled names the person with its own
+   key, and only a connection with no such session is decided by the injected
+   proxy header, which is accepted only from loopback and believed only in
+   private mode;
+2. the person is enrolled in this directory;
 3. `channel` names a call this person is a participant of;
 4. the call's state admits that participant — any participant of an `active`
    call, or a participant who already accepted while it is still `ringing`;
@@ -77,9 +80,10 @@ Only then does the socket become a participant.
 the credential, so anyone who learns it joins and the first joiner becomes
 presenter. The obvious fix is a short-lived ticket minted by the API — but that
 turns out to be unnecessary, because a WebSocket upgrade is an HTTP request and
-carries the same injected identity. Admission can therefore be decided from who
-the caller is plus what the call says about them, with no new secret, no storage,
-and no expiry window to get wrong.
+carries whatever the API would have resolved for it: the device's own key, or the
+injected header where that header is believed. Admission can therefore be decided
+from who the caller is plus what the call says about them, with no new secret, no
+storage, and no expiry window to get wrong.
 
 What that gives up: a ticket could be scoped to one call and expire. Here, a
 socket's authority lasts as long as its connection, and the call's own state is
@@ -104,7 +108,8 @@ what ends it — re-checked at every join, which is the only moment it is needed
 | `channel_password` | no | — | ignored; Crossbar has no room passwords |
 | `peer_token` | no | — | ignored; a token is not what admits |
 
-- **Authentication:** the identity injected on the upgrade request.
+- **Authentication:** the identity the upgrade request resolves to — a device's
+  own key, or the injected header where that header is believed (§2).
 - **State precondition:** the call admits this participant (§2).
 - **State transition:** none in the call machine (joining does not change call
   status); the participant gains a live room membership, and a ringing call
@@ -240,7 +245,7 @@ leaves an `active` call, and not only when the whole call ends.
 | Responses per person | 20 per minute | refusal, counted |
 
 Every limit is per server process, in memory, and resets on restart — adequate for
-a household, and a deliberate choice against adding a shared store.
+a directory, and a deliberate choice against adding a shared store.
 
 ---
 

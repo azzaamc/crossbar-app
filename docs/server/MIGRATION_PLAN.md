@@ -91,16 +91,16 @@ git pull /tmp/crossbar-server.bundle main
 #    says and never rewrites it.
 npm ci --omit=dev
 
-# 4. The household file. It is deliberately NOT in the repository — it names real
-#    people and differs per deployment; `data/family.example.json` is the shape.
+# 4. The directory file. It is deliberately NOT in the repository — it names real
+#    people and differs per deployment; `data/directory.example.json` is the shape.
 #    Copy the deployed one so identity matches production:
-cp /home/admin/family-call/data/family.json /home/admin/crossbar/data/family.json
-chmod 600 /home/admin/crossbar/data/family.json
+cp /home/admin/family-call/data/family.json /home/admin/crossbar/data/directory.json
+chmod 600 /home/admin/crossbar/data/directory.json
 # NOTE: that file still carries placeholder logins for dad and mum. With
 # AUTO_ENROL_IDENTITIES=true (the default) they enrol on first contact anyway,
 # under a derived id — exactly as they did on the existing service.
 #
-# What that costs, measured 2026-09-21: the household ends up holding two of each
+# What that costs, measured 2026-09-21: the directory ends up holding two of each
 # of them. The placeholder row keeps the id and the name from the file; the login
 # becomes a second, device-less person named from their Tailscale profile. Their
 # phone's key belongs to the first row, so a call to the second rings nothing at
@@ -290,7 +290,10 @@ participant ceiling.
    repository through `WEB_ROOT` (no fork, two places to look), or move them into
    this project (one deployment, and the PWA's own repository becomes history).
 4. Retire MiroTalk and remove its Serve route — only once the native client has a
-   push path, since a locked phone currently rings only through the PWA.
+   push path *seen to work on a closed app*. The path now exists (2026-09-24: two
+   tokens per device, APNs configured, and a test call logged `push_dispatched …
+   phones: 1, dropped: 0`), but delivery to a locked phone has not been observed, so
+   until it is, a locked phone still rings only through the PWA.
 
 **Rollback at every point:** each device's Settings fields point back to
 `https://qatar-vpn.tailea67b0.ts.net` (MiroTalk) and

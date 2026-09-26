@@ -108,7 +108,7 @@ private struct RecentRow: View {
     }
 
     /// The person to ring back: whoever placed the call.
-    private var callBack: FamilyContact? {
+    private var callBack: Contact? {
         session.contacts.first { $0.id == call.callerId }
     }
 

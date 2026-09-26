@@ -28,8 +28,7 @@ Before changing architecture or call behavior, read:
 7. `docs/DEVELOPMENT_WORKFLOW.md`;
 8. `docs/CROSSBAR_ARCHITECTURE.md`.
 
-The separate Family Call repository remains authoritative for deployed backend
-and PWA behavior:
+The separate Family Call repository remains authoritative for PWA behavior:
 
 `/Users/azzaam/Documents/ChatGPT/Family Call (MiroTalk)`
 
@@ -45,9 +44,10 @@ MiroTalk, WebRTC, ICE, SDP, signaling, meeting terminology, URLs, and Tailscale
 addresses are implementation details and must not leak into the product UI.
 
 Family Call owns identity, contacts, groups, presence, call IDs, private room
-IDs, invitations, lifecycle, ringing, missed calls, and the future native push
-registration contract. Crossbar must consume that backend rather than recreate
-its responsibilities.
+IDs, invitations, lifecycle, ringing, and missed calls; the native push
+registration contract is the Crossbar server's (`server/`,
+`POST /api/devices/push-token`). Crossbar must consume that backend rather than
+recreate its responsibilities.
 
 MiroTalk P2P owns the currently proven browser WebRTC/signaling behavior.
 Architecture A is the leading investigation: SwiftUI and CallKit around a
@@ -63,8 +63,10 @@ not contain MiroTalk source, Socket.IO, `RTCPeerConnection`, remote media, or
 backend integration. It has not completed the physical-device CallKit/audio/
 background gate. Do not promote its diagnostic UI into the product UI.
 
-CallKit is a native concern. PushKit/APNs is not implemented and is deliberately
-later. No entitlements or capabilities are currently configured.
+CallKit is a native concern. PushKit/APNs is implemented: the app files two push
+tokens per device — the VoIP token a ringing call arrives on and an alert token
+for a call it missed — and the built app carries `aps-environment =
+development`. A ring arriving on a closed app has not been observed yet.
 
 ## Production safety
 

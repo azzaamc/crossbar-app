@@ -3,15 +3,15 @@ import Foundation
 import TailscaleKit
 import UIKit
 
-/// The family network this app carries with it.
+/// The network this app carries with it.
 ///
-/// Family Call is reachable **only** over the tailnet. The service binds loopback and is
+/// The service is reachable **only** over the tailnet. The service binds loopback and is
 /// published through Tailscale Serve on a `*.ts.net` name that resolves nowhere else,
 /// and its API refuses a request that arrives without the identity headers Serve
 /// injects — so a client has to be on the tailnet, and there is no URL to hand to a
 /// device that is not.
 ///
-/// Until this existed, "on the tailnet" meant asking a family member to install the
+/// Until this existed, "on the tailnet" meant asking someone to install the
 /// Tailscale app and keep it connected. This replaces that: the app runs its own
 /// userspace tsnet node, authorises once through a login page, and dials the private
 /// service through the node's SOCKS loopback.
@@ -90,6 +90,12 @@ final class TailnetNode: ObservableObject {
 
     private var nodeLogFD: Int32?
 
+    /// Why the last bring-up failed, kept as the error rather than as its message.
+    ///
+    /// The message is what the screens show, but the *kind* is what decides whether the state
+    /// directory is to blame — and that cannot be read back out of a string.
+    private var lastBringUpError: Error?
+
     /// The carrier handed out for the node that is currently up.
     ///
     /// Cached because the loopback is what a session dials and it does not change while
@@ -121,7 +127,7 @@ final class TailnetNode: ObservableObject {
     /// path carried a request and returned one, not whether it was authorised. This is
     /// the endpoint the control plane uses anyway, so a carrier that passes here is a
     /// carrier the product can use.
-    private var probeURL: URL { FamilyCallService.baseURL.appendingPathComponent("api/session") }
+    private var probeURL: URL { ServiceAddress.baseURL.appendingPathComponent("api/session") }
 
     /// Whether the node is used at all.
     ///
@@ -162,14 +168,26 @@ final class TailnetNode: ObservableObject {
         bringUp = nil
     }
 
+    /// Where this device's node keeps its identity.
+    ///
+    /// One place, because two things need it: the bring-up that creates it, and the recovery
+    /// that throws it away.
+    private var stateDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("tailscale", isDirectory: true)
+    }
+
     private func bringUpNode() async {
         guard node == nil else {
             log("node already running")
             return
         }
 
-        let path = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("tailscale", isDirectory: true)
+        // Cleared as the attempt starts, so a clear can never be triggered by an error left
+        // over from a bring-up that was already recovered from.
+        lastBringUpError = nil
+
+        let path = stateDirectory
         try? FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
 
         let config = Configuration(hostName: Self.hostName,
@@ -208,9 +226,11 @@ final class TailnetNode: ObservableObject {
             try await node.up()
             state = .running
             loginURL = nil
+            lastBringUpError = nil
             log("node is up")
         } catch {
             log("bring-up failed: \(error.localizedDescription)")
+            lastBringUpError = error
             state = .failed(error.localizedDescription)
             self.node = nil
         }
@@ -251,6 +271,23 @@ final class TailnetNode: ObservableObject {
         do {
             return try await carrierFromCurrentNode()
         } catch {
+            // A node that never came up is a different failure from one that is up and carrying
+            // nothing, and it needs a different recovery: the rebuild below reuses the state
+            // directory the node keeps its identity in, so a node that cannot *load* that
+            // directory fails the same way for ever. Measured on 2026-09-24, where a directory
+            // two days old failed every bring-up with `TailscaleError` 3 until it was deleted —
+            // which a person had to do by hand, from a button that existed only because this
+            // could not fix itself.
+            //
+            // Only for the failures the framework reports as local. A posix error is the
+            // network, where throwing the device's identity away would cost an approval and
+            // fix nothing.
+            if let failure = lastBringUpError, Self.blamesStateDirectory(failure) {
+                log("the node did not come up — clearing the state it keeps its identity in")
+                if await reset() == nil {
+                    return try await carrierFromCurrentNode()
+                }
+            }
             guard await backendState() == "Running" else { throw error }
             log("the carrier carried nothing — rebuilding the node once")
             await stop()
@@ -283,12 +320,76 @@ final class TailnetNode: ObservableObject {
         }
     }
 
+    /// Throws this device's node away: the directory it keeps its identity in, and any auth
+    /// key stored for it.
+    ///
+    /// The recovery for a node that cannot be brought up at all — a state directory left behind
+    /// by an earlier build, or a machine key this tailnet no longer knows. Nothing else can clear
+    /// it. `signOut()` needs a *running* node to ask, and a node that will not start cannot be
+    /// asked; deleting the app would work, and this is that without losing everything else on
+    /// the device.
+    ///
+    /// The cost is real and is the reason this is not done on a whim: the device's identity in
+    /// the tailnet goes with it, so the next bring-up registers a *new* device that has to be
+    /// approved again. It is the same cost as reinstalling, and it is the only thing that fixes
+    /// a state directory that will not load.
+    ///
+    /// Answers `nil` when it worked, or the reason when it did not.
+    @discardableResult
+    func reset() async -> String? {
+        await stop()
+        let path = stateDirectory
+        do {
+            if FileManager.default.fileExists(atPath: path.path) {
+                try FileManager.default.removeItem(at: path)
+            }
+        } catch {
+            log("could not clear the node's state: \(error.localizedDescription)")
+            return "Could not clear the network's state: \(error.localizedDescription)"
+        }
+        clearAuthKey()
+        state = .idle
+        loginURL = nil
+        log("the node's state was cleared — the next bring-up registers a new device")
+        return nil
+    }
+
+    /// Whether a bring-up failure is one the state directory can be blamed for.
+    ///
+    /// The framework's own kinds divide cleanly here. A connection that was already closed, a
+    /// handle that was never good, and an internal error all mean the node could not get itself
+    /// going — which is what a state directory it cannot load looks like from outside. A posix
+    /// error is the network underneath, and is not the directory's fault.
+    private static func blamesStateDirectory(_ error: Error) -> Bool {
+        guard let tailscale = error as? TailscaleError else { return false }
+        switch tailscale {
+        case .connectionClosed, .badInterfaceHandle, .internalError:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Builds a carrier for the node that is up, and waits for it to carry a request.
     private func carrierFromCurrentNode() async throws -> CallTransport {
         await start()
 
         guard let node else {
             throw TailnetError.nodeUnavailable(reason: describeState())
+        }
+
+        // A machine this tailnet has not approved reports `NeedsMachineAuth`, and locally the node
+        // still looks Running: `up()` has returned, and its loopback accepts connections and then
+        // answers none. Everything below would report that as *an address that never answered*,
+        // which sends whoever reads it after the wrong fault — the network looked up and the
+        // address looked wrong, while what was actually true was that the device was waiting for
+        // an administrator. Measured on a phone whose node had never joined this tailnet,
+        // 2026-09-26: the app said the loopback never answered, and the tailnet's own device list
+        // did not contain the phone at all.
+        let backend = await backendState()
+        if backend == "NeedsMachineAuth" {
+            log("the tailnet has not approved this device (BackendState=NeedsMachineAuth)")
+            throw TailnetError.awaitingApproval
         }
         if let carrier, state.isRunning, await carriesARequest(carrier) {
             return carrier
@@ -503,6 +604,9 @@ final class TailnetNode: ObservableObject {
 enum TailnetError: LocalizedError {
     case nodeUnavailable(reason: String)
     case loopbackUnavailable(address: String)
+    /// A node the tailnet has not admitted yet. Nothing in this app can change it: it is an
+    /// administrator approving the machine, in Tailscale's own console.
+    case awaitingApproval
 
     var errorDescription: String? {
         switch self {
@@ -510,6 +614,10 @@ enum TailnetError: LocalizedError {
             return "The network is not up — \(reason)"
         case .loopbackUnavailable(let address):
             return "The network is up but \(address) never answered, so nothing was dialled."
+        case .awaitingApproval:
+            return "This device is waiting to be approved in Tailscale. An administrator has to "
+                 + "approve it in the tailnet before Crossbar can reach the network — this app "
+                 + "cannot do it, and nothing else is wrong."
         }
     }
 }

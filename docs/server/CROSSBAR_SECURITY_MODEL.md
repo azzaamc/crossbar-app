@@ -37,6 +37,12 @@ protection.
 | Host → service | anything local | **application authorization** — this is the boundary MiroTalk does not have |
 | Service → data | the server process only | SQLite file `0600` in a hardened unit |
 
+Those boundaries are **private mode's** shape, which is what the diagram draws. A public
+deployment swaps the tailnet's Serve for a reverse proxy on 443 and keeps everything below
+it — the loopback listener, the application authorization on it, and the hardened unit —
+exactly as written here. Where a deployment is reached in a given mode is the next
+section's business, not this table's.
+
 **Network position is treated as an enrollment signal, not as authorization.**
 Explicit statement of the property that must hold: *a process running on the
 server host, with no tailnet identity, must not be able to act as a family member
@@ -92,12 +98,12 @@ challenge standing for the next guess, and expiry is decided before the verdict.
 challenge belongs to the device it was issued to: presenting it with another device id
 fails. Each of those properties is asserted in `test/auth.test.js`.
 
-**Who becomes a member.** In private mode the household file pins id/name/avatar
+**Who becomes a member.** In private mode the directory file pins id/name/avatar
 before first sign-in, and `AUTO_ENROL_IDENTITIES` (default on) additionally enrols a
 tailnet login on first sight — the behaviour of the service this replaces, and how its
 members actually joined. In public mode there is no tailnet to enrol from: a person
 exists once a device of theirs has been enrolled from an invitation, and an
-administrator (a person marked `admin` in the household file) creates the invitation.
+administrator (a person marked `admin` in the directory file) creates the invitation.
 
 **Development identity — stated plainly.** For running the server on a laptop, where
 no Tailscale proxy exists, an identity may instead be named by an `x-dev-identity`
@@ -192,7 +198,7 @@ belongs at that client's render layer, not in the signalling server.
 
 | Layer | Decision |
 | --- | --- |
-| TLS | terminated by `tailscaled`; the Crossbar server ships **no** certificate |
+| TLS | terminated by `tailscaled` in private mode and by the reverse proxy in public mode; the Crossbar server ships **no** certificate either way |
 | Bind | loopback only, refused at startup otherwise (as the control plane already does) |
 | HTTP security headers | the existing control-plane set is retained for any HTML it serves — CSP, `X-Frame-Options: DENY`, `referrer-policy: no-referrer`, `x-content-type-options: nosniff`, `permissions-policy` |
 | CORS | retained for the browser-facing API as a *browser read policy*. Explicitly **not** treated as admission control: a native WebSocket client sends no `Origin`, and the server must not rely on the header |
@@ -241,13 +247,13 @@ persistent storage or write a bounded rotating file.
 
 | Preserved | Reason |
 | --- | --- |
-| Loopback bind + tailnet-only ingress | it is the reachability model, and it is what lets identity be trustworthy at all |
-| Tailscale Serve TLS | no bespoke certificate handling, no exposed port |
+| Loopback bind + tailnet-only ingress *(private mode; the reverse proxy in public)* | it is the reachability model, and it is what lets identity be trustworthy at all |
+| Tailscale Serve TLS *(private mode; the reverse proxy terminates TLS in public)* | no bespoke certificate handling, no exposed port |
 | Tailscale identity as enrollment | proven on device with zero client credentials; replacing it would invent a new credential for no gain |
 | Room-scoped membership checks | MiroTalk's one good boundary; extended here to the relays, which it excluded |
 | An unguessable, opaque room/participant id | keeps ids non-enumerable even though authorization no longer depends on secrecy |
 | The existing CSP/header set on HTML routes | already correct on the control plane |
-| The existing rate-limit shape | adequate for a household, already proven |
+| The existing rate-limit shape | adequate for a directory, already proven |
 
 ## 11. What is deliberately *not* inherited
 

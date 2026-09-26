@@ -157,9 +157,40 @@ final class CallKitController: NSObject, CXProviderDelegate, CXCallObserverDeleg
 
     /// CallKit gives an app a few seconds to perform an action; not performing one in
     /// time is silent unless it is written down, and it can end a call.
+    ///
+    /// The action is named in the notice as well as in the log, because two very different
+    /// faults produce this one sentence. A handler that acknowledges too late is the first, and
+    /// was real on 2026-09-22 (mute). An action this app does not handle at all is the second,
+    /// and is invisible by construction: the system asks, no method runs, and this callback is
+    /// the only trace. Measured on a phone on 2026-09-26, on a call that otherwise
+    /// worked — which is exactly when the name matters more than the sentence around it.
     func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
-        onLog?("timed out performing \(type(of: action))")
-        onError?("CallKit timed out waiting for the call to be handled.")
+        let what = String(describing: type(of: action))
+        onLog?("timed out performing \(what)")
+        onError?("CallKit timed out waiting for the call to be handled (\(what)).")
+    }
+
+    /// Actions this app has no behaviour for, acknowledged so CallKit is not left waiting.
+    ///
+    /// None of these is implemented — this app holds nothing, merges nothing and sends no tones
+    /// — but an action no method handles leaves CallKit counting down a budget, and the timeout
+    /// it reports is "the app failed to handle this call", which can end one. There is no third
+    /// option: ignoring the request is the fault being fixed, and pretending to hold a call is a
+    /// claim the app cannot keep. So each is acknowledged, and each says in the log what it did
+    /// not do, which is the whole of what is honest here.
+    func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
+        onLog?("holding is not implemented (onHold=\(action.isOnHold)) — acknowledged, not performed")
+        action.fulfill()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXSetGroupCallAction) {
+        onLog?("merging calls is not implemented — acknowledged, not performed")
+        action.fulfill()
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXPlayDTMFCallAction) {
+        onLog?("tones are not implemented — acknowledged, not performed")
+        action.fulfill()
     }
 
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {

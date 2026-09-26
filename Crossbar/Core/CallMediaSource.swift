@@ -181,7 +181,7 @@ final class CallMediaSource: ObservableObject {
     /// does not list is its own way to fail.
     ///
     /// Preference order: 1280x720, then the largest format at or below 1920 wide, then
-    /// whatever is left. 720p is what a family video call needs; capturing 4K in order to
+    /// whatever is left. 720p is what a video call needs; capturing 4K in order to
     /// encode and send something much smaller costs CPU and battery on a call that can run
     /// for an hour.
     private static func chooseFormat(for device: AVCaptureDevice,

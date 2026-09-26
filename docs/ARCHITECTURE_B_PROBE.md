@@ -297,8 +297,8 @@ these were found only because a result was suspicious rather than negative.
 16. **An event stream that was never reconnected.** An incoming call never arrived: the
     PWA rang, the app stayed silent with its screen open on the contacts list. The
     stream had dropped — as it does every time iOS suspends the app — and nothing ever
-    brought it back, so the phone was deaf until someone reloaded by hand. With no push,
-    that stream is the *only* path an incoming call can take.
+    brought it back, so the phone was deaf until someone reloaded by hand. With no push in
+    the app at all, that stream was the *only* path an incoming call could take.
 17. **A gate that could never fire, because its screen was never mounted.** The
     signalling instrument's launch gates were correct and complete, and an unattended run
     still joined nothing: the probe screen sat behind a toolbar tap in the contacts
@@ -323,12 +323,16 @@ Stated so the next session does not inherit an overclaim:
 - **The room-id parse is verified.** Production `joinUrl`s from two real calls each
   yielded their room and signalling origin, and the client joined those rooms. It is
   proven for the shape the service produces now, not for every shape it could produce.
-- **The event stream is the only way a call can arrive, and it is one connection.**
-  With no push, the moment it drops the phone is deaf — and that already happened
-  once, costing an incoming call that rang only on the PWA while Crossbar sat open on
-  the contacts screen. The client now reconnects with capped backoff and re-reads
-  `/api/bootstrap` on every reconnect, because the stream carries no event ids and no
-  replay. That is a repair, not a fix: the durable answer is push, not a better socket.
+- **The event stream is no longer the only way a call can arrive, and it is still one
+  connection.** Drop it and the phone used to be deaf — that happened once, costing an
+  incoming call that rang only on the PWA while Crossbar sat open on the contacts screen — and
+  the client now reconnects with capped backoff and re-reads `/api/bootstrap` on every
+  reconnect, because the stream carries no event ids and no replay. That is still a repair
+  rather than a fix, and the fix now exists beside it: PushKit and APNs, with two tokens filed
+  per device and the service dispatching a ring to a phone (2026-09-24). What that does
+  **not** establish is delivery — the rings seen so far had the app open, so the socket may
+  have carried them, and nothing has been seen arriving on a locked phone. See
+  `NATIVE_PROGRESS.md`.
 - **The product shell is thin.** Contacts, placing, answering, an in-call screen and
   CallKit now exist and have carried a real call, but there is no persistence, no call
   history, no settings, no audio-route selection and no call duration — and the
@@ -370,9 +374,13 @@ Stated so the next session does not inherit an overclaim:
    parseable from it. Decided and now implemented in `FamilyCallClient.JoinTarget`,
    which also takes the signalling origin from the same URL rather than from a second
    constant. Unverified against a live `joinUrl` — see above.
-2. **APNs/PushKit and a device-token model.** Background ringing is W3C Web Push with
-   `{endpoint, p256dh, auth}` credentials; APNs tokens are a different class and no
-   table, route or client exists.
+2. **APNs/PushKit and a device-token model.** **Settled 2026-09-24.** Background ringing for
+   the PWA is W3C Web Push with `{endpoint, p256dh, auth}` credentials, a different class
+   from APNs tokens, and at the spike there was no table, route or client for the latter.
+   All three exist now: the service files a `voip` and an `alert` token per device
+   (`POST /api/devices/push-token`), the app files both — holding a token PushKit announced
+   before a load could file it — and a test call dispatched one (`phones: 1, dropped: 0`).
+   Delivery to a *closed* app is still unmeasured.
 3. **Per-participant leave.** The backend has none; `/end` is call-wide, which matters
    because multiparty is mandatory.
 4. **The `iceServers` exposure.** Decided: consume them unchanged, accepting that a

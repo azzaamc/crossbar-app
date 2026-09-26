@@ -218,6 +218,15 @@ CallKit behavior from the simulator.
 10. Stop if behavior is ambiguous; preserve logs/results without adding
     MiroTalk/backend/APNs code during this experiment.
 
+### A locked phone fails the launch, not the build
+
+Measured twice on 2026-09-24: with the phone locked, the build succeeded, the install
+succeeded, and the launch failed. In a transcript that records only the last exit code this
+reads as a build failure, and it was taken for one; it is not, and nothing needs rebuilding.
+Unlock the phone and launch again. Only the launch needs the phone awake — the build and the
+install do not — so a device run that stops here has already produced a build worth
+launching.
+
 At the handoff audit a personal iPhone was visible to Xcode, but it was not used
 for a probe run. Do not convert visibility into a “tested” claim.
 
@@ -235,6 +244,16 @@ When native backend/signaling work is explicitly authorized later:
 - never enable Funnel, public ports, LAN binds, or third-party TURN;
 - verify identity/session behavior through the actual native request path;
 - keep production read-only unless a separate exact change is approved.
+
+Corrected 2026-09-24: the first bullet is only half true now, and the difference is the
+app's connection mode. A device set up for a **private deployment carries its own tailnet** —
+the app brings up its embedded userspace node and dials both clients through its SOCKS
+loopback — so the phone does not need the Tailscale app installed or signed in. The tailnet
+still has to approve the node once, which the app asks for on the screen where setup is
+waiting, and the Mac in a rig still needs a tailnet connection of its own. A device set up
+for a server at a hostname is the other way round: it dials the address it was given over
+whatever route the phone has, and no node is brought up at all. The remaining bullets are
+unchanged.
 
 ## Test-result recording
 
@@ -274,7 +293,7 @@ Do not treat them as a reason to commit additional `xcuserdata`.
 
 ## Local two-party rig (no second person needed)
 
-Every lock/background/call question needs a real peer, and the household's own members
+Every lock/background/call question needs a real peer, and the directory's own members
 cannot sign in (the deployed `Dad`/`Mum` logins are still `replace-with-…` placeholders
 and no device is registered for them). The second participant is therefore the **Family
 Call PWA as Dad**, taken from the server's own development identity mode, and the phone
@@ -284,7 +303,7 @@ find that CallKit, not the call, ends a call when the device locks
 
 1. **Server.** `cd server && npm start` with its own `.env` (loopback only,
    `ALLOW_DEV_IDENTITY=true`, `PORT=3010`). `.env` points `WEB_ROOT` at the PWA, so the
-   server serves it. A separate `FAMILY_CONFIG_PATH` maps `abdullah` to the real tailnet
+   server serves it. A separate `DIRECTORY_CONFIG_PATH` maps `abdullah` to the real tailnet
    login (so the phone is Abdullah) and keeps `dad@dev`/`mum@dev` for the browser;
    `DEV_IDENTITIES=dad@dev,mum@dev`. Nothing here touches production.
 2. **Reachability.** The listener is loopback-only by design, so the phone needs
@@ -328,7 +347,7 @@ without it they answer 404, which a client is required to read as "this server d
 use device authentication" rather than as an error. To test enrolment:
 
 ```bash
-FAMILY_CONFIG_PATH=/tmp/crossbar-rig-family.json CROSSBAR_SESSION_SECRET=… \
+DIRECTORY_CONFIG_PATH=/tmp/crossbar-rig-directory.json CROSSBAR_SESSION_SECRET=… \
   PUBLIC_ORIGIN=https://<mac>.ts.net:8445 node src/admin.js enroll --user abdullah
 ```
 
@@ -336,3 +355,12 @@ The payload it prints is what a device pastes — and its `server` field is `PUB
 so set that to the address the device will actually dial before creating the invitation,
 or the code will point the device at loopback. An invitation is single use: one per
 device, and the CLI prints the plaintext exactly once because only its hash is stored.
+
+One ordering point, worth knowing before a device is set up against a private rig: the
+enrolment is the first request the app ever makes, and on a private deployment it can only
+be made through the network the app carries. The screen reads the code first — the address
+*and* the mode it names — brings that network up, showing the wait as itself with the
+Tailscale approval page on the same screen, and enrols only once the carrier has carried a
+request. So `server` and `mode` decide the whole sequence, and a device that cannot reach the
+rig reports it as the network failing to come up, on the screen it is stuck on, rather than
+as an enrolment that was refused.

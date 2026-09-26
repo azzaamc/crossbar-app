@@ -32,7 +32,7 @@ final class DeviceAuth: ObservableObject {
 
     /// Where the enrollment, challenge and session requests leave by.
     ///
-    /// Set by `FamilyCallClient` to the carrier its own requests use. In the embedded
+    /// Set by `ServiceClient` to the carrier its own requests use. In the embedded
     /// node's case the service is reachable over the node's loopback and nowhere else, so
     /// a session minted over the system route would be a session the control plane could
     /// not then use.
@@ -100,11 +100,27 @@ final class DeviceAuth: ObservableObject {
     /// token. When it names a service, that address is applied here: the code is how the
     /// app is told which service it belongs to, and asking someone to type the same host
     /// twice is how the app and its code end up disagreeing about it.
-    func enroll(code: String) async throws {
+    /// Settles what a code says this device belongs to, and answers with the code it read.
+    ///
+    /// Split out of `enroll` because on a private deployment the order of the two is the whole
+    /// difference between working and not. The mode decides whether this app brings up a
+    /// network of its own, and the enrollment is the *first* request that has to go through
+    /// that network — so the mode and the address have to be applied before the node comes up
+    /// (the node's own readiness probe dials the address), and the request has to wait for the
+    /// node. A caller that has to bring the network up first asks here, and the enrollment that
+    /// follows asks again: one place reads a code, so neither can be working from a different
+    /// reading of what it said.
+    @discardableResult
+    func settle(from code: String) throws -> EnrollmentCode {
         guard let parsed = EnrollmentCode(code) else { throw DeviceAuthError.codeInvalid }
 
         if let server = parsed.server, server != AppSettings.serviceAddress {
             AppSettings.serviceAddress = server
+            // A code hands this device an address worth dialling on its own account, so whatever
+            // move it was in the middle of following is no longer the thing that put the address
+            // there — and a way home from a move this one has just replaced would be an address
+            // nobody asked to go back to.
+            AppSettings.forgetPreviousAddress()
             // A session is only meaningful to the service that issued it.
             discardSession()
         }
@@ -116,6 +132,11 @@ final class DeviceAuth: ObservableObject {
             AppSettings.connectionMode = mode
             discardSession()
         }
+        return parsed
+    }
+
+    func enroll(code: String) async throws {
+        let parsed = try settle(from: code)
 
         try identity.createKeyIfNeeded()
         guard let publicKey = identity.publicKeyBase64 else { throw DeviceAuthError.noKey }
@@ -329,7 +350,7 @@ final class DeviceAuth: ObservableObject {
     /// control plane builds them, so a configured address with a path cannot move where a
     /// request lands.
     private func url(_ path: String) -> URL {
-        var components = URLComponents(url: FamilyCallService.baseURL, resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: ServiceAddress.baseURL, resolvingAgainstBaseURL: false)!
         components.path = "/" + path
         return components.url!
     }

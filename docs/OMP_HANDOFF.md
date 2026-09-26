@@ -205,6 +205,18 @@ PushKit/APNs does not exist: no code, entitlement, capability, token storage,
 backend route, credential, or remote ringing. It is a later paid-developer
 phase and must not block the physical-device local probe.
 
+> Superseded 2026-09-24. PushKit and APNs exist now, in the product rather than in a probe:
+> the app starts the PushKit registry at launch and files two tokens per phone with the
+> service — `kind: "voip"`, which rings it, and `kind: "alert"`, which carries a call it
+> missed — and the service has the route and the columns for them. The entitlement was never
+> the problem: the built app carries `aps-environment = development`, and the server reports
+> `APNs configured (com.abdullahchaudhry.Crossbar)`. Two details are worth carrying forward.
+> PushKit announces a token *before any load runs*, so an app that cannot file it then has to
+> hold it until a load has settled rather than drop it; and delivery to a **closed** app is
+> still unmeasured, because the rings seen so far all had the app open. The paid membership
+> remains what shipping to anyone else needs. See `NATIVE_PROGRESS.md`, "The device enrolled
+> later that day".
+
 ## Known issues
 
 1. `CrossbarUITests.testExample` is racy: it waits for status-element existence,

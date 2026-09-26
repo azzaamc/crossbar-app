@@ -78,7 +78,7 @@ enum Theme {
 ///
 /// Initials rather than a photograph, because this app has never had photographs and a
 /// placeholder silhouette on every row says less than a letter does. The circle takes the
-/// accent so that a list of people reads as one family of things.
+/// accent so that a list of people reads as one set of things.
 struct Avatar: View {
     /// The letter a person's circle shows.
     ///

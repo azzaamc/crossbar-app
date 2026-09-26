@@ -16,9 +16,17 @@ struct OnboardingView: View {
 
     @ObservedObject private var deviceAuth = DeviceAuth.shared
 
+    /// The network this app may have to carry before it can reach the service at all.
+    ///
+    /// Observed here because setup is where it comes up on a private deployment: the login
+    /// page belongs on this screen, and this is what knows there is one to offer.
+    @ObservedObject private var node = TailnetNode.shared
+
     @State private var code = ""
     @State private var isScanning = false
     @State private var isWorking = false
+    /// Whether the wait is the network coming up rather than the enrollment being sent.
+    @State private var isCarrying = false
     @State private var failure: String?
     @State private var isDone = false
     @State private var showingManual = false
@@ -124,7 +132,7 @@ struct OnboardingView: View {
                 if isWorking {
                     HStack(spacing: Theme.Space.tight) {
                         ProgressView().controlSize(.small)
-                        Text("Joining…")
+                        Text(isCarrying ? "Bringing up your private network…" : "Joining…")
                     }
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -132,6 +140,23 @@ struct OnboardingView: View {
                     Button("Join") { Task { await join() } }
                         .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .accessibilityIdentifier("onboarding.join")
+                }
+
+                // Waiting for a person, said as itself rather than as a slow join: nothing can
+                // be sent until Tailscale has approved this device, and "Joining…" would be
+                // describing a wait that is somebody else's to end. The same words the session's
+                // own screen uses, because it is the same wait.
+                if isCarrying, node.loginURL != nil {
+                    VStack(spacing: Theme.Space.tight) {
+                        Text("Tailscale has to approve this device before Crossbar can reach your "
+                             + "private network. Approve it in the page that opens, and setup "
+                             + "carries on by itself.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("Open the sign-in page") { _ = node.openLoginPage() }
+                            .accessibilityIdentifier("onboarding.tailscaleLogin")
+                    }
                 }
             }
 
@@ -141,6 +166,20 @@ struct OnboardingView: View {
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("onboarding.failure")
+
+                // A node that will not come up has to be recoverable from the screen it failed
+                // on. This is the first screen the app ever shows, so there is no Settings behind
+                // it to go to, and the node has to be stopped before its state can be cleared --
+                // which is why this is a button and not an instruction.
+                if TailnetNode.isEnabled {
+                    Button("Start the network over") { Task { await startNetworkOver() } }
+                        .accessibilityIdentifier("onboarding.resetNetwork")
+                    Text("Forgets this device's identity in the network, so Tailscale will ask to "
+                         + "approve it again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
         }
     }
@@ -155,11 +194,11 @@ struct OnboardingView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
-            // A private deployment is two steps and everybody expects one. The code has pointed
-            // the app at the server; the network that carries the request to it is Tailscale's,
-            // and it has to approve this device before anything gets through. Said here, before
-            // the screen that asks, so the second step does not arrive as a surprise.
-            if AppSettings.connectionMode == .privateNetwork {
+            // A private deployment whose requests ride the *system's* Tailscale app needs that
+            // app connected, and saying so here is the only warning there is. One that carries
+            // its own node was authorised during setup — the screen before this one — so the
+            // same sentence would be describing work that is already done.
+            if AppSettings.connectionMode == .privateNetwork, !TailnetNode.isEnabled {
                 Text("Next: Tailscale has to approve this device before Crossbar can reach your "
                      + "private network.")
                     .font(.footnote)
@@ -173,14 +212,45 @@ struct OnboardingView: View {
 
     // MARK: - The one action
 
+    /// Clears the node and tries the whole thing again, which is what a network that will not
+    /// come up needs: the state it keeps is the thing that is broken, and the app is the only
+    /// thing that can clear it.
+    private func startNetworkOver() async {
+        if let refusal = await node.reset() {
+            failure = refusal
+            return
+        }
+        await join()
+    }
+
     private func join() async {
         let entered = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !entered.isEmpty, !isWorking else { return }
         isWorking = true
         failure = nil
-        defer { isWorking = false }
+        defer { isWorking = false; isCarrying = false }
 
         do {
+            // What the code says is read first — and read here rather than only inside the
+            // enrollment — because it decides the order of everything after it.
+            let parsed = try deviceAuth.settle(from: entered)
+
+            // The network comes up *before* the request, not after it. On a private deployment
+            // the enrollment is the first request this app ever makes, and it can only be made
+            // through the node the app carries: sent first, it is a request to an address that
+            // resolves nowhere, which is exactly what "could not reach the service" is. The
+            // person holding the phone is also the one who has to authorise the node, so the
+            // login page is offered while this waits rather than after it has failed.
+            //
+            // `isEnabled` is the same question the load asks — private mode, the node switched
+            // on, and not overridden — so someone who dials with the Tailscale app instead gets
+            // no bring-up here either.
+            if (parsed.mode ?? AppSettings.connectionMode) == .privateNetwork, TailnetNode.isEnabled {
+                isCarrying = true
+                try await CallSession.shared.attachForSetup()
+                isCarrying = false
+            }
+
             try await deviceAuth.enroll(code: entered)
             isDone = true
             // The enrollment settled both of these from the code, so what it stored is what this

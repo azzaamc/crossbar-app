@@ -12,4 +12,3 @@
 - Never claim a test passed unless it was actually executed in the stated environment.
 - Keep changes reversible through focused Git commits.
 - Prefer isolated experiments over broad rewrites.
-- PushKit/APNs is later; do not block the current device probe on it.

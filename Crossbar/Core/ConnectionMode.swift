@@ -18,6 +18,15 @@ import Foundation
 /// asked for one; guessing the other leaves someone unable to reach their service with no
 /// sign-in page to fix it. So the onboarding screen asks, once, in plain words, and this is
 /// what it writes down.
+///
+/// One thing other than that screen writes it: the deployment itself. `/api/health` names the
+/// mode the server is in, and a device still dialling the address of a deployment that switched
+/// adopts both that address and this from the answer (`CallSession.followMovedServer`). That is
+/// not the inference above — the deployment is stating which of the two it is, in the field it
+/// states it to everybody in — which is why it is allowed where reading the mode off an address
+/// is not. A mode adopted that way is put back with the address it came with when the new address
+/// does not answer for this device, so the deployment moving is never a one-way change for either
+/// half of it.
 enum ConnectionMode: String, CaseIterable {
     /// A server on a network the app carries itself.
     case privateNetwork

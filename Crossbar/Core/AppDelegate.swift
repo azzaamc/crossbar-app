@@ -82,7 +82,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, PKPushRegistryDelegate
         guard type == .voIP else { return }
         let token = credentials.token.map { String(format: "%02x", $0) }.joined()
         // Given to the session rather than uploaded from here. The client that carries the
-        // service's address, this device's bearer token and the family network's own route
+        // service's address, this device's bearer token and the network's own route
         // lives there, and a client built here would dial the system's route while the rest of
         // the app went down the node's — see `CallSession.createDeviceInvitation`, which is the
         // same arrangement for the same reason.
@@ -190,7 +190,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, PKPushRegistryDelegate
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         // Filed through the session for the same reason the VoIP token is: the client that
-        // carries the service's address, this device's bearer and the family network's own route
+        // carries the service's address, this device's bearer and the network's own route
         // lives there. See `CallSession.uploadAlertPushToken`.
         Task { await CallSession.shared.uploadAlertPushToken(token) }
     }
@@ -359,7 +359,7 @@ private struct PushedCall {
         self.callerName = name ?? "Unknown caller"
         // `audio` is the one kind with no pictures; anything else — including a kind this build
         // has never heard of — is drawn as a video call, which is the same reading
-        // `FamilyCall.isVideo` makes of a call the service describes.
+        // `Call.isVideo` makes of a call the service describes.
         self.video = (payload["kind"] as? String) != "audio"
     }
 }
