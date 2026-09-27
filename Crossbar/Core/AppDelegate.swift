@@ -304,9 +304,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, PKPushRegistryDelegate
             // cannot use, and it is why the payload is checked before anything is reported
             // rather than after. Nothing else can be done about it from here — the payload is
             // the service's, and a service sending calls this app cannot name is the thing to
-            // fix.
+            // fix. Both shapes the service sends are read (`PushedCall`), so a payload refused
+            // here is one that neither the relay's namespace nor the flat shape describes.
             CallSession.shared.log("a VoIP push arrived naming no call this app can report — "
-                + "\(payload.dictionaryPayload.count) keys, no usable callId")
+                + "\(payload.dictionaryPayload.count) keys, no usable call id in either shape")
             completion()
             return
         }
@@ -324,7 +325,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, PKPushRegistryDelegate
 /// The service's own words, read where the push arrives and nowhere else: the payload is
 /// Apple's envelope around the service's dictionary, so its shape is this file's business and
 /// the call session is handed the three things it can use — an identity, a name and a kind.
-private struct PushedCall {
+/// Internal rather than file-private so the tests can hold it to both shapes the service sends;
+/// nothing else in the app reads a push payload.
+struct PushedCall {
     /// The call's identity, and the service's own: the same id it minted for the call and the
     /// same one CallKit is given here. Nothing is derived from it, because a call this app
     /// invented an identity for could not be answered, joined or ended.
@@ -336,31 +339,107 @@ private struct PushedCall {
     /// Whether the call has pictures.
     let video: Bool
 
+    /// The version of the relay's namespaced shape this build understands.
+    ///
+    /// A number rather than the shape's absence, because the namespace is versioned precisely so
+    /// that a future payload can be refused instead of misread: a `v: 2` payload is the service
+    /// saying this build does not know what its fields mean, and guessing is how a call gets
+    /// reported with the wrong name and the wrong kind.
+    private static let version = 1
+
+    /// The one message the VoIP topic carries.
+    ///
+    /// Checked rather than assumed. The topic is VoIP-only (`docs/PUSH_RELAY_INTEGRATION.md` §4),
+    /// and this is what keeps a second kind of message, added to the relay later, from arriving
+    /// as a call.
+    private static let incomingCall = "incoming_call"
+
+    private init(id: UUID, callerName: String, video: Bool) {
+        self.id = id
+        self.callerName = callerName
+        self.video = video
+    }
+
     /// `nil` when the payload does not name a call that can be reported.
     ///
-    /// `caller` is a display name and the service sends it empty for someone who has never set
+    /// Two shapes are the service's, and both are read here because a push is the only thing that
+    /// announces a call to a closed app:
+    ///
+    ///  - **The relay's namespaced shape** — `{"aps": …, "crossbar": {…}}`, which the Crossbar
+    ///    Push Relay sends (`docs/PUSH_RELAY_INTEGRATION.md` §3) and which is how a call wake
+    ///    arrives from now on. Every field it carries is required: the service names the call's
+    ///    identity, the caller and the kind, and a payload missing any of them is not one this
+    ///    app can put on the lock screen and answer.
+    ///  - **The flat shape** — top-level `callId`/`caller`/`callerId`/`kind` — which the
+    ///    backend's own APNs path sends, and which shares its `callId` key with the missed-call
+    ///    alert. Nothing there is tightened: the relay is an added shape, not a replacement for
+    ///    a deployment that still speaks to APNs itself.
+    ///
+    /// `crossbar` decides which is read: a payload that carries the namespace is read as the
+    /// namespace, and one that does not is read flat. Falling back from a malformed namespace to
+    /// the flat keys would answer a question the service did not ask — the two shapes name the
+    /// same call, and a payload carrying both is not a case to guess at.
+    ///
+    /// `expiresAt` is deliberately not read, in either shape. Using it would mean a clock that
+    /// disagrees with the service — or an instant this build could not parse — refusing to ring
+    /// for a call that is really being placed, and a ring that did not happen cannot be
+    /// recovered. A call that rings for a few seconds after it was given up on can be, and is:
+    /// the session ends a call it finds it has no business being in.
+    init?(payload: [AnyHashable: Any]) {
+        if let service = payload["crossbar"] as? [AnyHashable: Any] {
+            guard let call = PushedCall(namespaced: service) else { return nil }
+            self = call
+            return
+        }
+        guard let call = PushedCall(flat: payload) else { return nil }
+        self = call
+    }
+
+    /// The relay's shape, every field validated rather than trusted.
+    ///
+    /// Reaching here means the payload said `crossbar`, so a field that does not fit is a
+    /// payload this build cannot read — not a reason to look for another reading of it.
+    private init?(namespaced service: [AnyHashable: Any]) {
+        guard service["v"] as? Int == Self.version,
+              service["type"] as? String == Self.incomingCall
+        else { return nil }
+
+        // The four fields the report needs. `installation_id` is deliberately not required: it
+        // is the relay's own record of which installation sent this, and this app has nothing to
+        // match it against — its device id is the backend's, and refusing a call over a field
+        // the app cannot check would be a ring lost for nothing.
+        guard let rawID = service["call_id"] as? String,
+              let id = UUID(uuidString: rawID),
+              let callerId = service["caller_id"] as? String,
+              let callerName = service["caller_name"] as? String,
+              let video = service["has_video"] as? Bool
+        else { return nil }
+
+        self.init(id: id, callerName: Self.name(callerName, then: callerId), video: video)
+    }
+
+    /// The shape the deployment's own APNs path sends, read exactly as it always was.
+    private init?(flat payload: [AnyHashable: Any]) {
+        guard let raw = payload["callId"] as? String, let id = UUID(uuidString: raw) else { return nil }
+
+        self.init(
+            id: id,
+            callerName: Self.name(payload["caller"] as? String, then: payload["callerId"] as? String),
+            // `audio` is the one kind with no pictures; anything else — including a kind this
+            // build has never heard of — is drawn as a video call, which is the same reading
+            // `Call.isVideo` makes of a call the service describes.
+            video: (payload["kind"] as? String) != "audio"
+        )
+    }
+
+    /// The name to ring with, from the two the service offers.
+    ///
+    /// The name is a display name and the service sends it empty for someone who has never set
     /// one, so the id beside it is the next thing to show, and "Unknown caller" is the last —
     /// the same words `CallSession.displayName(for:)` falls back to. A call on the lock screen
     /// with no name at all is worse than one named by whatever there is.
-    ///
-    /// `expiresAt` is deliberately not read. Using it would mean a clock that disagrees with the
-    /// service — or an instant this build could not parse — refusing to ring for a call that is
-    /// really being placed, and a ring that did not happen cannot be recovered. A call that
-    /// rings for a few seconds after it was given up on can be, and is: the session ends a call
-    /// it finds it has no business being in.
-    init?(payload: [AnyHashable: Any]) {
-        guard let raw = payload["callId"] as? String, let id = UUID(uuidString: raw) else { return nil }
-
-        let name = [payload["caller"] as? String, payload["callerId"] as? String]
-            .compactMap { $0 }
-            .first { !$0.isEmpty }
-
-        self.id = id
-        self.callerName = name ?? "Unknown caller"
-        // `audio` is the one kind with no pictures; anything else — including a kind this build
-        // has never heard of — is drawn as a video call, which is the same reading
-        // `Call.isVideo` makes of a call the service describes.
-        self.video = (payload["kind"] as? String) != "audio"
+    private static func name(_ preferred: String?, then fallback: String?) -> String {
+        [preferred, fallback].compactMap { $0 }.first { !$0.isEmpty } ?? "Unknown caller"
     }
 }
 

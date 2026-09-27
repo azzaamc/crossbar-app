@@ -626,9 +626,9 @@ final class CallSession: ObservableObject {
     /// Push tokens PushKit has given this app before it could file them.
     ///
     /// Held rather than dropped, because neither of the two ways an upload can fail is the
-    /// token's fault and neither is retried by anything else. PushKit announces once per launch —
-    /// so a token lost here is lost until the app is next launched, and a phone that is merely
-    /// backgrounded never is — and both failures are races this app loses by construction:
+    /// token's fault and PushKit will not raise the token again until the next launch — so a
+    /// token lost here is lost until then, and a phone that is merely backgrounded never gets
+    /// there. Both failures are races this app loses by construction:
     ///
     ///  - **A device that enrols during the same launch** is announced before it exists, and the
     ///    upload has nowhere to put it.
@@ -638,8 +638,45 @@ final class CallSession: ObservableObject {
     ///    brought up. Measured 2026-09-24: a phone enrolled at 16:19 had filed nothing by 17:31,
     ///    on a launch whose `presence_broadcast` proves the load itself was fine.
     ///
-    /// Both are fixed by the same thing: keep it, and file it once a load has settled.
+    /// Both are fixed by the same thing: keep it, and try it again — on a bounded doubling delay
+    /// (`startPushTokenRetries`), and once a load has settled (`fileHeldPushTokens`), whichever
+    /// comes first. Whichever of the two files it clears it from here.
     private var heldPushTokens: [String: String] = [:]
+
+    /// The upload retries currently running, one per token kind.
+    ///
+    /// Held so that a retry can be stopped: PushKit can announce a new token while the old one is
+    /// still being retried — a rotation, or a second launch — and two uploads racing is the retry
+    /// storm this is bounded to avoid. A load stops them too, because `fileHeldPushTokens` does
+    /// the same job on its own schedule.
+    private var pushTokenRetries: [String: Task<Void, Never>] = [:]
+
+    /// The newest token PushKit has given for each kind.
+    ///
+    /// The reason a retry is safe to run at all. By the time a retry goes out, the token it was
+    /// started for may have been replaced, and filing a replaced token would put back on the
+    /// service a token APNs no longer mints — the failure this app cannot see from the device.
+    /// Checked before every attempt, not once at the start.
+    private var latestPushTokens: [String: String] = [:]
+
+    /// How many times an upload is retried on its own before it is left to the next load.
+    ///
+    /// Bounded, and small on purpose. Both failures it exists for are about the first seconds of
+    /// a launch — no device id yet, and no carrier yet — and both are also caught by
+    /// `fileHeldPushTokens` when a load settles, so this is the path that matters when the load
+    /// itself is late. Beyond it an unreachable service is an unreachable service, and iOS hands
+    /// this app the token again on the next launch.
+    private static let pushTokenAttempts = 6
+
+    /// The wait before attempt `attempt`, doubling from a second: 1, 2, 4, 8, 16, 32.
+    ///
+    /// Doubling rather than fixed, because what is being waited for is a node coming up and the
+    /// requests are what a retry storm is made of. Measured 2026-09-24: a phone enrolled at 16:19
+    /// had filed nothing by 17:31, on a launch whose `presence_broadcast` proves the load itself
+    /// was fine — the upload went out before the node existed, and nothing ever asked again.
+    private static func pushTokenBackoff(_ attempt: Int) -> Duration {
+        .seconds(1 << (attempt - 1))
+    }
 
     /// Files this device's VoIP push token with the service, which is how a call reaches a phone
     /// whose app is closed. PushKit mints it, and a call this device has to report arrives on it.
@@ -655,6 +692,12 @@ final class CallSession: ObservableObject {
     /// rather than being another token this app threw away.
     private func fileHeldPushTokens() async {
         guard let deviceId = DeviceAuth.shared.deviceId, !heldPushTokens.isEmpty else { return }
+        // A load is doing this job now, so the retries racing it are stopped rather than left to
+        // duplicate the request — the same reason a replaced token stops the retry for it.
+        for kind in Array(heldPushTokens.keys) {
+            pushTokenRetries[kind]?.cancel()
+            pushTokenRetries[kind] = nil
+        }
         for (kind, token) in heldPushTokens {
             do {
                 try await client.uploadPushToken(deviceId: deviceId, token: token,
@@ -689,34 +732,102 @@ final class CallSession: ObservableObject {
     /// the system's route while everything else went down the node's. See
     /// `createDeviceInvitation`.
     ///
-    /// Both registries announce their token on every launch, so nothing is retried or remembered
-    /// here: a service that is unreachable when it is asked is asked again by the next launch.
+    /// **An attempt, and then retries that do not hold anything up.** The first attempt happens
+    /// now, on whichever route the app has at this instant — at launch that is the direct one, to
+    /// an address only a node that has not been brought up can resolve. That failure is expected
+    /// rather than exceptional, so it is not the end of the token: the token is held, and
+    /// `startPushTokenRetries` tries it again on a doubling delay while `fileHeldPushTokens` tries
+    /// it once a load has settled. Neither waits for the other, and this method returns after its
+    /// own attempt — nothing here holds a launch still for a minute.
     ///
     /// The device id is the service's own, issued when this device enrolled — the token is filed
     /// against the device that signed the request. A device that has not enrolled has nothing to
     /// file it under, and that is a state to write down rather than a failure to report: the
-    /// thing that has to happen is an enrollment, not another try.
+    /// thing that has to happen is an enrollment, not another try. The load that follows the
+    /// enrollment is what files the token, through `fileHeldPushTokens`.
     private func uploadPushToken(_ token: String, kind: String) async {
+        latestPushTokens[kind] = token
+        // A retry for a token PushKit has just replaced is stopped rather than left to file the
+        // old one after this one. `latestPushTokens` is what makes that exact even for a request
+        // already in flight.
+        pushTokenRetries[kind]?.cancel()
+        pushTokenRetries[kind] = nil
+
         guard let deviceId = DeviceAuth.shared.deviceId else {
             heldPushTokens[kind] = token
             log("a \(kind) push token arrived before this device is enrolled — held until it is")
             return
         }
 
+        if await sendPushToken(token, kind: kind, deviceId: deviceId) {
+            heldPushTokens[kind] = nil
+            return
+        }
+
+        // Held for the same reason as above, and this is the case that actually happens: at
+        // launch there is no carrier yet, so an upload attempted the moment PushKit speaks is a
+        // request over the direct route to an address only a network this app has not brought up
+        // can resolve. `startPushTokenRetries` and `fileHeldPushTokens` both take it from here.
+        heldPushTokens[kind] = token
+        log("this device's \(kind) push token is kept for the next attempt")
+        startPushTokenRetries(token: token, kind: kind, deviceId: deviceId)
+    }
+
+    /// One attempt at filing a token, as a yes or a no rather than a throw.
+    ///
+    /// `false` is any reason the service did not end up holding this token, and the caller decides
+    /// what that means — a retry here, or the next load. The failure is logged either way, because
+    /// a service that refused and a service that was never reached look alike from the outside
+    /// and the log is the only place they are told apart.
+    private func sendPushToken(_ token: String, kind: String, deviceId: String) async -> Bool {
         do {
-            try await client.uploadPushToken(
+            return try await client.uploadPushToken(
                 deviceId: deviceId,
                 token: token,
                 environment: PushEnvironment.current,
                 kind: kind
             )
         } catch {
-            // Held for the same reason as above, and this is the case that actually happens: at
-            // launch there is no carrier yet, so an upload attempted the moment PushKit speaks is
-            // a request over the direct route to an address only a network this app has not
-            // brought up can resolve. `fileHeldPushTokens` files it once a load has settled.
-            heldPushTokens[kind] = token
-            log("could not file this device's \(kind) push token: \(error.localizedDescription) — kept for the next load")
+            log("could not file this device's \(kind) push token: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Tries a token again, on a doubling delay, a bounded number of times.
+    ///
+    /// One task per kind, so a token that keeps failing cannot multiply into several uploads, and
+    /// a wait before every attempt, so it cannot become a storm either. Nothing here blocks a
+    /// launch: the first attempt has already been made and returned, and this runs beside whatever
+    /// the app is doing.
+    ///
+    /// Each attempt is skipped unless the token is still both the newest PushKit has given and the
+    /// one still waiting to be filed — so a rotation ends the old token's retries, and a load that
+    /// filed it first ends them too, rather than two uploads of the same token arriving together.
+    ///
+    /// The token is dropped from the held set the moment it is filed. If the attempts run out it
+    /// stays held, which is the case `fileHeldPushTokens` exists for — the next load is then the
+    /// next try rather than the last.
+    ///
+    /// The handle is deliberately not cleared from inside the task: a task that lost its token to
+    /// a rotation must not clear the entry belonging to the retry that replaced it.
+    private func startPushTokenRetries(token: String, kind: String, deviceId: String) {
+        pushTokenRetries[kind] = Task { [weak self] in
+            for attempt in 1...Self.pushTokenAttempts {
+                do {
+                    try await Task.sleep(for: Self.pushTokenBackoff(attempt))
+                } catch {
+                    // Cancelled: a newer token, or a load, has taken this over.
+                    return
+                }
+                guard let self, self.latestPushTokens[kind] == token,
+                      self.heldPushTokens[kind] == token
+                else { return }
+                if await self.sendPushToken(token, kind: kind, deviceId: deviceId) {
+                    self.heldPushTokens[kind] = nil
+                    self.log("the \(kind) push token was filed on retry \(attempt) of \(Self.pushTokenAttempts)")
+                    return
+                }
+            }
         }
     }
 
