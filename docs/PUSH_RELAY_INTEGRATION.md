@@ -112,7 +112,20 @@ relay: upsert, UNIQUE(token) first-writer-wins
 
 - **Update, not create.** A rotated PushKit token is an upsert at the same `device_id`. A new
   relay device per token rotation is a defect.
-- **Removal** on unpair/logout is `DELETE /v1/devices/{device_id}`.
+- **Removal** on unpair/logout: the app calls the deployment's
+  **`DELETE /api/devices/{device_id}`** — a *device-facing* route, authenticated by the existing
+  device session and refused when the id is not the caller's own device — while its session still
+  exists, and the deployment releases the relay registration with `DELETE /v1/devices/{device_id}`.
+  The operator's revoke and remove do the same, **from the CLI as well as the HTTP API**: a device
+  taken out of the records must not keep a live relay registration owning its token, because the
+  relay's token row is unique and the same phone enrolling elsewhere would earn a `409
+  token_conflict` and never ring again.
+- **Answering the relay's outcome.** Every route that causes a relay call reports what the relay
+  said, and nothing answers a bare success while a relay call it made failed. The app decides
+  whether to keep retrying from that outcome, so an answer that hides a failure leaves a phone that
+  cannot be rung with nothing saying so. Retryable — a timeout, `429`, `5xx`, not configured,
+  `409 request_in_progress` — is distinguished from permanent (`409 token_conflict`), which a
+  client must not retry.
 - `pushRegistry(_:didInvalidatePushTokenFor:)` already exists (`AppDelegate.swift:99`) and is the
   signal to clear, not to forget the device.
 - **Token retention**: the backend already stores the token (`voipTokensFor`). Keeping it is
