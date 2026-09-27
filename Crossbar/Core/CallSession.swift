@@ -598,6 +598,44 @@ final class CallSession: ObservableObject {
 
     // MARK: - A call that arrived while the app was not running
 
+    /// What a VoIP push asks of CallKit, given what this device already has on screen.
+    ///
+    /// Its own value rather than three branches inside `reportPushedCall`, because these three
+    /// answers are the whole of what a push means once something is already being carried, and
+    /// the two mistakes available here are both invisible from the outside: leaving a second call
+    /// ringing that this app has no media for and no screen to answer from, and *ending* the call
+    /// the person is looking at because a redelivered wake named the same call twice.
+    enum PushedReportPlan: Equatable {
+        /// Nothing is on screen: report the call and reconcile it with a load, as always.
+        case ring
+        /// The push names the call already on screen — the relay replays a wake it has already
+        /// sent within the day, and APNs redelivers ordinary ones. The report is still made
+        /// (`CallKitController` recognises its own earlier report), and nothing else may happen:
+        /// an end here would take down the live ring.
+        case alreadyOnScreen
+        /// A different call while one is on screen. This app carries **one call at a time** — the
+        /// phase holds one, and `adopt` refuses to act while it does — so the pushed call cannot
+        /// be rung *and* backed. Report it, because iOS requires a report for every VoIP push and
+        /// ends an app that takes one and reports nothing, and end it in the same breath: a ring
+        /// whose answer could never reach anything is worse than one that never lasted, because
+        /// it asks the person to answer a call with nothing behind it. The end is against the id
+        /// the push reported, so the call that *is* on screen is untouched, and the system's own
+        /// Recents is where the missed one is still recorded.
+        case reportThenEnd
+    }
+
+    /// Which of the three a push is, given the id it named and what is on screen.
+    ///
+    /// Pure and static, so the whole of the question is in one place. `onScreen` is the CallKit
+    /// id this session has already told the system about (`callKitCallID`), and `busy` says
+    /// whether the phase is carrying a call at all — the two can differ, because a call whose id
+    /// is not a UUID is on screen with no CallKit id of its own, and one of those must still be
+    /// treated as a call in progress.
+    static func pushedReportPlan(pushed: UUID, onScreen: UUID?, busy: Bool) -> PushedReportPlan {
+        if pushed == onScreen { return .alreadyOnScreen }
+        return busy ? .reportThenEnd : .ring
+    }
+
     /// Rings for the call a VoIP push named, and gets this app into a state where it can be
     /// answered.
     ///
@@ -614,17 +652,40 @@ final class CallSession: ObservableObject {
     /// is the only thing that says so, and it is asked here rather than waited for: the person
     /// may answer from the lock screen before the root view has even been built, and the answer
     /// is held until the load lands. See `answerPending`.
+    ///
+    /// **And only while nothing is on screen.** The report is unconditional — iOS requires one per
+    /// VoIP push — but what follows it is not: see `PushedReportPlan` for the three states a push
+    /// can arrive into, and for why the one that used to return here in silence left a second
+    /// CallKit call ringing with nothing that could answer it.
     func reportPushedCall(callID: UUID, callerName: String, video: Bool) {
         callKit.reportIncoming(callID: callID, callerName: callerName, video: video)
         log("a VoIP push reported \(callID.uuidString.prefix(8)) from \(callerName) — video=\(video)")
+
+        switch Self.pushedReportPlan(pushed: callID, onScreen: callKitCallID, busy: phase.call != nil) {
+        case .alreadyOnScreen:
+            // Heard twice, which is ordinary rather than a fault: the relay replays a wake it has
+            // already sent within the day, and APNs redelivers. Nothing to reconcile, and nothing
+            // to end — this ring is the call the person can see.
+            log("the push names the call already on screen — nothing to reconcile")
+            return
+
+        case .reportThenEnd:
+            // A second wake for someone already on a call. The report above cannot be skipped, so
+            // the honest difference from a silent return is the end: it is the pushed id that is
+            // ended, never the call in progress, and the log line says which decision this was.
+            log("a call is already on screen — ending the pushed call "
+                + "\(callID.uuidString.prefix(8)) rather than leaving a second ring with nothing "
+                + "able to answer it")
+            callKit.end(callID: callID)
+            return
+
+        case .ring:
+            break
+        }
+
         // Kept so that the load below rings *this* call rather than whichever open invitation
         // the service happens to list first. See `pushedCallID`.
         pushedCallID = callID
-
-        // A call already in progress, or one already ringing, needs no load: whatever rings for
-        // it is the event stream, which is up whenever a load has finished, and loading over a
-        // live call would take its screen down and put it back.
-        guard phase.call == nil else { return }
 
         // Nowhere to dial. A push can only have arrived for an enrolled device, but this app
         // deliberately does not decide how to reach a service on someone's behalf — the first
@@ -665,8 +726,22 @@ final class CallSession: ObservableObject {
     /// instead, through `PushTokenVerdict`: a phone that is offered again and again to an answer
     /// that cannot change is a retry storm, and one whose token is quietly forgotten while the
     /// relay still refuses it is a phone that never rings with nothing saying so. See
-    /// `PendingPushTokens`, which is where the two are told apart.
+    /// `PendingPushTokens`, which is where the two are told apart, and `pushTokenRefusals`, which
+    /// is where a permanent refusal is published for the screen to read.
     private var heldPushTokens = PendingPushTokens()
+
+    /// The push token kinds the relay has refused **for good**, with its own word for why.
+    ///
+    /// Published state rather than a sentence in `notice`, because a refusal is a condition and
+    /// not a moment. `notice` is said once about a moment and every load and refresh clears it
+    /// (`runLoad`, `refresh`) — while this does not end when a load does: the relay will not take
+    /// the token, `heldPushTokens` no longer holds it, and nothing asks again until this process
+    /// next launches. A sentence a load can erase is a phone that cannot be rung with the UI
+    /// saying nothing, which is the failure this whole token path exists to end
+    /// (`docs/PUSH_RELAY_INTEGRATION.md` §5). So the screen reads *this*, every time it looks, and
+    /// it stops the moment the condition does — a token for that kind filed, which is the only
+    /// answer that makes the phone ringable again.
+    @Published private(set) var pushTokenRefusals = PushTokenRefusals()
 
     /// The upload retries currently running, one per token kind.
     ///
@@ -727,7 +802,7 @@ final class CallSession: ObservableObject {
         for (kind, token) in heldPushTokens.entries {
             switch await sendPushToken(token, kind: kind, deviceId: deviceId) {
             case .filed:
-                heldPushTokens.resolve(.filed, kind: kind)
+                resolve(.filed, kind: kind)
                 log("the \(kind) push token held from launch has been filed")
 
             case .permanent(let code):
@@ -795,7 +870,7 @@ final class CallSession: ObservableObject {
 
         switch await sendPushToken(token, kind: kind, deviceId: deviceId) {
         case .filed:
-            heldPushTokens.resolve(.filed, kind: kind)
+            resolve(.filed, kind: kind)
 
         case .retry(let reason):
             // Held for the same reason as above, and this is the case that actually happens: at
@@ -838,20 +913,33 @@ final class CallSession: ObservableObject {
         }
     }
 
+    /// Applies the deployment's verdict to the token held for `kind`.
+    ///
+    /// One place, because a verdict means two things at once now: what is still waiting to be
+    /// filed (`heldPushTokens`) and what the relay has refused **for good**
+    /// (`pushTokenRefusals`). They are told apart by how long they last — the first is cleared by
+    /// the next load that settles, the second is only cleared by a token the relay takes — so
+    /// nothing else in this file may write either of them.
+    @discardableResult
+    private func resolve(_ verdict: PushTokenVerdict, kind: String) -> Bool {
+        let stillPending = heldPushTokens.resolve(verdict, kind: kind)
+        pushTokenRefusals.apply(verdict, kind: kind)
+        return stillPending
+    }
+
     /// Ends the attempts for a token the relay will keep refusing, and says so.
     ///
     /// `409 token_conflict` means the relay's token row has an owner, and only that owner letting
     /// go — or the relay's operator — can free it, so another attempt asks a question whose answer
     /// cannot change. The token is dropped from the pending set rather than retried, and the
-    /// person is told, because a phone that cannot be rung with nothing saying so is exactly the
-    /// failure this path exists to end. The next launch re-announces the token to PushKit and
-    /// asks once more, which is what makes a released token become ringable again without
-    /// anybody reinstalling anything.
+    /// condition is published rather than said once, because a phone that cannot be rung with
+    /// nothing saying so is exactly the failure this path exists to end: the screen reads
+    /// `pushTokenRefusals` on every appearance, and what a load clears — `notice` — is not where
+    /// this lives. The next launch re-announces the token to PushKit and asks once more, which is
+    /// what makes a released token become ringable again without anybody reinstalling anything.
     private func refusePushToken(code: String, kind: String) {
-        heldPushTokens.resolve(.permanent(code: code), kind: kind)
+        resolve(.permanent(code: code), kind: kind)
         log("the relay refused this device's \(kind) push token (\(code)) — not asked again until this device is ringable")
-        notice = "This phone cannot be rung yet — the service that sends the wake refused its push "
-            + "token (\(code)). Only the server can release it."
     }
 
     /// Tries a token again, on a doubling delay, a bounded number of times.
@@ -886,7 +974,7 @@ final class CallSession: ObservableObject {
                 else { return }
                 switch await self.sendPushToken(token, kind: kind, deviceId: deviceId) {
                 case .filed:
-                    self.heldPushTokens.resolve(.filed, kind: kind)
+                    self.resolve(.filed, kind: kind)
                     self.log("the \(kind) push token was filed on retry \(attempt) of \(Self.pushTokenAttempts)")
                     return
 
@@ -1760,6 +1848,13 @@ final class CallSession: ObservableObject {
         // should withhold.
         AppSettings.abandonedServiceAddress = nil
         serverMovedTo = nil
+        // And the sentence about a phone that cannot be rung. It describes a token the *old*
+        // deployment's relay refused, and this device is being set up from nothing against a new
+        // one: the release above asked that deployment to let this device go, and a re-enrollment
+        // files a fresh token on its first load — which is what earns the sentence back if the
+        // conflict is still there. Keeping it would be this app refusing a deployment it is no
+        // longer set up for, on the strength of an answer about a device row that no longer exists.
+        pushTokenRefusals = PushTokenRefusals()
         needsSetup = true
         log("forgotten — this device has to be set up again")
     }
@@ -2171,8 +2266,8 @@ struct PendingPushTokens {
     /// Returns whether the token is still waiting, which is true of exactly one verdict: a
     /// retryable refusal. A token the deployment has filed is no longer this app's to offer, and
     /// one the relay will never take must not be offered again — dropping it is the whole of what
-    /// `permanent` means here, and a phone refused that way is said out loud instead
-    /// (`CallSession.refusePushToken`).
+    /// `permanent` means here, and a phone refused that way is published instead
+    /// (`CallSession.pushTokenRefusals`, which is where the words for it live).
     @discardableResult
     mutating func resolve(_ verdict: PushTokenVerdict, kind: String) -> Bool {
         switch verdict {
@@ -2181,6 +2276,58 @@ struct PendingPushTokens {
             return false
         case .retry:
             return held[kind] != nil
+        }
+    }
+}
+
+/// The push tokens the relay has refused for good, and what that means for the person.
+///
+/// The durable half of the same verdict `PendingPushTokens` takes, and a type of its own for the
+/// same reason: both mistakes are silent. Saying nothing while the phone cannot be rung leaves
+/// somebody waiting for calls that cannot arrive, and saying it after the phone can be rung again
+/// is a screen crying wolf about a service that has already let go — `apply` is where a verdict
+/// becomes one of the two.
+///
+/// The words are **read off** what is refused rather than stored beside it, which is the whole
+/// point of the type: nobody can clear the sentence without clearing the condition, and there is
+/// therefore nothing for a load to take down. It is a value rather than a `String` on the session
+/// because that is what makes it comparable, testable and clearable in the one place the verdict
+/// arrives.
+struct PushTokenRefusals {
+    private var codes: [String: String] = [:]
+
+    var isEmpty: Bool { codes.isEmpty }
+
+    /// What the person is told, or nothing while this phone can be rung.
+    ///
+    /// The kinds are named and sorted, so two refusals cannot produce a sentence whose wording
+    /// depends on dictionary order, and the relay's own word for the refusal is carried through:
+    /// `token_conflict` is what an operator — the only one who can release the token — needs in
+    /// order to find it. Nothing here is a credential: an error code is the relay's vocabulary,
+    /// and a token itself never appears in this app's copy.
+    var sentence: String? {
+        guard !codes.isEmpty else { return nil }
+        let described = codes.sorted { $0.key < $1.key }
+            .map { "\($0.key) (\($0.value))" }
+            .joined(separator: ", ")
+        return "This phone cannot be rung yet — the service that sends the wake refused its push "
+            + "token \(described). Only the server can release it."
+    }
+
+    /// Applies the deployment's verdict to what the person is being told.
+    ///
+    /// A retry changes nothing, and that is the case a load walks through on its way past: it is
+    /// not an answer about the token, it is a service that could not be reached, and it must not
+    /// take the sentence away. Filing is the only thing that ends a refusal, because it is the
+    /// only thing that makes the phone ringable again.
+    mutating func apply(_ verdict: PushTokenVerdict, kind: String) {
+        switch verdict {
+        case .filed:
+            codes[kind] = nil
+        case .permanent(let code):
+            codes[kind] = code
+        case .retry:
+            break
         }
     }
 }

@@ -333,3 +333,95 @@ struct PushedCallReconciliationTests {
                                     calls: [Self.call(Self.other)], ongoing: []) == .unpushed)
     }
 }
+
+/// What a VoIP push does when this app is already carrying a call.
+///
+/// The report to CallKit cannot be skipped — iOS ends an app that takes a VoIP push and reports
+/// nothing, and stops delivering pushes to an app in the habit of it — so a second call arriving
+/// during another one was reported and then forgotten: `reportPushedCall` returned as soon as the
+/// phase already held a call, and `adopt`'s reconciliation returns on the same condition. The
+/// system was left showing a ringing call this app had no media, no screen and no answer path for.
+/// These hold the three answers a push can have once something is on screen, and the one that must
+/// never happen: an end against the call the person is actually on, from a redelivered wake for
+/// that same call.
+@MainActor
+struct PushedReportWhileBusyTests {
+    private static let onScreen = UUID(uuidString: "3f2504e0-4f89-11d3-9a0c-0305e82c3301")!
+    private static let second = UUID(uuidString: "9c858901-8a57-4791-81fe-4c455b099bc9")!
+
+    /// A different call while one is on screen is reported and then ended, so exactly one of the
+    /// two is left as a CallKit call: the second does not ring on with nothing able to answer it.
+    @Test func aSecondCallIsEndedRatherThanLeftRinging() {
+        #expect(CallSession.pushedReportPlan(pushed: Self.second, onScreen: Self.onScreen, busy: true)
+                == .reportThenEnd)
+    }
+
+    /// The same call heard twice is left alone. The relay replays a wake it has already sent within
+    /// the day and APNs redelivers, so this is ordinary rather than a fault — and ending it would
+    /// end the call the person is looking at.
+    @Test func aReplayedPushForTheCallOnScreenIsLeftAlone() {
+        #expect(CallSession.pushedReportPlan(pushed: Self.onScreen, onScreen: Self.onScreen,
+                                             busy: true) == .alreadyOnScreen)
+    }
+
+    /// Nothing on screen: the push still rings and reconciles — the path this decision must not
+    /// take away from the ordinary case.
+    @Test func aPushWithNothingOnScreenStillRings() {
+        #expect(CallSession.pushedReportPlan(pushed: Self.onScreen, onScreen: nil, busy: false)
+                == .ring)
+    }
+
+    /// A call whose id is not a UUID is on screen with no CallKit id of its own, so a push is still
+    /// a second call and must not be read as an empty screen.
+    @Test func aPushWhileAnUnreportableCallIsOnScreenIsStillEnded() {
+        #expect(CallSession.pushedReportPlan(pushed: Self.second, onScreen: nil, busy: true)
+                == .reportThenEnd)
+    }
+}
+
+/// What the person is told about a phone the relay will not ring.
+///
+/// `409 token_conflict` is permanent: the relay's token row has an owner, the token leaves
+/// `PendingPushTokens`, and nothing asks again until this process next launches. The sentence about
+/// it used to live in `notice` — which every load and refresh clears — so from the first load after
+/// the refusal the phone was unringable with nothing on screen saying so. These hold the durable
+/// reading instead: the words are derived from the refusals the session publishes, so they survive
+/// the answers a load produces on its way past, and go away at the one moment the condition does.
+@MainActor
+struct PushTokenRefusalNoticeTests {
+    /// The refusal is said, a load that cannot reach the relay does not take it away, and filing
+    /// the token does.
+    ///
+    /// The middle step is a load: `fileHeldPushTokens` asks the deployment again once every load
+    /// settles, and a deployment that cannot reach its relay answers `retry` — the case the token
+    /// path already treats as "ask again later", and here also the case the sentence must survive.
+    @Test func aRefusalSurvivesTheAnswerALoadGetsAndStopsWhenTheTokenIsFiled() {
+        var refusals = PushTokenRefusals()
+        #expect(refusals.sentence == nil)
+
+        refusals.apply(.permanent(code: "token_conflict"), kind: "voip")
+        #expect(refusals.sentence?.contains("voip") == true)
+        #expect(refusals.sentence?.contains("token_conflict") == true)
+
+        refusals.apply(.retry("the service did not answer"), kind: "voip")
+        #expect(refusals.sentence?.contains("token_conflict") == true,
+                "a load that could not reach the relay is not an answer about the token")
+
+        refusals.apply(.filed, kind: "voip")
+        #expect(refusals.isEmpty)
+        #expect(refusals.sentence == nil, "the phone can be rung again, so there is nothing to say")
+    }
+
+    /// The two token kinds are independent, and only the refused one is described: filing the alert
+    /// token says nothing about whether the VoIP token — the one the relay rings the phone with —
+    /// is still refused.
+    @Test func filingOneKindDoesNotSilenceTheOther() throws {
+        var refusals = PushTokenRefusals()
+        refusals.apply(.permanent(code: "token_conflict"), kind: "voip")
+        refusals.apply(.filed, kind: "alert")
+
+        let sentence = try #require(refusals.sentence)
+        #expect(sentence.contains("voip (token_conflict)"))
+        #expect(!sentence.contains("alert"))
+    }
+}

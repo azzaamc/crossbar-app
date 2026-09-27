@@ -82,6 +82,24 @@ struct PeopleView: View {
     /// this device up again" for a device that had just done the right thing by itself.
     @ViewBuilder
     private var connection: some View {
+        // A phone that cannot be rung is not a moment and not about this load, so it is not the
+        // notice below: the session publishes it as state, this reads it on every appearance, and
+        // that is the difference between being told once — by a sentence any load or
+        // pull-to-refresh clears — and being told every time somebody looks. It goes away when
+        // the token is filed, which is the only thing that makes it stop being true.
+        if let unringable = session.pushTokenRefusals.sentence {
+            Section {
+                Label {
+                    Text(unringable)
+                        .font(.footnote)
+                } icon: {
+                    Theme.symbol("phone.down", size: 22)
+                        .foregroundStyle(.orange)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+
         if let notice = session.notice {
             Section {
                 Text(notice)
