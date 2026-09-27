@@ -110,7 +110,7 @@ The server-side machine that the evidence actually supports:
 | N5 | An invitation is idempotent: inviting someone already in the call does nothing. | **[EXISTS]** — `INSERT OR IGNORE` |
 | N6 | The set of participants must be visible to every participant, including one who joined late. | **[EXISTS]** in the control plane (`participants[]`); the signalling layer has no roster event the native client reads |
 | N7 | A participant's departure is announced to the others and does not end the call. | **[GAP]** — see C5 |
-| N8 | A participant who is already in the call cannot be invited twice, and a person already in a call cannot be rung into another. | **[DECISION]** — the client ignores a second invitation while busy (`CallSession.swift:713-716`), but the server does not prevent it |
+| N8 | A participant who is already in the call cannot be invited twice, and a person already in a call cannot be rung into another. | **[DECISION]** — the client enforces it on both paths and the server does not: a second invitation is ignored while busy, and a second *pushed* call is reported to CallKit (iOS requires a report for every VoIP push) and then ended, so exactly one system call survives — the one the person is on — while Recents still records the missed one. The decision is one pure function, `CallSession.pushedReportPlan(pushed:onScreen:busy:)`, which leaves a push naming the call already on screen strictly alone. The server is not the enforcement point: it holds no call state |
 
 ---
 
