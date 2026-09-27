@@ -222,6 +222,17 @@ that has been terminated; whether the embedded Tailscale node recovers inside iO
 and whether deployed Cloudflare → APNs sandbox actually delivers — the relay's own outstanding
 gate, which no local test can settle.
 
-**Not yet built**: the namespaced decoder, the backend's `PushRelayClient` and its relay
-dispatch, the per-device `request_id`, and the relay installation provisioning (CLI-only,
-`scripts/relay-admin.mjs` — there is deliberately no admin HTTP API).
+One case is named here because source provably cannot settle it, and a reviewer was right to
+refuse to guess. When a cold process recovers and its persisted device call id matches a call
+that is *already ongoing*, the arrival resolves to `ongoing` and the app resumes it — but `resume`
+neither ends the incoming CallKit call the push just reported nor marks it connected
+(`reportConnected` is outgoing-only). Whether CallKit restores and accepts that UUID, and whether
+the system UI stops ringing, needs a physical device: kill the app, push, and watch. Until that
+test runs, treat the cold-resume path as unverified rather than as working.
+
+**Not yet built**: only the relay **installation provisioning** — CLI-only, `scripts/relay-admin.mjs`,
+and deliberately with no admin HTTP API, so a deployment cannot provision itself. Everything else in
+this contract is implemented and tested: the namespaced decoder (both shapes, ten app tests), the
+backend's relay client and its dispatch, the per-device `request_id`, the answered relay outcome
+with retryable distinguished from permanent, the durable pending deletion, and the device-facing
+removal route. What remains is provisioning, and then the live gates.
