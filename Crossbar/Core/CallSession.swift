@@ -54,6 +54,23 @@ final class CallSession: ObservableObject {
         }
     }
 
+    /// What a load found for the call a VoIP push reported.
+    ///
+    /// A push is reported to CallKit before anything can be asked about it — iOS ends an app that
+    /// takes a VoIP push and reports nothing — so this is the first moment the service can be
+    /// heard on the question of whether the call is really being placed. Three of the four answers
+    /// are a call to ring, to rejoin, or to end; the fourth is no push at all.
+    enum PushedArrival: Equatable {
+        /// No push named a call. Whatever invitation the service lists stands, as it always has.
+        case unpushed
+        /// The service names the pushed call, and this device is invited to it.
+        case invited(Call)
+        /// The service names the pushed call and says this device is already in it.
+        case ongoing(Call)
+        /// The service does not name the pushed call at all. It has to be ended.
+        case unknown
+    }
+
     @Published private(set) var phase: Phase = .loading
     @Published private(set) var me: Person?
     @Published private(set) var contacts: [Contact] = []
@@ -141,7 +158,8 @@ final class CallSession: ObservableObject {
     /// left over from earlier still reads `invited`. Ringing is then a choice between them, and
     /// the choice matters — CallKit was told the pushed call's id, so ringing a different call
     /// shows the phone a call it cannot answer while the one being made is not on screen at all.
-    /// See `adopt`, which uses this to pick the pushed call out of the list.
+    /// See `adopt` and `arrival`, which use this to pick the pushed call out of the list — and to
+    /// end the ring when the service's list does not have it at all (SEC-RELAY-05).
     private var pushedCallID: UUID?
 
     /// The Picture-in-Picture window, armed while a call has video worth showing.
@@ -641,7 +659,14 @@ final class CallSession: ObservableObject {
     /// Both are fixed by the same thing: keep it, and try it again — on a bounded doubling delay
     /// (`startPushTokenRetries`), and once a load has settled (`fileHeldPushTokens`), whichever
     /// comes first. Whichever of the two files it clears it from here.
-    private var heldPushTokens: [String: String] = [:]
+    ///
+    /// **Held only while the deployment's answer says another attempt is worth making.** A relay
+    /// refusal that will not change — `409 token_conflict`, and only that — clears the token
+    /// instead, through `PushTokenVerdict`: a phone that is offered again and again to an answer
+    /// that cannot change is a retry storm, and one whose token is quietly forgotten while the
+    /// relay still refuses it is a phone that never rings with nothing saying so. See
+    /// `PendingPushTokens`, which is where the two are told apart.
+    private var heldPushTokens = PendingPushTokens()
 
     /// The upload retries currently running, one per token kind.
     ///
@@ -688,24 +713,28 @@ final class CallSession: ObservableObject {
     ///
     /// Called once a load has settled, which is the first moment both halves are true: there is a
     /// device to file against, and there is a transport that can carry the request. Nothing is
-    /// cleared unless the service accepted it, so a failure here is retried by the next load
-    /// rather than being another token this app threw away.
+    /// cleared unless the service accepted it — a filed token, and one the relay will never take —
+    /// so a retryable refusal here is retried by the next load rather than being another token
+    /// this app threw away.
     private func fileHeldPushTokens() async {
         guard let deviceId = DeviceAuth.shared.deviceId, !heldPushTokens.isEmpty else { return }
         // A load is doing this job now, so the retries racing it are stopped rather than left to
         // duplicate the request — the same reason a replaced token stops the retry for it.
-        for kind in Array(heldPushTokens.keys) {
+        for kind in heldPushTokens.kinds {
             pushTokenRetries[kind]?.cancel()
             pushTokenRetries[kind] = nil
         }
-        for (kind, token) in heldPushTokens {
-            do {
-                try await client.uploadPushToken(deviceId: deviceId, token: token,
-                                                 environment: PushEnvironment.current, kind: kind)
-                heldPushTokens[kind] = nil
+        for (kind, token) in heldPushTokens.entries {
+            switch await sendPushToken(token, kind: kind, deviceId: deviceId) {
+            case .filed:
+                heldPushTokens.resolve(.filed, kind: kind)
                 log("the \(kind) push token held from launch has been filed")
-            } catch {
-                log("could not file the held \(kind) push token: \(error.localizedDescription)")
+
+            case .permanent(let code):
+                refusePushToken(code: code, kind: kind)
+
+            case .retry(let reason):
+                log("could not file the held \(kind) push token (\(reason)) — kept for the next load")
             }
         }
     }
@@ -745,6 +774,11 @@ final class CallSession: ObservableObject {
     /// file it under, and that is a state to write down rather than a failure to report: the
     /// thing that has to happen is an enrollment, not another try. The load that follows the
     /// enrollment is what files the token, through `fileHeldPushTokens`.
+    ///
+    /// What the deployment answers decides whether there is anything left to do, and that is the
+    /// half of this that used to be missing: the token is filed in two places now, and the relay
+    /// is the one that rings the phone, so `PushTokenVerdict` — not `saved` — is what says a token
+    /// has landed.
     private func uploadPushToken(_ token: String, kind: String) async {
         latestPushTokens[kind] = token
         // A retry for a token PushKit has just replaced is stopped rather than left to file the
@@ -754,43 +788,70 @@ final class CallSession: ObservableObject {
         pushTokenRetries[kind] = nil
 
         guard let deviceId = DeviceAuth.shared.deviceId else {
-            heldPushTokens[kind] = token
+            heldPushTokens.hold(token, kind: kind)
             log("a \(kind) push token arrived before this device is enrolled — held until it is")
             return
         }
 
-        if await sendPushToken(token, kind: kind, deviceId: deviceId) {
-            heldPushTokens[kind] = nil
-            return
-        }
+        switch await sendPushToken(token, kind: kind, deviceId: deviceId) {
+        case .filed:
+            heldPushTokens.resolve(.filed, kind: kind)
 
-        // Held for the same reason as above, and this is the case that actually happens: at
-        // launch there is no carrier yet, so an upload attempted the moment PushKit speaks is a
-        // request over the direct route to an address only a network this app has not brought up
-        // can resolve. `startPushTokenRetries` and `fileHeldPushTokens` both take it from here.
-        heldPushTokens[kind] = token
-        log("this device's \(kind) push token is kept for the next attempt")
-        startPushTokenRetries(token: token, kind: kind, deviceId: deviceId)
+        case .retry(let reason):
+            // Held for the same reason as above, and this is the case that actually happens: at
+            // launch there is no carrier yet, so an upload attempted the moment PushKit speaks is
+            // a request over the direct route to an address only a network this app has not
+            // brought up can resolve. `startPushTokenRetries` and `fileHeldPushTokens` both take
+            // it from here.
+            heldPushTokens.hold(token, kind: kind)
+            log("this device's \(kind) push token could not be filed (\(reason)) — kept for the next attempt")
+            startPushTokenRetries(token: token, kind: kind, deviceId: deviceId)
+
+        case .permanent(let code):
+            refusePushToken(code: code, kind: kind)
+        }
     }
 
-    /// One attempt at filing a token, as a yes or a no rather than a throw.
+    /// One attempt at filing a token, as what the service's answer means for it.
     ///
-    /// `false` is any reason the service did not end up holding this token, and the caller decides
-    /// what that means — a retry here, or the next load. The failure is logged either way, because
-    /// a service that refused and a service that was never reached look alike from the outside
-    /// and the log is the only place they are told apart.
-    private func sendPushToken(_ token: String, kind: String, deviceId: String) async -> Bool {
+    /// A verdict rather than a throw or a boolean, because the two refusals are no longer one
+    /// kind: a deployment that could not reach its relay has a token worth offering again, and one
+    /// whose relay says the token belongs to somebody else does not (`PushTokenVerdict`). Nothing
+    /// here logs, because the three callers write different lines around the same answer, and
+    /// nothing here decides *when* to try again — that is `pushTokenBackoff`'s business.
+    private func sendPushToken(_ token: String, kind: String, deviceId: String) async -> PushTokenVerdict {
         do {
             return try await client.uploadPushToken(
                 deviceId: deviceId,
                 token: token,
                 environment: PushEnvironment.current,
                 kind: kind
-            )
+            ).verdict
         } catch {
-            log("could not file this device's \(kind) push token: \(error.localizedDescription)")
-            return false
+            // No usable answer at all: the request never landed, the service refused it outright,
+            // or its body did not decode. Retryable rather than fatal — the route's own refusals
+            // (a device that is unknown, or revoked, or asking too often) are about the request or
+            // about a state an operator can change, and a bounded backoff plus one attempt per
+            // launch is not a storm. Permanence is the relay's to declare, in its own answer, and
+            // an answer this app could not read is not it.
+            return .retry(error.localizedDescription)
         }
+    }
+
+    /// Ends the attempts for a token the relay will keep refusing, and says so.
+    ///
+    /// `409 token_conflict` means the relay's token row has an owner, and only that owner letting
+    /// go — or the relay's operator — can free it, so another attempt asks a question whose answer
+    /// cannot change. The token is dropped from the pending set rather than retried, and the
+    /// person is told, because a phone that cannot be rung with nothing saying so is exactly the
+    /// failure this path exists to end. The next launch re-announces the token to PushKit and
+    /// asks once more, which is what makes a released token become ringable again without
+    /// anybody reinstalling anything.
+    private func refusePushToken(code: String, kind: String) {
+        heldPushTokens.resolve(.permanent(code: code), kind: kind)
+        log("the relay refused this device's \(kind) push token (\(code)) — not asked again until this device is ringable")
+        notice = "This phone cannot be rung yet — the service that sends the wake refused its push "
+            + "token (\(code)). Only the server can release it."
     }
 
     /// Tries a token again, on a doubling delay, a bounded number of times.
@@ -804,9 +865,10 @@ final class CallSession: ObservableObject {
     /// one still waiting to be filed — so a rotation ends the old token's retries, and a load that
     /// filed it first ends them too, rather than two uploads of the same token arriving together.
     ///
-    /// The token is dropped from the held set the moment it is filed. If the attempts run out it
-    /// stays held, which is the case `fileHeldPushTokens` exists for — the next load is then the
-    /// next try rather than the last.
+    /// The token leaves the held set the moment the service's answer says to stop: filed, or
+    /// refused in a way that will not change. If the attempts run out it stays held, which is the
+    /// case `fileHeldPushTokens` exists for — the next load is then the next try rather than the
+    /// last.
     ///
     /// The handle is deliberately not cleared from inside the task: a task that lost its token to
     /// a rotation must not clear the entry belonging to the retry that replaced it.
@@ -822,10 +884,19 @@ final class CallSession: ObservableObject {
                 guard let self, self.latestPushTokens[kind] == token,
                       self.heldPushTokens[kind] == token
                 else { return }
-                if await self.sendPushToken(token, kind: kind, deviceId: deviceId) {
-                    self.heldPushTokens[kind] = nil
+                switch await self.sendPushToken(token, kind: kind, deviceId: deviceId) {
+                case .filed:
+                    self.heldPushTokens.resolve(.filed, kind: kind)
                     self.log("the \(kind) push token was filed on retry \(attempt) of \(Self.pushTokenAttempts)")
                     return
+
+                case .permanent(let code):
+                    self.refusePushToken(code: code, kind: kind)
+                    return
+
+                case .retry(let reason):
+                    self.log("the \(kind) push token was not filed on retry \(attempt) of "
+                        + "\(Self.pushTokenAttempts): \(reason)")
                 }
             }
         }
@@ -1668,6 +1739,14 @@ final class CallSession: ObservableObject {
     /// nothing worth keeping.
     func forgetServer() async {
         await tearDown()
+        // Before anything local is forgotten, and that ordering is the whole of why this is here
+        // rather than beside the relay code on the server: releasing this device at the deployment
+        // is authenticated by this device's session, so a session already deleted cannot be
+        // presented and the release can never be asked for afterwards. What it prevents is not
+        // cosmetic — the deployment holds this phone's PushKit token at the relay, a relay token
+        // has one owner, and a phone that enrols again while the old registration stands gets
+        // `409 token_conflict` and is never rung (SEC-RELAY-04, REL-RELAY-03).
+        await releaseThisDeviceAtTheService()
         DeviceAuth.shared.forget()
         AppSettings.serviceAddress = nil
         AppSettings.connectionMode = nil
@@ -1683,6 +1762,25 @@ final class CallSession: ObservableObject {
         serverMovedTo = nil
         needsSetup = true
         log("forgotten — this device has to be set up again")
+    }
+
+    /// Tells the deployment to let this device go, while this device can still prove who it is.
+    ///
+    /// Best-effort, and deliberately so: the person asked to be unpaired, and the unpairing itself
+    /// is this device's to do whether or not the service answers — a refusal here must not leave
+    /// them set up against a deployment they just left. What a failed call costs is written down
+    /// instead: the row and the relay registration stay behind, and the things that clear them are
+    /// the deployment's own retry of the release and the operator's removal.
+    private func releaseThisDeviceAtTheService() async {
+        guard let deviceId = DeviceAuth.shared.deviceId else { return }
+        do {
+            let ack = try await client.removeDevice(deviceId: deviceId)
+            log("the service was told this device is being unpaired: removed=\(ack.removed), "
+                + "relay=\(ack.relay?.described ?? "none")")
+        } catch {
+            log("could not tell the service this device is being unpaired "
+                + "(\(error.localizedDescription)) — this phone's token may still be claimed there")
+        }
     }
 
     /// This device has been set up: the mode is chosen, and the enrollment has settled who it
@@ -1786,23 +1884,92 @@ final class CallSession: ObservableObject {
         // The call a push named is taken first when it is in the list. The list holds every call
         // this person has not answered — an invitation left over from earlier still reads
         // `invited` — and ringing the wrong one puts a call on the system UI that cannot be
-        // answered, because CallKit was told the id of the other. Without a push there is
-        // nothing to prefer and the first invitation stands, as it always has. See `pushedCallID`.
-        let pushed = pushedCallID.flatMap { id in
-            bootstrap.calls.first { $0.myStatus == "invited" && UUID(uuidString: $0.id) == id }
-        }
-        if let invited = pushed ?? bootstrap.calls.first(where: { $0.myStatus == "invited" }) {
-            if pushed == nil, let pushedCallID {
-                log("the call the push named (\(pushedCallID.uuidString.prefix(8))) is not open on "
-                    + "this device — ringing the first invitation instead")
+        // answered, because CallKit was told the id of the other. Without a push there is nothing
+        // to prefer and the first invitation stands, as it always has. See `pushedCallID` and
+        // `arrival`, which is what a push means once the service has been heard from.
+        let reported = pushedCallID
+        let mine = me?.id ?? ""
+        let arrival = Self.arrival(pushed: reported, myUserId: mine, deviceCallID: deviceCallID,
+                                   calls: bootstrap.calls, ongoing: bootstrap.ongoingCalls)
+        // Consumed here, whatever it turned out to be. It exists to pick *this* ring out of the
+        // list, and one that was left behind would have the next load deciding about a call that
+        // is already over — and, for a call the service never had, asking CallKit to end one the
+        // system has already forgotten, which comes back as an error about a call that does not
+        // exist. `tearDown()` clears it too, for the paths that end a call without a load.
+        pushedCallID = nil
+
+        switch arrival {
+        case .invited(let call):
+            log("the call the push named is open on this device — ringing it")
+            ring(call)
+
+        case .ongoing(let call):
+            await resume(call)
+
+        case .unknown:
+            // Only ever answered for a push, so there is an id to end by.
+            if let reported { endUnbackedPush(reported) }
+
+        case .unpushed:
+            if let invited = bootstrap.calls.first(where: { $0.myStatus == "invited" }) {
+                log("an invitation was waiting for this device — ringing it")
+                ring(invited)
+            } else if let ongoing = bootstrap.ongoingCalls.first(where: {
+                Self.mayRejoin($0, deviceCallID: deviceCallID, myUserId: mine)
+            }) {
+                await resume(ongoing)
             }
-            log("an invitation was waiting for this device — ringing it")
-            ring(invited)
-        } else if let ongoing = bootstrap.ongoingCalls.first(where: {
-            $0.id == deviceCallID && isMine($0) && $0.isActive
-        }) {
-            await resume(ongoing)
         }
+    }
+
+    /// Which call the service says a reported push is, if it says anything at all.
+    ///
+    /// Pure and static, because it reads nothing of this session: it is given the things that
+    /// decide — the id the push named, who this person is, which call this device joined, and what
+    /// the load answered — and it is the whole of the question that used to be answered by falling
+    /// back to the first open invitation. That fallback is right only when **no** push named a
+    /// call: with a push in hand, ringing a different call asks the person to answer something
+    /// CallKit was not told about while the call the push actually announced keeps ringing behind
+    /// it (SEC-RELAY-05). An id the service does not name at all is `.unknown`, and the caller
+    /// ends it.
+    ///
+    /// Matched by identity rather than by string, like every other comparison of a call id in this
+    /// app: the two spellings of one UUID are the same call, and the service is free to choose
+    /// either.
+    static func arrival(
+        pushed: UUID?,
+        myUserId: String,
+        deviceCallID: String?,
+        calls: [Call],
+        ongoing: [Call]
+    ) -> PushedArrival {
+        guard let pushed else { return .unpushed }
+        if let invited = calls.first(where: { $0.myStatus == "invited" && UUID(uuidString: $0.id) == pushed }) {
+            return .invited(invited)
+        }
+        if let active = ongoing.first(where: {
+            UUID(uuidString: $0.id) == pushed
+                && Self.mayRejoin($0, deviceCallID: deviceCallID, myUserId: myUserId)
+        }) {
+            return .ongoing(active)
+        }
+        return .unknown
+    }
+
+    /// Whether an active call is one this device may rejoin.
+    ///
+    /// Three things, and the first is the one that is easy to leave out. The service's identity is
+    /// a person, not a device, so `/api/bootstrap` answers "am I in a call?" identically for every
+    /// instance authenticating as that person — a second phone, a simulator, an Xcode preview. A
+    /// call answered on one phone therefore reads as active *and this person's* on all of them, and
+    /// membership is not evidence that **this** device was ever in it: measured 2026-09-18, an
+    /// Xcode preview appeared as a third participant in a live call, with a black camera and a peer
+    /// whose video never loaded. So the call has to be the one this device itself joined
+    /// (`deviceCallID`, written by `accept` and `resume` and cleared by `tearDown`), the service
+    /// has to still call it active, and this person has to be in it.
+    static func mayRejoin(_ call: Call, deviceCallID: String?, myUserId: String) -> Bool {
+        guard let deviceCallID, call.id == deviceCallID else { return false }
+        return call.isActive && isMine(call, userId: myUserId)
     }
 
     /// Re-reads what the stream could not replay.
@@ -1844,6 +2011,30 @@ final class CallSession: ObservableObject {
         } else {
             log("call id is not a UUID — CallKit cannot be told about it")
         }
+    }
+
+    /// Ends a call a push reported that the service does not have.
+    ///
+    /// The report cannot wait for the network — iOS ends an app that takes a VoIP push and reports
+    /// nothing — so a push can put a call on the lock screen before anything has asked whether the
+    /// service has one. A replayed push, a call cancelled between the relay sending the wake and
+    /// this phone waking, a push for a call this service never minted, and a call this person
+    /// answered on *another* phone all arrive here as the same thing: there is no invitation to
+    /// respond to and no room this device may join. The load that follows the report is what asks,
+    /// and this is where the answer is acted on. Leaving it ringing is the worst of the options
+    /// available, because the person is being asked to answer a call that has nothing behind it —
+    /// and for the call answered elsewhere, one they already answered.
+    ///
+    /// Ended **without a word to the person**, which is the other half of doing it properly: none
+    /// of this is theirs to fix, nothing they could do would change it, and a notice explaining a
+    /// push they never saw — most likely a cold launch from the lock screen — is noise draped over
+    /// an app they have only just opened. The log line is where it is recorded, and
+    /// `pushedCallID` has already been cleared by the caller, so no later load can ask CallKit to
+    /// end this call a second time and collect an error about a call the system no longer has.
+    private func endUnbackedPush(_ callID: UUID) {
+        log("the call the push named (\(callID.uuidString.prefix(8))) is not one this service has "
+            + "— ending it rather than leaving it ringing")
+        callKit.end(callID: callID)
     }
 
     private func handle(_ event: ServiceEvent) {
@@ -1903,7 +2094,14 @@ final class CallSession: ObservableObject {
     // MARK: - Helpers
 
     private func isMine(_ call: Call) -> Bool {
-        call.callerId == me?.id || (call.participants?.contains { $0.userId == me?.id } ?? false)
+        Self.isMine(call, userId: me?.id ?? "")
+    }
+
+    /// The same question asked of an id rather than of this session's own, so the decision
+    /// `arrival` makes reads no state of this instance. An empty id matches nobody, which is what
+    /// a device that has not loaded its own identity should get: it is nobody's call.
+    static func isMine(_ call: Call, userId: String) -> Bool {
+        call.callerId == userId || (call.participants?.contains { $0.userId == userId } ?? false)
     }
 
     func displayName(for userId: String) -> String {
@@ -1940,6 +2138,50 @@ final class CallSession: ObservableObject {
         }
         if let data = (line + "\n").data(using: .utf8) { logHandle?.write(data) }
         #endif
+    }
+}
+
+/// The push tokens this app is still trying to file.
+///
+/// A type of its own rather than a dictionary inside `CallSession`, because the two mistakes it
+/// must not make are the two halves of REL-RELAY-01 and both are silent from the outside:
+/// forgetting a token the relay has not got, which is a phone that never rings, and going on
+/// offering one the relay will never take, which is a retry storm against an answer that cannot
+/// change. `resolve` is where the deployment's verdict becomes one of those. The session supplies
+/// the verdict and does the trying; this decides what is still waiting.
+struct PendingPushTokens {
+    private var held: [String: String] = [:]
+
+    var isEmpty: Bool { held.isEmpty }
+
+    /// What is waiting, one entry per token kind (`voip`, `alert`), as copies — so a loop over
+    /// them can resolve into the set it is walking.
+    var kinds: [String] { Array(held.keys) }
+    var entries: [(kind: String, token: String)] { held.map { (kind: $0.key, token: $0.value) } }
+
+    subscript(kind: String) -> String? { held[kind] }
+
+    /// Keeps a token for the next attempt.
+    mutating func hold(_ token: String, kind: String) {
+        held[kind] = token
+    }
+
+    /// Applies the service's verdict to the token held for `kind`.
+    ///
+    /// Returns whether the token is still waiting, which is true of exactly one verdict: a
+    /// retryable refusal. A token the deployment has filed is no longer this app's to offer, and
+    /// one the relay will never take must not be offered again — dropping it is the whole of what
+    /// `permanent` means here, and a phone refused that way is said out loud instead
+    /// (`CallSession.refusePushToken`).
+    @discardableResult
+    mutating func resolve(_ verdict: PushTokenVerdict, kind: String) -> Bool {
+        switch verdict {
+        case .filed, .permanent:
+            held[kind] = nil
+            return false
+        case .retry:
+            return held[kind] != nil
+        }
     }
 }
 

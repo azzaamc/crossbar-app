@@ -715,8 +715,12 @@ final class ServiceClient {
     /// token filed as an alert token is a phone that is never rung for a call. And the
     /// environment is the one whose APNs minted the token — the wrong one is refused at APNs
     /// with no one told, so it is a parameter rather than something guessed at here.
+    ///
+    /// The answered token rather than a boolean, so that the caller decides from **both** the
+    /// deployment's row and the relay's verdict (`PushTokenAck.verdict`) whether the token is
+    /// still waiting — see `CallSession`, which is where that decision is acted on.
     @discardableResult
-    func uploadPushToken(deviceId: String, token: String, environment: String, kind: String) async throws -> Bool {
+    func uploadPushToken(deviceId: String, token: String, environment: String, kind: String) async throws -> PushTokenAck {
         let ack = try await send(
             request("POST", "api/devices/push-token", body: [
                 "deviceId": deviceId,
@@ -726,8 +730,29 @@ final class ServiceClient {
             ]),
             as: PushTokenAck.self
         )
-        log("  filed this device's \(kind) push token for the \(environment) environment: saved=\(ack.saved)")
-        return ack.saved
+        log("  filed this device's \(kind) push token for the \(environment) environment: "
+            + "saved=\(ack.saved) relay=\(ack.relay?.described ?? "none")")
+        return ack
+    }
+
+    /// `DELETE /api/devices/{device_id}` — this device's own registration, released.
+    ///
+    /// The one route by which a device takes itself out of the deployment's records, and it exists
+    /// for the unpair: the app deletes its key, its session and the address it was set up for, and
+    /// without this the deployment would keep this phone's PushKit token filed at the relay. A
+    /// relay token has exactly one owner, so the *next* enrolment of the same phone would be
+    /// refused with `409 token_conflict` and would never ring again
+    /// (`docs/PUSH_RELAY_INTEGRATION.md` §5). The route is refused when the id is not the caller's
+    /// own device, which is why the session has to still exist when it is asked — see
+    /// `CallSession.releaseThisDeviceAtTheService`.
+    ///
+    /// The answered removal for the reason `uploadPushToken` answers an ack: a relay that refused
+    /// is a fact the caller logs rather than a reason to pretend this device let go.
+    @discardableResult
+    func removeDevice(deviceId: String) async throws -> DeviceRemovalAck {
+        let ack = try await send(request("DELETE", "api/devices/\(deviceId)"), as: DeviceRemovalAck.self)
+        log("  released this device at the service: removed=\(ack.removed) relay=\(ack.relay?.described ?? "none")")
+        return ack
     }
 
     /// `POST /api/devices/enrollment` — an invitation for one more device of this person's.
@@ -878,13 +903,110 @@ private struct CallOnlyEnvelope: Decodable {
     let call: Call
 }
 
-/// `POST /api/devices/push-token` answers `{"saved": true}`.
+/// `POST /api/devices/push-token` answers `{"saved": true, "relay": {…}}`.
 ///
-/// Decoded rather than assumed from the status. The status is about the request; this field is
-/// about the token, and the log line that reports it is the only place on the device that says
-/// whether the service kept the address it was given.
-private struct PushTokenAck: Decodable {
+/// Decoded rather than assumed from the status, because the status is about the request and these
+/// are about the token. **Two answers, and they are not the same answer.** `saved` is this
+/// service's own row; `relay` is whether the deployment that actually rings the phone kept the
+/// token. A token the service has recorded and the relay has refused cannot ring anything, and an
+/// app that read `saved` and stopped there left a phone that silently never rings — the whole of
+/// REL-RELAY-01. `verdict` is this file's reading of the pair.
+///
+/// `relay` is absent for the **alert** kind: the relay rings phones and sends nothing else, so no
+/// alert token is registered anywhere, and the route says nothing rather than saying "saved" about
+/// a call it never made.
+struct PushTokenAck: Decodable {
     let saved: Bool
+    let relay: RelayOutcome?
+}
+
+/// What the deployment's own call to the relay became, as the route reports it.
+///
+/// `outcome` is the deployment's verdict and not this app's: the statuses and error codes are the
+/// relay's vocabulary, and which of them may be retried is a fact about the relay that belongs
+/// where the relay is spoken to. The app reads the verdict; it does not re-derive one.
+///
+/// Success has a word per route — `saved` here, `removed` on the route that lets a device go —
+/// and both mean the relay is no longer a reason to try again.
+struct RelayOutcome: Decodable, Equatable {
+    /// Whether the deployment has a relay at all. Said out loud because "the relay refused" and
+    /// "this deployment has no relay" are different faults with different fixes.
+    let configured: Bool?
+    /// Whether the relay now holds what it was asked to hold.
+    let ok: Bool
+    /// `saved` / `removed` / `retryable` / `permanent`.
+    let outcome: String
+    /// The relay's HTTP status. `0` is a request that never got an answer.
+    let status: Int?
+    /// The relay's own refusal code (`token_conflict`, `not_configured`, …), never a secret.
+    let error: String?
+    let retryAfterSeconds: Int?
+}
+
+extension RelayOutcome {
+    /// The relay's answer as one line for the log.
+    ///
+    /// A refusal code and a status, which are the relay's vocabulary and nobody's credential:
+    /// nothing on this path logs a token, an installation credential or a session.
+    var described: String {
+        var parts = [outcome]
+        if configured == false { parts.append("not-configured") }
+        if let status, status > 0 { parts.append("status=\(status)") }
+        if let error { parts.append("error=\(error)") }
+        if let retryAfterSeconds { parts.append("retry-after=\(retryAfterSeconds)") }
+        return parts.joined(separator: " ")
+    }
+}
+
+/// What the app does with a token the service has just answered for.
+///
+/// Three cases rather than a yes or a no, because the token is now filed in two places and only
+/// one of the two ways it can fail is worth another attempt (`docs/PUSH_RELAY_INTEGRATION.md` §5).
+enum PushTokenVerdict: Equatable {
+    /// The service recorded it and the relay holds it — or the relay has nothing to do with it,
+    /// which is the alert token. There is nothing left to do.
+    case filed
+    /// Not yet, and it may be worth asking again: the token stays pending and is tried on the
+    /// bounded backoff. `reason` is what to write down when it is not filed.
+    case retry(String)
+    /// The relay will keep refusing this token however often it is asked, and `code` is its own
+    /// word for why. The app stops rather than retrying, and says so where a person will see it.
+    case permanent(code: String)
+}
+
+extension PushTokenAck {
+    /// What the service's answer means for the token.
+    ///
+    /// `saved` first, because a service that did not record the token has nothing for the relay to
+    /// hold, and the retry that follows is about this deployment rather than about the relay.
+    ///
+    /// An `outcome` this build does not recognise is read as **retryable**. That is the direction
+    /// the two mistakes are not equal in: another attempt against a refusal that cannot change
+    /// costs a request on a backoff that is bounded by `pushTokenAttempts` and by the next load,
+    /// while abandoning a token the relay would have taken leaves a phone that cannot be rung
+    /// with nothing saying so. `permanent` is the only word that stops this app, and it is a word
+    /// the deployment has to send.
+    var verdict: PushTokenVerdict {
+        guard saved else { return .retry("the service did not record the token (saved=false)") }
+        guard let relay else { return .filed }
+        guard !relay.ok else { return .filed }
+        guard relay.outcome == "permanent" else {
+            return .retry(relay.outcome == "retryable"
+                ? relay.described
+                : "\(relay.described) (an outcome this build does not know — treated as retryable)")
+        }
+        return .permanent(code: relay.error ?? "refused")
+    }
+}
+
+/// `DELETE /api/devices/{device_id}` answers `{"removed": true, "relay": {…}}`.
+///
+/// The deployment's half of an unpair: the same `relay` shape as the route above, with `removed`
+/// standing where `saved` does. A device the relay never had answers `404` and that is `removed`
+/// too — there is one thing to be and it is not registered there.
+struct DeviceRemovalAck: Decodable {
+    let removed: Bool
+    let relay: RelayOutcome?
 }
 
 // MARK: - Decoding the event stream

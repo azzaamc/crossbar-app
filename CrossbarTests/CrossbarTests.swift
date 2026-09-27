@@ -173,3 +173,163 @@ struct CallReportDedupTests {
         #expect(lines[0].contains(callID.uuidString.prefix(8)))
     }
 }
+
+/// What the app makes of the deployment's answer about a push token.
+///
+/// A VoIP token is filed in two places — the deployment's own row and the relay that actually
+/// rings the phone — and the route answers for both. A client that read `saved` alone cleared a
+/// token the relay had refused, leaving a phone that could not be rung with nothing saying so
+/// (REL-RELAY-01); these hold the reading of the answered contract, and the one thing that follows
+/// from it, which is which verdicts leave the token pending.
+///
+/// The bodies are literal, and deliberately: they are the contract as the deployment writes it
+/// (`POST /api/devices/push-token`, `docs/PUSH_RELAY_INTEGRATION.md` §5), so a renamed field fails
+/// here rather than on a phone that has stopped ringing.
+@MainActor
+struct PushTokenFilingTests {
+    private static func answered(_ json: String) throws -> PushTokenAck {
+        try JSONDecoder().decode(PushTokenAck.self, from: Data(json.utf8))
+    }
+
+    /// A deployment that could not reach its relay leaves the token pending, because it is the
+    /// relay that rings the phone and this is the case that actually happens: an installation not
+    /// yet configured for the relay answers exactly like this, and so does a relay that is down,
+    /// rate-limiting or answering 5xx.
+    @Test func aRetryableRelayOutcomeKeepsTheTokenPending() throws {
+        let receipt = try Self.answered("""
+        {"saved":true,"relay":{"configured":false,"ok":false,"outcome":"retryable","status":0,"error":"not_configured","retryAfterSeconds":null}}
+        """)
+
+        #expect(receipt.saved, "the deployment's own row was written — that is not the question")
+        #expect(receipt.relay?.configured == false)
+        guard case .retry(let reason) = receipt.verdict else {
+            Issue.record("a relay that does not hold the token must be retried, got \(receipt.verdict)")
+            return
+        }
+        #expect(reason.contains("not_configured"))
+
+        var pending = PendingPushTokens()
+        pending.hold("a1b2c3", kind: "voip")
+        let stillPending = pending.resolve(receipt.verdict, kind: "voip")
+        #expect(stillPending)
+        #expect(pending["voip"] == "a1b2c3", "the token must still be waiting, or the phone never rings")
+    }
+
+    /// A relay that will not change its answer ends the attempts and drops the token.
+    ///
+    /// `409 token_conflict` is the permanent one: another installation owns the relay's token row
+    /// and only that owner — or the relay's operator — can release it, so asking again asks a
+    /// question whose answer cannot change.
+    @Test func aPermanentRelayOutcomeIsNotRetried() throws {
+        let receipt = try Self.answered("""
+        {"saved":true,"relay":{"configured":true,"ok":false,"outcome":"permanent","status":409,"error":"token_conflict","retryAfterSeconds":null}}
+        """)
+
+        #expect(receipt.verdict == .permanent(code: "token_conflict"))
+
+        var pending = PendingPushTokens()
+        pending.hold("a1b2c3", kind: "voip")
+        let stillPending = pending.resolve(receipt.verdict, kind: "voip")
+        #expect(!stillPending)
+        #expect(pending.isEmpty, "a token the relay will never take must not be offered again")
+    }
+
+    /// The token the relay holds is done with — and so is the alert token, which the relay is
+    /// never asked about.
+    ///
+    /// The alert token's answer carries no `relay` at all, because the relay rings phones and
+    /// sends nothing else: that absence is the contract, not a missing field, and it must not be
+    /// read as a refusal.
+    @Test func aTokenTheRelayHoldsIsFiled() throws {
+        let relayed = try Self.answered("""
+        {"saved":true,"relay":{"configured":true,"ok":true,"outcome":"saved","status":200,"error":null,"retryAfterSeconds":null}}
+        """)
+        let alert = try Self.answered(#"{"saved":true}"#)
+
+        #expect(relayed.verdict == .filed)
+        #expect(alert.verdict == .filed)
+
+        var pending = PendingPushTokens()
+        pending.hold("a1b2c3", kind: "voip")
+        pending.resolve(relayed.verdict, kind: "voip")
+        #expect(pending.isEmpty)
+    }
+}
+
+/// What the app does with the call a push named, once the service has been heard from.
+///
+/// The report to CallKit may not wait for the network — iOS ends an app that takes a VoIP push and
+/// reports nothing — so a push can put a call on the lock screen before anything has asked the
+/// service whether it has one. The load that follows the report is where that question is
+/// answered, and there are four answers: ring the pushed call, rejoin it, end it, or — when no
+/// push named anything — ring whatever invitation the service lists.
+@MainActor
+struct PushedCallReconciliationTests {
+    private static let pushed = UUID(uuidString: "3f2504e0-4f89-11d3-9a0c-0305e82c3301")!
+    private static let other = UUID(uuidString: "9c858901-8a57-4791-81fe-4c455b099bc9")!
+
+    private static func call(
+        _ id: UUID,
+        caller: String = "per_ayesha",
+        status: String = "ringing",
+        myStatus: String? = "invited",
+        participants: [Call.Participant]? = nil
+    ) -> Call {
+        Call(id: id.uuidString, callerId: caller, callerName: "Ayesha", status: status,
+             kind: "video", myStatus: myStatus, createdAt: "2026-09-27T15:00:00.000Z",
+             answeredAt: nil, participants: participants)
+    }
+
+    /// A call the service does not have is ended — not answered, and not replaced by whatever else
+    /// happens to be open.
+    ///
+    /// The replaced-by-another case is the one that used to happen: with nothing matching the
+    /// push's id, the app rang the *first* invitation in the list, so an unrelated call appeared on
+    /// the system UI while the call the push announced went on ringing with nothing behind it. With
+    /// nothing open at all, nothing happened, and that ring had no end until somebody answered or
+    /// declined it.
+    @Test func aCallTheServiceDoesNotHaveEndsRatherThanRingingAnother() {
+        #expect(CallSession.arrival(pushed: Self.pushed, myUserId: "per_me", deviceCallID: nil,
+                                    calls: [Self.call(Self.other)], ongoing: []) == .unknown)
+        #expect(CallSession.arrival(pushed: Self.pushed, myUserId: "per_me", deviceCallID: nil,
+                                    calls: [], ongoing: []) == .unknown)
+    }
+
+    /// The call the push named is the one that rings, by its identity rather than by its place in
+    /// the list.
+    @Test func theCallThePushNamedIsRungByIdentity() {
+        let unrelated = Self.call(Self.other)
+        let named = Self.call(Self.pushed)
+
+        #expect(CallSession.arrival(pushed: Self.pushed, myUserId: "per_me", deviceCallID: nil,
+                                    calls: [unrelated, named], ongoing: []) == .invited(named))
+    }
+
+    /// An active call is rejoined only when it is the call **this device** joined.
+    ///
+    /// Membership is not enough and never was: the service's identity is a person, so a call
+    /// answered on another phone reads as active and this person's on all of them, and a device
+    /// that rejoined on that basis is how an Xcode preview appeared as a participant in a live call
+    /// (2026-09-18). So a pushed call that is active, this person's, and a *different* call from
+    /// the one this device joined is ended like any other call the service cannot place here.
+    @Test func anActiveCallIsRejoinedOnlyWhenThisDeviceJoinedIt() {
+        let active = Self.call(Self.pushed, status: "active", myStatus: "joined",
+                               participants: [.init(userId: "per_me", displayName: "Me", status: "joined")])
+
+        #expect(CallSession.arrival(pushed: Self.pushed, myUserId: "per_me",
+                                    deviceCallID: Self.pushed.uuidString,
+                                    calls: [], ongoing: [active]) == .ongoing(active))
+        #expect(CallSession.arrival(pushed: Self.pushed, myUserId: "per_me",
+                                    deviceCallID: Self.other.uuidString,
+                                    calls: [], ongoing: [active]) == .unknown)
+        #expect(CallSession.arrival(pushed: Self.pushed, myUserId: "per_me", deviceCallID: nil,
+                                    calls: [], ongoing: [active]) == .unknown)
+    }
+
+    /// With no push, an invitation the service lists still rings — the launch-into-a-waiting-call
+    /// path, which is not what a push decides and must survive the reconciliation above.
+    @Test func withoutAPushTheOpenInvitationStillStands() {
+        #expect(CallSession.arrival(pushed: nil, myUserId: "per_me", deviceCallID: nil,
+                                    calls: [Self.call(Self.other)], ongoing: []) == .unpushed)
+    }
+}
