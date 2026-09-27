@@ -341,41 +341,55 @@ struct PushedCallReconciliationTests {
 /// during another one was reported and then forgotten: `reportPushedCall` returned as soon as the
 /// phase already held a call, and `adopt`'s reconciliation returns on the same condition. The
 /// system was left showing a ringing call this app had no media, no screen and no answer path for.
-/// These hold the three answers a push can have once something is on screen, and the one that must
-/// never happen: an end against the call the person is actually on, from a redelivered wake for
+/// These hold what CallKit is told, because that is the observable the defect turned on: the pushed
+/// call is reported (iOS requires it) and then ended, `endedCalls` names exactly it and never the
+/// call that is on screen, and no load is asked for while a call is being carried. The one thing
+/// that must never happen is an end against the call the person is on, from a redelivered wake for
 /// that same call.
 @MainActor
 struct PushedReportWhileBusyTests {
     private static let onScreen = UUID(uuidString: "3f2504e0-4f89-11d3-9a0c-0305e82c3301")!
     private static let second = UUID(uuidString: "9c858901-8a57-4791-81fe-4c455b099bc9")!
 
-    /// A different call while one is on screen is reported and then ended, so exactly one of the
-    /// two is left as a CallKit call: the second does not ring on with nothing able to answer it.
-    @Test func aSecondCallIsEndedRatherThanLeftRinging() {
-        #expect(CallSession.pushedReportPlan(pushed: Self.second, onScreen: Self.onScreen, busy: true)
-                == .reportThenEnd)
+    /// A different call while one is on screen ends in exactly one end, and it names the pushed
+    /// call: the one on screen is never in the list, which is the whole of what keeps the person's
+    /// live call alive.
+    @Test func theSecondCallIsTheOneCallKitIsToldToEnd() {
+        let plan = CallSession.pushedReportPlan(pushed: Self.second, onScreen: Self.onScreen,
+                                               busy: true)
+
+        #expect(plan.endedCalls == [Self.second])
+        #expect(!plan.endedCalls.contains(Self.onScreen),
+                "ending the call on screen would take down the call the person is on")
+        #expect(!plan.reconciles, "and a load would take that call's screen down and put it back")
     }
 
     /// The same call heard twice is left alone. The relay replays a wake it has already sent within
-    /// the day and APNs redelivers, so this is ordinary rather than a fault — and ending it would
-    /// end the call the person is looking at.
-    @Test func aReplayedPushForTheCallOnScreenIsLeftAlone() {
-        #expect(CallSession.pushedReportPlan(pushed: Self.onScreen, onScreen: Self.onScreen,
-                                             busy: true) == .alreadyOnScreen)
+    /// the day and APNs redelivers, so this is ordinary rather than a fault — CallKit is told to end
+    /// nothing, and the live ring stands.
+    @Test func aReplayedPushForTheCallOnScreenEndsNothing() {
+        let plan = CallSession.pushedReportPlan(pushed: Self.onScreen, onScreen: Self.onScreen,
+                                               busy: true)
+
+        #expect(plan.endedCalls.isEmpty)
+        #expect(!plan.reconciles)
     }
 
-    /// Nothing on screen: the push still rings and reconciles — the path this decision must not
-    /// take away from the ordinary case.
-    @Test func aPushWithNothingOnScreenStillRings() {
-        #expect(CallSession.pushedReportPlan(pushed: Self.onScreen, onScreen: nil, busy: false)
-                == .ring)
+    /// Nothing on screen: no end, and the load that reconciles the push with the service — the
+    /// path this decision must not take away from the ordinary case.
+    @Test func aPushWithNothingOnScreenEndsNothingAndStillReconciles() {
+        let plan = CallSession.pushedReportPlan(pushed: Self.onScreen, onScreen: nil, busy: false)
+
+        #expect(plan.endedCalls.isEmpty)
+        #expect(plan.reconciles)
     }
 
     /// A call whose id is not a UUID is on screen with no CallKit id of its own, so a push is still
     /// a second call and must not be read as an empty screen.
     @Test func aPushWhileAnUnreportableCallIsOnScreenIsStillEnded() {
-        #expect(CallSession.pushedReportPlan(pushed: Self.second, onScreen: nil, busy: true)
-                == .reportThenEnd)
+        let plan = CallSession.pushedReportPlan(pushed: Self.second, onScreen: nil, busy: true)
+
+        #expect(plan.endedCalls == [Self.second])
     }
 }
 

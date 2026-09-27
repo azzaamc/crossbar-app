@@ -606,7 +606,7 @@ final class CallSession: ObservableObject {
     /// ringing that this app has no media for and no screen to answer from, and *ending* the call
     /// the person is looking at because a redelivered wake named the same call twice.
     enum PushedReportPlan: Equatable {
-        /// Nothing is on screen: report the call and reconcile it with a load, as always.
+        /// Nothing is on screen: report the call and reconcile it with a load, as always. No end.
         case ring
         /// The push names the call already on screen — the relay replays a wake it has already
         /// sent within the day, and APNs redelivers ordinary ones. The report is still made
@@ -618,10 +618,29 @@ final class CallSession: ObservableObject {
         /// be rung *and* backed. Report it, because iOS requires a report for every VoIP push and
         /// ends an app that takes one and reports nothing, and end it in the same breath: a ring
         /// whose answer could never reach anything is worse than one that never lasted, because
-        /// it asks the person to answer a call with nothing behind it. The end is against the id
-        /// the push reported, so the call that *is* on screen is untouched, and the system's own
-        /// Recents is where the missed one is still recorded.
-        case reportThenEnd
+        /// it asks the person to answer a call with nothing behind it. The associated id is the
+        /// one ended — the pushed call's, never the call on screen — and the system's own Recents
+        /// is where the missed one is still recorded.
+        case reportThenEnd(UUID)
+
+        /// The calls this plan asks CallKit to end, in order.
+        ///
+        /// Data rather than a branch, because these are the calls the system is told to take off
+        /// its screen, and that is what has to be true: exactly the pushed call on the busy path,
+        /// never the call that is already there, and nothing at all for the two states where the
+        /// report stands on its own. `CallKitController.end` is idempotent per call, so this list
+        /// is also the count of end requests the system receives.
+        var endedCalls: [UUID] {
+            if case .reportThenEnd(let pushed) = self { return [pushed] }
+            return []
+        }
+
+        /// Whether the load that reconciles a push with the service is asked for.
+        ///
+        /// False for the two states where a load would be wrong: a second wake for the call
+        /// already on screen, and a call this app is ending — a load over a call in progress takes
+        /// that call's screen down and puts it back.
+        var reconciles: Bool { self == .ring }
     }
 
     /// Which of the three a push is, given the id it named and what is on screen.
@@ -633,7 +652,7 @@ final class CallSession: ObservableObject {
     /// treated as a call in progress.
     static func pushedReportPlan(pushed: UUID, onScreen: UUID?, busy: Bool) -> PushedReportPlan {
         if pushed == onScreen { return .alreadyOnScreen }
-        return busy ? .reportThenEnd : .ring
+        return busy ? .reportThenEnd(pushed) : .ring
     }
 
     /// Rings for the call a VoIP push named, and gets this app into a state where it can be
@@ -661,26 +680,28 @@ final class CallSession: ObservableObject {
         callKit.reportIncoming(callID: callID, callerName: callerName, video: video)
         log("a VoIP push reported \(callID.uuidString.prefix(8)) from \(callerName) — video=\(video)")
 
-        switch Self.pushedReportPlan(pushed: callID, onScreen: callKitCallID, busy: phase.call != nil) {
-        case .alreadyOnScreen:
-            // Heard twice, which is ordinary rather than a fault: the relay replays a wake it has
-            // already sent within the day, and APNs redelivers. Nothing to reconcile, and nothing
-            // to end — this ring is the call the person can see.
-            log("the push names the call already on screen — nothing to reconcile")
-            return
+        // What is left to do, which is exactly where the three states differ. The report above
+        // happened whatever the answer is; the end and the load are the parts that may not.
+        let plan = Self.pushedReportPlan(pushed: callID, onScreen: callKitCallID, busy: phase.call != nil)
 
-        case .reportThenEnd:
-            // A second wake for someone already on a call. The report above cannot be skipped, so
-            // the honest difference from a silent return is the end: it is the pushed id that is
-            // ended, never the call in progress, and the log line says which decision this was.
+        if !plan.endedCalls.isEmpty {
+            // The end is what makes the difference between a ring somebody could answer and one
+            // that only exists on the lock screen. The calls in the list are the ones the system is
+            // told to take down, and on this path there is exactly one — the pushed call, never the
+            // call that is on screen.
             log("a call is already on screen — ending the pushed call "
                 + "\(callID.uuidString.prefix(8)) rather than leaving a second ring with nothing "
                 + "able to answer it")
-            callKit.end(callID: callID)
+            for ended in plan.endedCalls { callKit.end(callID: ended) }
             return
+        }
 
-        case .ring:
-            break
+        guard plan.reconciles else {
+            // Heard twice, which is ordinary rather than a fault: the relay replays a wake it has
+            // already sent within the day, and APNs redelivers. Nothing to end and nothing to
+            // reconcile — this ring is the call the person can see.
+            log("the push names the call already on screen — nothing to reconcile")
+            return
         }
 
         // Kept so that the load below rings *this* call rather than whichever open invitation
