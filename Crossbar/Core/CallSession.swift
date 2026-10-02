@@ -257,6 +257,16 @@ final class CallSession: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+
+        // Said once, at launch, when there is nothing to dial. An unconfigured device shows
+        // the setup screen and makes no request at all, and a reason that appeared only at the
+        // moment of a failing request would leave that case — nothing attempted — looking
+        // exactly like a device that is quietly working. The words name the state rather than
+        // a fault, because it is what the setup screen is for.
+        if !ServiceAddress.isConfigured {
+            log("no service address is set — this device has not been told which Crossbar it "
+                + "belongs to, so nothing is dialled until an enrollment code is pasted")
+        }
     }
 
     /// Whether the phase is a call **this device** has joined.
@@ -554,8 +564,20 @@ final class CallSession: ObservableObject {
             self.pendingAnswer = callID
             Task { await self.answerPending() }
         }
-        callKit.onEnd = { [weak self] _ in
+        callKit.onEnd = { [weak self] endedCallID in
             guard let self else { return }
+            // CallKit says *which* call ended, and it is not always ours. Asking it to end a call
+            // this app is not carrying — a pushed call arriving while one is already on screen —
+            // comes back through this very callback, and acting on it ended the call the person was
+            // actually on: on 2026-10-02 a second ring hung up a live call and ended it on the
+            // service too, from `endFromCallKit` below ending whatever `phase` held. A call this
+            // device is not carrying is not this device's to tear down. `callKitCallID` is nil for
+            // a call CallKit was never told about, and an end naming one of those is not ours either.
+            guard endedCallID == self.callKitCallID else {
+                self.log("CallKit ended \(endedCallID.uuidString.prefix(8)) — not this device's "
+                         + "call, so \(self.phaseLabel) is left alone")
+                return
+            }
             // The state at this moment is the whole diagnosis: an end that arrives
             // while the app is alive and the socket is open came from the system, and
             // nothing else in the log says so.
