@@ -217,18 +217,33 @@ payload, and APNs environment/topic handling; the app's PushKit registration, fl
 report ordering, entitlements, bundle id and device id; the backend's routes, push dispatch,
 device id generator, call id type and existing `push-token` endpoint.
 
-**Not yet measured**: the live latency chain the brief's §23 lists (T0–T7); CallKit on a device
-that has been terminated; whether the embedded Tailscale node recovers inside iOS's wake budget;
-and whether deployed Cloudflare → APNs sandbox actually delivers — the relay's own outstanding
-gate, which no local test can settle.
+**Measured end to end on real hardware, 2026-10-02** (the dev deployment, a development-signed
+build on an iPhone, APNs sandbox): the whole chain — native app → backend → relay → Cloudflare →
+APNs → PushKit → CallKit → answer → call active — and then the same thing again with the server in
+**private mode**, where the app followed the deployment's move to its tailnet address without a new
+enrolment code (device id unchanged), brought up its embedded Tailscale node, and carried the
+session through it. Three questions this section used to leave open are now answered:
 
-One case is named here because source provably cannot settle it, and a reviewer was right to
-refuse to guess. When a cold process recovers and its persisted device call id matches a call
-that is *already ongoing*, the arrival resolves to `ongoing` and the app resumes it — but `resume`
-neither ends the incoming CallKit call the push just reported nor marks it connected
-(`reportConnected` is outgoing-only). Whether CallKit restores and accepts that UUID, and whether
-the system UI stops ringing, needs a physical device: kill the app, push, and watch. Until that
-test runs, treat the cold-resume path as unverified rather than as working.
+- **deployed Cloudflare → APNs sandbox delivers** — the relay's own outstanding gate, which no
+  local test could settle. A real device token earned `apns_status: 200, outcome: "accepted"`.
+  Reaching that point exposed a transport option the runtime rejects (`redirect: "error"`), which
+  had made every push report `status: 0` and look like a platform limitation.
+- **CallKit on a terminated device** — after a reboot, screen locked, app not running: the push
+  launched the process, the delegate reported the call, the lock screen rang, and answering stopped
+  it. The app's own log begins with the push, because it is truncated at every launch.
+- **the embedded Tailscale node comes up and carries the traffic** in private mode — public mode
+  logs only `closing the node`, which is why a private deployment had never been exercised.
+
+**Still not measured**: the full latency chain of the brief's §23 (T0–T7), though individual legs
+are now known — relay to APNs ≈1.0 s, and push to answered ≈3 s in the runs above; and whether the
+node comes up *inside iOS's wake budget* when a push launches the app rather than a hand launch.
+
+One case remains that source provably cannot settle, and a reviewer was right to refuse to guess
+it. When a cold process recovers and its persisted device call id matches a call that is *already
+ongoing*, the arrival resolves to `ongoing` and the app resumes it — but `resume` neither ends the
+incoming CallKit call the push just reported nor marks it connected (`reportConnected` is
+outgoing-only). The cold path in general is now verified; this resume-into-an-ongoing-call
+sub-case is not, and needs a device: kill the app, arrange an ongoing call, push, and watch.
 
 **Not yet built**: only the relay **installation provisioning** — CLI-only, `scripts/relay-admin.mjs`,
 and deliberately with no admin HTTP API, so a deployment cannot provision itself. Everything else in
