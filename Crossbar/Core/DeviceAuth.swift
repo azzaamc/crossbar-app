@@ -324,7 +324,7 @@ final class DeviceAuth: ObservableObject {
         _ path: String,
         body: [String: Any]? = nil
     ) async throws -> (status: Int, shape: [String: Any]) {
-        var request = URLRequest(url: url(path))
+        var request = URLRequest(url: try url(path))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "accept")
         request.timeoutInterval = 20
@@ -349,8 +349,13 @@ final class DeviceAuth: ObservableObject {
     /// Built through `URLComponents` rather than `appendingPathComponent`, the same way the
     /// control plane builds them, so a configured address with a path cannot move where a
     /// request lands.
-    private func url(_ path: String) -> URL {
-        var components = URLComponents(url: ServiceAddress.baseURL, resolvingAgainstBaseURL: false)!
+    ///
+    /// Throws when this device has no address, which is the one state in which there is
+    /// nothing to enroll against: the failure is `ServiceAddress.Unconfigured`, whose own
+    /// words say what to do about it, and it is thrown before a request exists so nothing
+    /// is dialled.
+    private func url(_ path: String) throws -> URL {
+        var components = URLComponents(url: try ServiceAddress.requiredURL(), resolvingAgainstBaseURL: false)!
         components.path = "/" + path
         return components.url!
     }

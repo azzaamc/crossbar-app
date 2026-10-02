@@ -61,14 +61,11 @@ struct OnboardingView: View {
             }
             .sheet(isPresented: $showingManual) {
                 ManualJoinView(kind: $kind, code: $code) {
-                    if code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        // Nothing to enroll. Only a public deployment gets here — the private
-                        // option will not let this button be pressed without a code, because a
-                        // private server is reached at an address only the code carries.
-                        onChoose(kind)
-                    } else {
-                        Task { await join() }
-                    }
+                    // Always an enrollment, whichever kind: the code is the only thing that
+                    // carries the server's address, now that no compiled default stands in for
+                    // one, and a manual join with nothing to enroll would configure a device
+                    // that has nowhere to dial. The button will not let that happen.
+                    Task { await join() }
                 }
             }
             // One haptic for the longest wait in the app and the outcome that matters most.
@@ -311,13 +308,15 @@ private struct ManualJoinView: View {
                 } header: {
                     Text("Enrollment code")
                 } footer: {
-                    // A private network is reached at an address this app has no way to work out,
-                    // so the code is not optional there — it is the only thing that carries the
-                    // address. A public deployment has one it can fall back on.
-                    Text(kind == .privateNetwork
-                         ? "Request an enrollment code from your Crossbar network administrator. "
-                         + "A private network is reached at an address only the code carries."
-                         : "Request an enrollment code from your Crossbar network administrator.")
+                    // The code is required whichever kind is chosen, because it is the only thing
+                    // that carries the server's address and this app has no compiled default for
+                    // a missing one. A private network makes that obvious — its address cannot be
+                    // worked out at all — but a public one is the same kind of fact: only the
+                    // code names the deployment.
+                    Text("Request an enrollment code from your Crossbar network administrator. "
+                         + (kind == .privateNetwork
+                            ? "A private network is reached at an address only the code carries."
+                            : "The code names the server this device belongs to."))
                 }
             }
             .navigationTitle("Manual Setup")
@@ -328,15 +327,14 @@ private struct ManualJoinView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Join") {
-                        // The kind is the only thing this screen decides. A code carries the
-                        // server's address and the mode it is reached in; when there is no
-                        // code, the kind is what the app has to be told.
+                        // The kind is the one thing this screen decides on its own; the address
+                        // and, usually, the mode come from the code. That is why a code is
+                        // required either way: it is what names the server.
                         AppSettings.connectionMode = kind
                         dismiss()
                         onJoin()
                     }
-                    .disabled(kind == .privateNetwork
-                              && code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("onboarding.useServer")
                 }
             }

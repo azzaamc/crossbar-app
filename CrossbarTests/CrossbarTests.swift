@@ -439,3 +439,249 @@ struct PushTokenRefusalNoticeTests {
         #expect(!sentence.contains("alert"))
     }
 }
+
+// MARK: - No compiled default
+
+/// The header that names which recording a request belongs to.
+///
+/// Every recording session carries its own value, and the protocol files requests under it. That is
+/// what makes the store safe to share: Swift Testing runs even serialized suites alongside each
+/// other, so a single global list would let one suite's request appear in — or be cleared from —
+/// another's assertion.
+private let recordingHeader = "X-Crossbar-Recording"
+
+/// A session that records every request started through it, and answers an empty success.
+///
+/// The observable for "nothing dialled". A request that was never made leaves no log line and no
+/// error a test can tell from a slow one, while `URLProtocol` is where `URLSession` says whether a
+/// request was started at all. The store is static because `URLSession` instantiates the protocol
+/// itself; requests are keyed by the marker header the recording configuration adds, so two
+/// recordings never see each other's.
+final class RecordingURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var started: [String: [URLRequest]] = [:]
+
+    /// The requests that reached the network stack under `recording`, in order.
+    static func requests(recording marker: String) -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return started[marker] ?? []
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let marker = request.value(forHTTPHeaderField: recordingHeader) ?? ""
+        Self.lock.lock()
+        Self.started[marker, default: []].append(request)
+        Self.lock.unlock()
+
+        // A request that *was* made has to complete rather than hang, so the test that fails says
+        // which request reached the stack instead of timing out.
+        guard let url = request.url else { return }
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("{}".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// Why the fixture refused to run: an address it could not clear.
+private struct ServiceAddressFixtureError: Error, CustomStringConvertible {
+    let address: String
+
+    var description: String {
+        "the app still resolves a service address (\(address)) after the fixture cleared both of its "
+        + "sources — it is coming from a preferences domain the app reads but does not own. Clear it "
+        + "on this machine (a stray `defaults write com.abdullahchaudhry.Crossbar "
+        + "crossbar.serviceAddress …` on the simulator, for instance) and re-run."
+    }
+}
+
+/// The state the app is in with no stored address and no runtime override.
+///
+/// Both sources outlive a test — the app's own defaults, and the seam `ServiceAddress` reads its
+/// override from — so the app is put into the state before a test and given back afterwards. The
+/// unconfigured state is put into the seam rather than made by removing a process variable, which
+/// is what makes these tests independent of the machine they run on: a developer with
+/// `CROSSBAR_BACKEND_URL` exported in their shell exercises the same code path as one without.
+@MainActor
+private struct ServiceAddressFixture {
+    private let savedAddress = AppSettings.serviceAddress
+    private let savedMode = AppSettings.connectionMode
+    private let savedPrevious = AppSettings.previousServiceAddress
+    private let savedPreviousMode = AppSettings.previousConnectionMode
+    private let savedAbandoned = AppSettings.abandonedServiceAddress
+    private let savedEnvironment = ServiceAddress.environment
+
+    /// Fails rather than proceeding on a premise it could not establish.
+    ///
+    /// `AppSettings.serviceAddress` can only be *removed* from the app's own domain, so a value
+    /// living in another domain that the app also reads — a stray
+    /// `xcrun simctl spawn <device> defaults write com.abdullahchaudhry.Crossbar
+    /// crossbar.serviceAddress …`, which is how one got onto this Mac's simulator on 2026-10-02 —
+    /// keeps being read past the removal. A test that then "exercised the unconfigured state" would
+    /// be dialling a host a human typed into the simulator, and the failure would read as the app's;
+    /// so the premise is checked and named here instead.
+    init() throws {
+        AppSettings.serviceAddress = nil
+        AppSettings.connectionMode = nil
+        AppSettings.forgetPreviousAddress()
+        AppSettings.abandonedServiceAddress = nil
+        ServiceAddress.environment = { [:] }
+
+        if let surviving = ServiceAddress.configuredURL {
+            throw ServiceAddressFixtureError(address: surviving.absoluteString)
+        }
+    }
+
+    /// Puts a runtime override in force, the way an instrument's launch environment does.
+    func withEnvironmentOverride(_ value: String) {
+        ServiceAddress.environment = { ["CROSSBAR_BACKEND_URL": value] }
+    }
+
+    func restore() {
+        AppSettings.serviceAddress = savedAddress
+        AppSettings.connectionMode = savedMode
+        AppSettings.previousServiceAddress = savedPrevious
+        AppSettings.previousConnectionMode = savedPreviousMode
+        AppSettings.abandonedServiceAddress = savedAbandoned
+        ServiceAddress.environment = savedEnvironment
+    }
+}
+
+/// A client whose requests are recorded rather than sent, and the marker to read them back by.
+@MainActor
+private func recordingClient() -> (client: ServiceClient, marker: String) {
+    let marker = UUID().uuidString
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [RecordingURLProtocol.self]
+    configuration.httpAdditionalHeaders = [recordingHeader: marker]
+    let client = ServiceClient()
+    client.transport = CallTransport(configuration: configuration, label: "recording")
+    return (client, marker)
+}
+
+/// Where the service address comes from, now that there is no compiled default.
+///
+/// Three things have to hold together: an app nobody has configured dials nothing and says why; a
+/// device is still pointed at its server by an invitation or by the runtime override; and the
+/// address it is given is the one it then dials. The recording session is the observable for the
+/// dials; the thrown error and its wording are the observable for what a person is told.
+///
+/// **One suite, serialized.** `ServiceAddress.environment` is process-wide and `.serialized` only
+/// orders the tests *inside* a suite, so two sibling suites doing this would still run alongside
+/// each other and could see each other's address — which is exactly the flakiness this shape exists
+/// to remove. The override is supplied through the seam, so the ambient environment, whatever it
+/// is, changes nothing here.
+@MainActor
+@Suite(.serialized)
+struct ServiceAddressTests {
+    /// The first read of a load refuses before a request exists.
+    @Test func aLoadWithNoAddressMakesNoRequest() async throws {
+        let device = try ServiceAddressFixture()
+        defer { device.restore() }
+
+        let recording = recordingClient()
+        var lines: [String] = []
+        recording.client.log = { lines.append($0) }
+
+        await #expect(throws: ServiceAddress.Unconfigured.self) {
+            try await recording.client.bootstrap()
+        }
+        let dialled = RecordingURLProtocol.requests(recording: recording.marker)
+        #expect(dialled.isEmpty,
+                "an app nobody configured must not dial, but asked for \(dialled.compactMap { $0.url?.absoluteString })")
+        #expect(lines.contains { $0.contains("no service address is set") },
+                "the log has to name the state, got: \(lines)")
+    }
+
+    /// The event stream is a dial as well: with no address it reports the failure and opens no
+    /// socket. This is the same guard seen from the connection that would otherwise stay up for
+    /// the life of the app.
+    @Test func theEventStreamReportsTheFailureInsteadOfDialling() async throws {
+        let device = try ServiceAddressFixture()
+        defer { device.restore() }
+
+        let recording = recordingClient()
+        var events: [ServiceEvent] = []
+        for await event in recording.client.events() { events.append(event) }
+
+        #expect(RecordingURLProtocol.requests(recording: recording.marker).isEmpty)
+        guard case .failed(let reason)? = events.first else {
+            Issue.record("expected the stream to fail, got \(events)")
+            return
+        }
+        #expect(reason.contains("not been told which Crossbar"))
+    }
+
+    /// The words the setup and failure paths show say what is missing, and the address cannot be
+    /// obtained at all without being handled — which is what makes an accidental dial impossible
+    /// rather than merely discouraged.
+    @Test func theRefusalSaysWhatIsMissing() throws {
+        let device = try ServiceAddressFixture()
+        defer { device.restore() }
+
+        #expect(ServiceAddress.configuredURL == nil)
+        #expect(!ServiceAddress.isConfigured)
+        #expect(throws: ServiceAddress.Unconfigured.self) { try ServiceAddress.requiredURL() }
+
+        let words = ServiceAddress.Unconfigured().localizedDescription
+        #expect(words.contains("has not been told which Crossbar"))
+        #expect(words.contains("enrollment code"))
+    }
+
+    /// The runtime override still configures the app, and is still not stored.
+    ///
+    /// It is a path that has to keep working rather than a convenience: every measurement on this
+    /// branch is taken with `CROSSBAR_BACKEND_URL` in the launch environment, and nothing was
+    /// compiled in to fall back to if it stopped being read.
+    @Test func theRuntimeOverrideStillConfiguresTheApp() async throws {
+        let device = try ServiceAddressFixture()
+        defer { device.restore() }
+        device.withEnvironmentOverride("https://override.example:8443")
+
+        let recording = recordingClient()
+        #expect(ServiceAddress.isConfigured)
+        #expect(ServiceAddress.configuredURL == URL(string: "https://override.example:8443"))
+        #expect(AppSettings.serviceAddress == nil, "the override is runtime, so nothing is stored")
+
+        _ = try await recording.client.checkSession()
+        let dialled = RecordingURLProtocol.requests(recording: recording.marker)
+            .compactMap { $0.url?.absoluteString }
+        #expect(dialled == ["https://override.example:8443/api/session"], "got \(dialled)")
+    }
+
+    /// An invitation that names a server is still how a device is pointed at its own backend.
+    ///
+    /// The paths that set the address had to keep working when the default went, and this is the one
+    /// that matters most: it is now the only way a fresh install — which has no address at all — is
+    /// given one. "The app proceeds" is shown by the request that follows: it goes to the host the
+    /// invitation named and is answered normally.
+    @Test func anInvitationPayloadSetsTheAddressAndTheAppDialsIt() async throws {
+        let device = try ServiceAddressFixture()
+        defer { device.restore() }
+
+        let recording = recordingClient()
+        let payload = """
+        {"version":1,"server":"https://crossbar.example:8443","enrollment_token":"tok_123","mode":"private"}
+        """
+
+        let parsed = try DeviceAuth.shared.settle(from: payload)
+
+        #expect(parsed.token == "tok_123")
+        #expect(parsed.server == "https://crossbar.example:8443")
+        #expect(AppSettings.serviceAddress == "https://crossbar.example:8443")
+        #expect(AppSettings.connectionMode == .privateNetwork)
+        #expect(try ServiceAddress.requiredURL() == URL(string: "https://crossbar.example:8443"))
+
+        _ = try await recording.client.checkSession()
+        let dialled = RecordingURLProtocol.requests(recording: recording.marker)
+            .compactMap { $0.url?.absoluteString }
+        #expect(dialled == ["https://crossbar.example:8443/api/session"], "got \(dialled)")
+    }
+}

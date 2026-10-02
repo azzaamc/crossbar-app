@@ -49,11 +49,16 @@ assumes a tailnet-reachable media address will not work.**
 
 ### 2.1 Shared request shape
 
-Base URL, in authority order (`Core/ServiceClient.swift:171-180`):
+Base URL, in authority order (`Core/ServiceClient.swift`, `ServiceAddress.configuredURL`):
 
-1. `CROSSBAR_BACKEND_URL` environment variable (`:172`)
-2. `AppSettings.serviceAddress` → `UserDefaults` key `crossbar.serviceAddress` (`:175`)
-3. compiled default `https://qatar-vpn.tailea67b0.ts.net:8443` (`:163`)
+1. `CROSSBAR_BACKEND_URL` environment variable
+2. `AppSettings.serviceAddress` → `UserDefaults` key `crossbar.serviceAddress`
+
+There is **no compiled default**, and that is deliberate: a device nobody has configured has no
+address at all, so it makes no request rather than reaching a deployment it was never told about.
+Every request builder takes its origin from `ServiceAddress.requiredURL()`, which throws when there
+is none, and the app shows the setup screen for it. The address is set by an enrollment code (from
+onboarding or Settings), by a followed move, or by the environment override above.
 
 Every request sets two headers beyond `Host`, and a third when it has a body
 (`Core/ServiceClient.swift:339-346`):

@@ -31,11 +31,18 @@ struct ContentView: View {
                     // to be set up — which is what puts the onboarding screen on.
                     Task { await session.forgetServer() }
                 }
-            } else if mode == nil || session.needsSetup {
+            } else if mode == nil || session.needsSetup || !ServiceAddress.isConfigured {
                 // Nothing is dialled before this choice is made. The mode is what decides
                 // whether this app carries its own network, so a load that ran first would be
                 // choosing one of the two deployments on the person's behalf — the guess this
                 // screen exists to avoid.
+                //
+                // The address is the other half, and it is checked here for the same reason:
+                // there is no compiled default to fall back to, so a device nobody has told
+                // where its Crossbar is has nothing to dial, and the setup screen is where it
+                // is told. A device configured by the environment override, by an enrollment
+                // code or by Settings is configured and goes straight to the product.
+                //
                 // Answering the question and being set up are the same moment: the screen that
                 // settles how this device reaches its service is the one that ends the question.
                 // Left to the flag alone, a device that had been set up again stayed here for

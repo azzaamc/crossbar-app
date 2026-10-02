@@ -106,12 +106,14 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     /// and why the label travels with the configuration rather than beside it.
     var transport = CallTransport()
 
-    /// The MiroTalk origin.
+    /// The MiroTalk origin, when this client has been told one.
     ///
     /// The product flow supplies this from the `joinUrl` the backend returns, so the
     /// host is never a second constant that could drift from the one the backend
     /// actually used. The environment override remains for the standalone instrument,
-    /// which has no `joinUrl` to read.
+    /// which has no `joinUrl` to read. With neither there is **no** origin: nothing here
+    /// falls back to a compiled host, because a socket opened at a deployment nobody
+    /// named is the same mistake as any other dial.
     var originOverride: URL?
 
     /// Who this peer appears as to the rest of the room.
@@ -121,11 +123,10 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     /// which is what everyone else in the call actually sees.
     var peerName: String?
 
-    private var origin: URL {
+    private var origin: URL? {
         originOverride
             ?? ProcessInfo.processInfo.environment["CROSSBAR_MIROTALK_ORIGIN"]
                 .flatMap(URL.init(string:))
-            ?? URL(string: "https://qatar-vpn.tailea67b0.ts.net")!
     }
 
     init(label: String) {
@@ -140,6 +141,13 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         let room = room.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !room.isEmpty else { return }
         roomId = room
+
+        guard let origin else {
+            state = "no signalling host"
+            append("no signalling host is set — nothing was dialled; the room's join URL names "
+                   + "one, and CROSSBAR_MIROTALK_ORIGIN supplies it for an instrument")
+            return
+        }
 
         var components = URLComponents(url: origin, resolvingAgainstBaseURL: false)!
         components.scheme = origin.scheme == "https" ? "wss" : "ws"

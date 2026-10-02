@@ -162,8 +162,13 @@ struct SettingsView: View {
     }
 
     /// The server's name as somebody would say it: the host, not the whole address.
+    ///
+    /// Read from the address the app would actually dial rather than from what is stored, so an
+    /// environment override is shown for what it is. "Not set up" is the honest answer when there
+    /// is none: there is no compiled default for this row to name, and naming one would be telling
+    /// somebody their device belongs to a server it has never been told about.
     private var serverName: String {
-        let address = AppSettings.serviceAddress ?? ServiceAddress.compiledDefault.absoluteString
+        guard let address = ServiceAddress.configuredURL?.absoluteString else { return "Not set up" }
         return URL(string: address)?.host ?? address
     }
 

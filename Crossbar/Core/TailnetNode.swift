@@ -127,7 +127,12 @@ final class TailnetNode: ObservableObject {
     /// path carried a request and returned one, not whether it was authorised. This is
     /// the endpoint the control plane uses anyway, so a carrier that passes here is a
     /// carrier the product can use.
-    private var probeURL: URL { ServiceAddress.baseURL.appendingPathComponent("api/session") }
+    ///
+    /// `nil` when this device has no address: there is then nothing to knock at, and a
+    /// probe is not made up — see `carriesARequest`.
+    private var probeURL: URL? {
+        ServiceAddress.configuredURL?.appendingPathComponent("api/session")
+    }
 
     /// Whether the node is used at all.
     ///
@@ -432,6 +437,14 @@ final class TailnetNode: ObservableObject {
     /// holding a socket.
     @discardableResult
     func verifyOrRebuild(reason: String) async -> Bool {
+        // A device with no address has no request for the carrier to carry, so a node that
+        // answers nothing is not a node to rebuild: there would be nothing to probe it with
+        // afterwards either. Said rather than silently answered no, for the same reason the
+        // probe says it.
+        guard ServiceAddress.isConfigured else {
+            log("no service address is set, so there is nothing to carry — not rebuilding: \(reason)")
+            return false
+        }
         if let carrier, await carriesARequest(carrier) { return false }
         guard node != nil else { return false }
 
@@ -455,7 +468,16 @@ final class TailnetNode: ObservableObject {
     }
 
     /// Whether a carrier carries a request and comes back with an HTTP answer.
+    ///
+    /// A device with no address has nothing to carry a request *to*, so this answers no
+    /// without dialling anything and says why. The node is brought up before setup only
+    /// once a code has named an address (`OnboardingView.join` settles the code first), so
+    /// this is the state a carrier is in when the app has not been told where it belongs.
     private func carriesARequest(_ transport: CallTransport) async -> Bool {
+        guard let probeURL else {
+            log("no service address is set, so the carrier has nothing to probe — nothing was dialled")
+            return false
+        }
         var request = URLRequest(url: probeURL)
         request.setValue("application/json", forHTTPHeaderField: "accept")
         request.timeoutInterval = 5

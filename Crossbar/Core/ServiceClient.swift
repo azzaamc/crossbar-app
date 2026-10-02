@@ -227,33 +227,75 @@ enum ServiceEvent: Equatable {
 
 // MARK: - Where the service is
 
-/// The one place the service's address is written down.
+/// Where the service is, when this device has been told.
+///
+/// **There is no compiled default.** A build nobody has configured has no address at all,
+/// rather than one it silently falls back to: which Crossbar this device belongs to is a
+/// fact about the deployment, and a device that was never told must not reach one anyway.
+/// The unconfigured state is the *absence* of an address — `nil`, not a stand-in — and the
+/// only way to obtain one to dial is `requiredURL()`, which refuses out loud. That is what
+/// makes dialling a host nobody named impossible by construction rather than by review.
 ///
 /// Two clients dial it — the control plane directly, and the embedded node when it checks
 /// that its carrier actually carries a request — and a second constant beside the first is
 /// how a deployment detail drifts from the one thing that used it. The environment
 /// override is the same one every instrument here uses, so a different host needs no edit.
 enum ServiceAddress {
-    /// The compiled default: this deployment. A build nobody has configured
-    /// still works, which matters because this app belongs to the person using it rather
-    /// than to an administrator.
-    static let compiledDefault = URL(string: "https://qatar-vpn.tailea67b0.ts.net:8443")!
+    /// Why a dial could not be made: nobody has told this device where its Crossbar is.
+    ///
+    /// Carries the words a person reads, because the two paths an unconfigured device can
+    /// take — the enrollment screen, and a load that has nothing to dial — both end up
+    /// showing what the error says.
+    struct Unconfigured: Error, LocalizedError {
+        var errorDescription: String? {
+            "This device has not been told which Crossbar it belongs to. Paste the enrollment "
+            + "code your administrator gave you, or set the server address in Settings."
+        }
+    }
+
+    /// The environment the runtime override is read from.
+    ///
+    /// A seam, and a function rather than the dictionary itself, for one reason each. The dictionary
+    /// is process-global, so a test that exported `CROSSBAR_BACKEND_URL` to exercise the override
+    /// would be mutating state every other test shares, and a test that depended on it being absent
+    /// would depend on whoever ran first; supplying the environment instead keeps both of those out
+    /// of the process. And a function rather than a stored copy, so production reads the real
+    /// environment on every request exactly as it always has — this app's whole instrument story is
+    /// a launch environment, and a value captured once could disagree with it.
+    ///
+    /// The same shape as `ServiceClient.transport`: the default is what production uses, a test
+    /// swaps it and puts it back.
+    static var environment: () -> [String: String] = { ProcessInfo.processInfo.environment }
 
     /// Where the service is, in order of authority: the environment (how every measurement
-    /// on this branch was taken against another host), then what someone typed in Settings,
-    /// then the compiled default.
+    /// on this branch was taken against another host), then what an enrollment code or
+    /// Settings stored. `nil` when neither is set.
     ///
-    /// Asked afresh on every request rather than captured at launch, so a change in
+    /// `nil` is a state of its own rather than a value to substitute: see the type's own
+    /// note. Asked afresh on every request rather than captured at launch, so a change in
     /// Settings takes effect without a relaunch.
-    static var baseURL: URL {
-        if let value = ProcessInfo.processInfo.environment["CROSSBAR_BACKEND_URL"],
+    static var configuredURL: URL? {
+        if let value = environment()["CROSSBAR_BACKEND_URL"],
            let url = URL(string: value) {
             return url
         }
         if let stored = AppSettings.serviceAddress, let url = URL(string: stored) {
             return url
         }
-        return compiledDefault
+        return nil
+    }
+
+    /// Whether this device has been told where its service is.
+    static var isConfigured: Bool { configuredURL != nil }
+
+    /// The address, or a refusal saying there is none.
+    ///
+    /// The only way to get an address to dial: every request builder takes its origin through
+    /// here, so a build with no address has none to hand out and cannot reach a host it was
+    /// not told about.
+    static func requiredURL() throws -> URL {
+        guard let url = configuredURL else { throw Unconfigured() }
+        return url
     }
 
     /// Whether an address can only ever mean "the machine reading it".
@@ -280,8 +322,14 @@ enum ServiceAddress {
     /// that looks connected, and no media crosses because no two peers ever met. Measured
     /// on a test rig whose `PUBLIC_ORIGIN` was loopback, 2026-09-21 — 46 seconds of a call
     /// that neither end could hear.
+    ///
+    /// A device with no address of its own — which is one that could not have obtained an
+    /// invitation to read — has no better reading of a loopback invitation than the
+    /// invitation itself, so that is what it gets: this never invents a host.
     static func signallingOrigin(for invitation: URL) -> URL {
-        guard isLoopback(invitation), !isLoopback(baseURL) else { return invitation }
+        guard isLoopback(invitation),
+              let baseURL = configuredURL,
+              !isLoopback(baseURL) else { return invitation }
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         components?.path = ""
         components?.query = nil
@@ -411,14 +459,22 @@ final class ServiceClient {
 
     private var session = URLSession(configuration: .default)
 
-    /// Where the service is. One constant, shared with the node's carrier check.
-    private var baseURL: URL { ServiceAddress.baseURL }
-
     /// Built through `URLComponents` rather than `appendingPathComponent` so that a
     /// caller-supplied override with a path cannot silently change where a request
     /// lands.
-    private func url(_ path: String, at origin: URL? = nil) -> URL {
-        var components = URLComponents(url: origin ?? baseURL, resolvingAgainstBaseURL: false)!
+    ///
+    /// Throws when there is no address to build against, which is the one place a request
+    /// that would otherwise dial a deployment nobody named is stopped — before a `URLRequest`
+    /// exists, so nothing is dialled at all. Logged as well as thrown, because a request that
+    /// was never made otherwise leaves no trace, which is indistinguishable from one that was.
+    private func url(_ path: String, at origin: URL? = nil) throws -> URL {
+        guard let base = origin ?? ServiceAddress.configuredURL else {
+            log("no service address is set — this device has not been told which Crossbar it "
+                + "belongs to, so nothing was dialled; paste an enrollment code or set the "
+                + "server address in Settings")
+            throw ServiceAddress.Unconfigured()
+        }
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
         components.path = "/" + path
         return components.url!
     }
@@ -428,8 +484,8 @@ final class ServiceClient {
         _ path: String,
         body: [String: Any]? = nil,
         at origin: URL? = nil
-    ) -> URLRequest {
-        var request = URLRequest(url: url(path, at: origin))
+    ) throws -> URLRequest {
+        var request = URLRequest(url: try url(path, at: origin))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "accept")
         request.timeoutInterval = 20
@@ -556,7 +612,7 @@ final class ServiceClient {
         } else {
             log("GET api/session (requesting)")
         }
-        let (data, response) = try await data(for: request("GET", "api/session", at: origin))
+        let (data, response) = try await data(for: try request("GET", "api/session", at: origin))
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
         let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let identity = shape["identity"] as? [String: Any]
@@ -581,7 +637,8 @@ final class ServiceClient {
     /// half of what the answer means: the same origin from two different addresses says whether
     /// this device has already followed.
     func health() async throws -> ServiceHealth {
-        var probe = URLRequest(url: url("api/health"))
+        let probeURL = try url("api/health")
+        var probe = URLRequest(url: probeURL)
         probe.setValue("application/json", forHTTPHeaderField: "accept")
         probe.timeoutInterval = 20
         let (data, response) = try await session.data(for: probe)
@@ -592,7 +649,7 @@ final class ServiceClient {
             version: shape["version"] as? String,
             origin: shape["origin"] as? String
         )
-        log("GET api/health @ \(baseURL.absoluteString) -> HTTP \(code) "
+        log("GET api/health @ \(probeURL.absoluteString) -> HTTP \(code) "
             + "mode=\(health.mode ?? "none") version=\(health.version ?? "none") "
             + "origin=\(health.origin ?? "none")")
         return health
@@ -609,7 +666,7 @@ final class ServiceClient {
     /// open, and that is a product-level fact rather than a detail.
     @discardableResult
     func pushConfig() async throws -> (enabled: Bool, publicKeyLength: Int) {
-        let (data, response) = try await data(for: request("GET", "api/push/config"))
+        let (data, response) = try await data(for: try request("GET", "api/push/config"))
         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
         let shape = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         let enabled = shape["enabled"] as? Bool ?? false
@@ -623,7 +680,7 @@ final class ServiceClient {
     /// Everything the app needs to draw its first screen, and it rings nobody, which
     /// is why it is the read this instrument verifies against production.
     func bootstrap() async throws -> Bootstrap {
-        let result = try await send(request("GET", "api/bootstrap"), as: Bootstrap.self)
+        let result = try await send(try request("GET", "api/bootstrap"), as: Bootstrap.self)
         log("  bootstrap: \(result.contacts.count) contacts, \(result.ongoingCalls.count) ongoing, \(result.calls.count) open")
         // Named rather than counted: the whole question this instrument exists to
         // answer is who can actually be called, and a count cannot say whether the
@@ -644,13 +701,13 @@ final class ServiceClient {
     /// active, deliberately, because that is what a client needs in order to rejoin one; this
     /// is the other question, asked of the same records.
     func callHistory() async throws -> [RecentCall] {
-        try await send(request("GET", "api/calls/history"), as: CallHistory.self).calls
+        try await send(try request("GET", "api/calls/history"), as: CallHistory.self).calls
     }
 
     /// `GET /api/calls/:id` — used to re-read state after an event stream drops,
     /// since the stream has no replay.
     func call(id: String) async throws -> Call {
-        let envelope = try await send(request("GET", "api/calls/\(id)"), as: CallOnlyEnvelope.self)
+        let envelope = try await send(try request("GET", "api/calls/\(id)"), as: CallOnlyEnvelope.self)
         return envelope.call
     }
 
@@ -663,7 +720,7 @@ final class ServiceClient {
     /// call it has placed arrived as a video call. It is sent now.
     func createCall(inviteeIds: [String], video: Bool) async throws -> JoinEnvelope {
         let envelope = try await send(
-            request("POST", "api/calls", body: [
+            try request("POST", "api/calls", body: [
                 "inviteeIds": inviteeIds,
                 "kind": video ? "video" : "audio",
             ]),
@@ -676,7 +733,7 @@ final class ServiceClient {
     /// `POST /api/calls/:id/respond`. Only `invited` participants can answer, once.
     func respond(callId: String, accepted: Bool) async throws -> JoinEnvelope {
         let envelope = try await send(
-            request("POST", "api/calls/\(callId)/respond", body: ["response": accepted ? "accepted" : "declined"]),
+            try request("POST", "api/calls/\(callId)/respond", body: ["response": accepted ? "accepted" : "declined"]),
             as: JoinEnvelope.self
         )
         log("  responded \(accepted ? "accepted" : "declined") to \(callId), status=\(envelope.call.status)")
@@ -686,7 +743,7 @@ final class ServiceClient {
     /// `POST /api/calls/:id/join` — valid while the call is active, and while ringing
     /// for a participant who has already accepted (`src/server.js:317-320`).
     func join(callId: String) async throws -> JoinEnvelope {
-        let envelope = try await send(request("POST", "api/calls/\(callId)/join"), as: JoinEnvelope.self)
+        let envelope = try await send(try request("POST", "api/calls/\(callId)/join"), as: JoinEnvelope.self)
         log("  joined \(callId), status=\(envelope.call.status)")
         return envelope
     }
@@ -694,7 +751,7 @@ final class ServiceClient {
     /// `POST /api/calls/:id/end`. Call-wide: the backend has no per-participant
     /// leave, so this ends it for everyone, which matters for four-person calls.
     func end(callId: String) async throws {
-        let envelope = try await send(request("POST", "api/calls/\(callId)/end"), as: CallOnlyEnvelope.self)
+        let envelope = try await send(try request("POST", "api/calls/\(callId)/end"), as: CallOnlyEnvelope.self)
         log("  ended \(callId), status=\(envelope.call.status)")
     }
 
@@ -722,7 +779,7 @@ final class ServiceClient {
     @discardableResult
     func uploadPushToken(deviceId: String, token: String, environment: String, kind: String) async throws -> PushTokenAck {
         let ack = try await send(
-            request("POST", "api/devices/push-token", body: [
+            try request("POST", "api/devices/push-token", body: [
                 "deviceId": deviceId,
                 "token": token,
                 "environment": environment,
@@ -750,7 +807,7 @@ final class ServiceClient {
     /// is a fact the caller logs rather than a reason to pretend this device let go.
     @discardableResult
     func removeDevice(deviceId: String) async throws -> DeviceRemovalAck {
-        let ack = try await send(request("DELETE", "api/devices/\(deviceId)"), as: DeviceRemovalAck.self)
+        let ack = try await send(try request("DELETE", "api/devices/\(deviceId)"), as: DeviceRemovalAck.self)
         log("  released this device at the service: removed=\(ack.removed) relay=\(ack.relay?.described ?? "none")")
         return ack
     }
@@ -770,7 +827,7 @@ final class ServiceClient {
     /// know — see `DeviceInvitation.code`.
     func createDeviceInvitation() async throws -> DeviceInvitation {
         log("POST api/devices/enrollment (requesting)")
-        let (data, response) = try await data(for: request("POST", "api/devices/enrollment", body: [:]))
+        let (data, response) = try await data(for: try request("POST", "api/devices/enrollment", body: [:]))
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
 
         guard (200..<300).contains(status) else {
@@ -822,7 +879,7 @@ final class ServiceClient {
         AsyncStream { continuation in
             let task = Task { @MainActor in
                 do {
-                    var request = self.request("GET", "api/events")
+                    var request = try self.request("GET", "api/events")
                     request.setValue("text/event-stream", forHTTPHeaderField: "accept")
                     // Above the server's 20s heartbeat, so an idle stream is not
                     // mistaken for a dead one.
