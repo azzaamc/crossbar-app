@@ -440,6 +440,54 @@ struct PushTokenRefusalNoticeTests {
     }
 }
 
+/// What the signalling socket does about a drop, which is what a call's media is carried by.
+///
+/// A network change takes the socket with it, and the event stream already reconnects through one:
+/// a failure count that climbs, a wait that doubles up to a cap, and a person-visible state while
+/// it is down. The socket copies that curve rather than inventing a second one, and adds the thing
+/// the stream deliberately does not have — an end. The stream may retry for the life of the app,
+/// because the phone has to be able to ring again; a call with no socket has no peers and no media,
+/// and must not sit in `phase=inCall` pretending otherwise.
+@MainActor
+struct SignalSocketRecoveryTests {
+    /// The first failures back off like the event stream's: 2, 4, 8, 16, then the 30-second cap.
+    @Test func theWaitDoublesUpToThirtySeconds() {
+        #expect(MiroTalkSignalClient.reconnectDelay(failures: 1) == 2)
+        #expect(MiroTalkSignalClient.reconnectDelay(failures: 2) == 4)
+        #expect(MiroTalkSignalClient.reconnectDelay(failures: 3) == 8)
+        #expect(MiroTalkSignalClient.reconnectDelay(failures: 4) == 16)
+        #expect(MiroTalkSignalClient.reconnectDelay(failures: 5) == 30)
+        // Capped, not unbounded: a person watching "Reconnecting" is owed a bounded wait.
+        #expect(MiroTalkSignalClient.reconnectDelay(failures: 9) == 30)
+    }
+
+    /// Every failure inside the window earns another dial, at that failure's own wait.
+    @Test func theSocketIsRedialledThroughTheRecoveryWindow() {
+        #expect(MiroTalkSignalClient.socketRecovery(failures: 1) == .redial(afterSeconds: 2))
+        #expect(MiroTalkSignalClient.socketRecovery(failures: 4) == .redial(afterSeconds: 16))
+        #expect(MiroTalkSignalClient.socketRecovery(failures: 5) == .redial(afterSeconds: 30))
+    }
+
+    /// The sixth failure is the end of it. A handoff is seconds — ICE re-established in ~8 across
+    /// the change that found this defect — so a minute without a socket is a call that is not
+    /// coming back, and nothing is gained by showing it for longer.
+    @Test func theSocketIsGivenUpOnAfterFiveFailedDials() {
+        #expect(MiroTalkSignalClient.socketRecovery(failures: 6) == .giveUp)
+        #expect(MiroTalkSignalClient.socketRecovery(failures: 12) == .giveUp)
+    }
+
+    /// And the whole window is the sum of those waits, so the minute the words claim is the minute
+    /// the loop actually spends rather than one that drifts with the attempt count.
+    @Test func theRecoveryWindowIsAMinuteOfWaiting() {
+        var waited = 0
+        for failures in 1...MiroTalkSignalClient.recoveryAttempts {
+            waited += MiroTalkSignalClient.reconnectDelay(failures: failures)
+        }
+
+        #expect(waited == 60)
+    }
+}
+
 // MARK: - No compiled default
 
 /// The header that names which recording a request belongs to.

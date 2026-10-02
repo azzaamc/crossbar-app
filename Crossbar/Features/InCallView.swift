@@ -127,13 +127,13 @@ struct InCallView: View {
                     Text(status)
                 }
 
-                if session.eventsDown {
+                if session.isReconnecting {
                     Text("·")
                     Label("Reconnecting", systemImage: "exclamationmark.triangle.fill")
                 }
             }
             .font(.footnote)
-            .foregroundStyle(session.eventsDown ? Color.orange : Color.secondary)
+            .foregroundStyle(session.isReconnecting ? Color.orange : Color.secondary)
         }
         .padding(.top, Theme.Space.snug)
         .accessibilityElement(children: .combine)

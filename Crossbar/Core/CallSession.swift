@@ -112,6 +112,23 @@ final class CallSession: ObservableObject {
     /// Surfaced rather than swallowed. A socket that has quietly died looks exactly
     /// like a quiet one, and this project has already lost a measurement to that.
     @Published private(set) var eventsDown = false
+
+    /// The same fact about the **signalling socket**, which is what a call's media is carried
+    /// by. Surfaced for the same reason as `eventsDown` and for one more: the socket is what a
+    /// live call is running on, and a socket that has dropped leaves the last frame it received
+    /// drawn on the screen — so without this a call with nothing behind it looks exactly like a
+    /// working one. Mirrored from `signal.isReconnecting` rather than read through `signal`,
+    /// because a nested `ObservableObject` does not republish, the same reason `hasRemoteVideo`
+    /// is mirrored.
+    @Published private(set) var signalDown = false
+
+    /// Whether anything the call is running on is being re-established: the event stream, the
+    /// signalling socket, or both.
+    ///
+    /// What the call screen reads, so one indicator covers both connections a call depends on —
+    /// and a person is never shown a call that looks connected while it carries nothing.
+    var isReconnecting: Bool { eventsDown || signalDown }
+
     @Published private(set) var notice: String?
 
     let media = CallMediaSource()
@@ -227,6 +244,18 @@ final class CallSession: ObservableObject {
                 self.armPiP()
             }
             .store(in: &cancellables)
+
+        // The signalling socket's own recovery, mirrored so the call screen can say so, and
+        // finished here: the client re-dials on a backoff by itself, but only the session can
+        // end a call. A socket that never comes back is the one failure that has to be said out
+        // loud rather than retried quietly — the call is over, and a device left in `phase=inCall`
+        // with no peers can never be told anything again. See `giveUpOnCall`.
+        signal.$isReconnecting
+            .sink { [weak self] reconnecting in self?.signalDown = reconnecting }
+            .store(in: &cancellables)
+        signal.onUnrecoverable = { [weak self] in
+            Task { await self?.giveUpOnCall() }
+        }
 
         // The haptics for a call this device joins and a call it was in that has finished.
         //
@@ -376,7 +405,8 @@ final class CallSession: ObservableObject {
 
     private func logLifecycle(_ event: String) {
         let audio = AVAudioSession.sharedInstance()
-        log("\(event) — phase=\(phaseLabel) socketOpen=\(signal.isSocketOpen) pipArmed=\(pip.isArmed) "
+        log("\(event) — phase=\(phaseLabel) socketOpen=\(signal.isSocketOpen) "
+            + "signalDown=\(signalDown) pipArmed=\(pip.isArmed) "
             + "category=\(audio.category.rawValue) mode=\(audio.mode.rawValue) "
             + "silenced=\(audio.secondaryAudioShouldBeSilencedHint) otherAudio=\(audio.isOtherAudioPlaying)")
     }
@@ -1712,6 +1742,41 @@ final class CallSession: ObservableObject {
         notice = reason
         if let callID = callKitCallID { callKit.end(callID: callID) }
         await tearDown()
+    }
+
+    /// Ends a call whose signalling socket the client could not bring back.
+    ///
+    /// The socket **is** the room: with it gone there are no peers, no media, and no way for
+    /// anything said about this call to be heard again. The client re-dials on a backoff and says
+    /// so once that window has passed (`MiroTalkSignalClient.socketRecovery`), because retrying
+    /// for the life of the app would only be a longer way of showing a call that is not
+    /// happening. Three things are told, and each is a lie if it is not: the person, CallKit —
+    /// which otherwise keeps a live call on the system UI — and the service, which otherwise
+    /// keeps the call `active` and billed with no device in it.
+    private func giveUpOnCall() async {
+        // Only a call this device is actually carrying. The socket only exists for a call this
+        // device dialled, so this is close to a formality — and it is the same formality the
+        // CallKit end guard keeps, for the same reason: a call this device is not in is not this
+        // device's to end.
+        guard let call = phase.call, call.id == deviceCallID else { return }
+
+        log("the signalling socket did not come back — ending call \(call.id)")
+        // Ended locally first, because that part is instant and the person is owed it now: the
+        // request below may not get through at all, since the network is exactly what failed.
+        if let callID = callKitCallID { callKit.end(callID: callID) }
+        await tearDown()
+        notice = "The connection to this call was lost and could not be re-established, so the "
+            + "call ended."
+
+        do {
+            try await client.end(callId: call.id)
+            log("the service was told the call ended")
+        } catch {
+            // Said rather than swallowed: the service closes this device's dead socket out on its
+            // own, but only `/end` finishes the call for everybody, and a failure here is why it
+            // is still reading `active`.
+            log("the service could not be told the call had ended: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Answering

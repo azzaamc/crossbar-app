@@ -33,6 +33,22 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     /// on it is the recovery path after the node is rebuilt: a socket holding a
     /// now-stale loopback has to be re-dialled, and one that is still open must not be.
     var isSocketOpen: Bool { task?.state == .running }
+
+    /// Whether the socket is being re-dialled after a drop.
+    ///
+    /// Published because it is the visible half of the recovery, and the reason a screen can
+    /// be truthful while the socket is gone: a call whose socket has dropped is still drawing
+    /// the last frame the peer sent, and that is indistinguishable from a working call
+    /// everywhere except here. `CallSession` mirrors it beside the event stream's own
+    /// indicator.
+    @Published private(set) var isReconnecting = false
+
+    /// Called once the recovery window has passed without a socket, while a room is open.
+    ///
+    /// Set by the product flow, which ends the call. The standalone instrument leaves it nil
+    /// and simply stops re-dialling — nothing there is carrying a call it could end.
+    var onUnrecoverable: (() -> Void)?
+
     @Published private(set) var lines: [String] = []
 
     /// Distinguishes the two probe peers in the log and to the server.
@@ -41,6 +57,14 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var session: URLSession?
     private var logHandle: FileHandle?
+
+    /// The re-dial in flight, if any, so a second failure report is not a second recovery.
+    private var reconnectTask: Task<Void, Never>?
+
+    /// The dials that have failed since the socket was last up. Reset by a namespace connect,
+    /// which is the point the socket is demonstrably carrying traffic again.
+    private var reconnectFailures = 0
+
     private var roomId = ""
     private let peerUUID = UUID().uuidString
 
@@ -141,13 +165,30 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         let room = room.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !room.isEmpty else { return }
         roomId = room
+        append("peer \(label) room=\(room) uuid=\(peerUUID.prefix(8))")
 
-        guard let origin else {
+        guard origin != nil else {
             state = "no signalling host"
             append("no signalling host is set — nothing was dialled; the room's join URL names "
                    + "one, and CROSSBAR_MIROTALK_ORIGIN supplies it for an instrument")
             return
         }
+        dial()
+    }
+
+    /// Opens one signalling socket on `roomId`.
+    ///
+    /// The first dial and every re-dial go through here, so a reconnect is the same handshake
+    /// as the original join: namespace connect, then `join`. That is what makes the server
+    /// admit this peer again — and, because a device that reconnects gets a new connection id,
+    /// take out the connection it replaced — and announce the other participants to it
+    /// (`server/src/signal.js`: `evictPreviousSessions`, `fanOutJoin`).
+    ///
+    /// The URL is built here rather than once, because everything it carries can have changed
+    /// by the time a re-dial happens: the session token, and the carrier a rebuilt node hands
+    /// out.
+    private func dial() {
+        guard let origin, !roomId.isEmpty else { return }
 
         var components = URLComponents(url: origin, resolvingAgainstBaseURL: false)!
         components.scheme = origin.scheme == "https" ? "wss" : "ws"
@@ -170,7 +211,6 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         }
 
         state = "connecting"
-        append("peer \(label) room=\(room) uuid=\(peerUUID.prefix(8))")
         append("connecting \(url.absoluteString) via \(transport.label)")
 
         let session = transport.session()
@@ -191,6 +231,38 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
     }
 
     func disconnect() {
+        // A socket that is being given up on deliberately must not be re-dialled by a recovery
+        // that is already in flight.
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectFailures = 0
+        isReconnecting = false
+
+        discardSocketState()
+
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        session?.invalidateAndCancel()
+        session = nil
+        state = "disconnected"
+        roomId = ""
+    }
+
+    /// Forgets everything that named something inside the socket that has gone.
+    ///
+    /// Not `disconnect()`: the room, the origin, the media and the transport are exactly what a
+    /// recovery is trying to keep. What goes is everything that belonged to *that* connection —
+    /// which matters most for the peer connections, because they are keyed by the other peer's
+    /// socket id and by now they are dead at the far end too: the server announces a departure
+    /// when a socket closes. Left in place they would have `handleAddPeer` dedupe against them,
+    /// and a re-join would form no peer connection at all — a socket that returned with no media
+    /// behind it, which is the same frozen call with a healthier-looking log.
+    ///
+    /// This device's own id in the room goes with them: it names a peer inside a room that no
+    /// longer holds this socket, and the server issues another one on the next namespace
+    /// connect. Left behind it answers "am I in a call?" with a stale yes — which is how a camera
+    /// came back on after a call had ended, the next time the app came forward.
+    private func discardSocketState() {
         statsTimer?.invalidate()
         statsTimer = nil
         for (_, pc) in peers { pc.close() }
@@ -198,19 +270,105 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
         pendingCandidates.removeAll()
         inboundBytes.removeAll()
         outboundBytes.removeAll()
+        reportedPath.removeAll()
+        reportedTailnetPairs.removeAll()
         remoteVideo.removeAll()
         remoteNames.removeAll()
+        myPeerId = ""
+    }
 
+    // MARK: - Recovery
+
+    /// What this client does about a socket it has lost.
+    ///
+    /// A value rather than a flag, so the whole policy is one decision taken in one place and
+    /// can be read without a socket: `failures` is the number of dials that have failed since
+    /// the socket was last up.
+    enum SocketRecovery: Equatable {
+        /// Dial again this many seconds from now.
+        case redial(afterSeconds: Int)
+        /// Stop. Whoever is carrying a call has to hear this: a call with no socket has no
+        /// peers, no media, and no way for anything said about it to be heard again.
+        case giveUp
+    }
+
+    /// How many failed dials are made before the socket is called unrecoverable.
+    ///
+    /// Five, on the backoff below — 2, 4, 8, 16 and 30 seconds — so the whole recovery is about
+    /// a minute of trying. A network handoff is a matter of seconds (ICE itself re-established
+    /// in ~8 across the handoff that found this defect), and a minute without a socket is a call
+    /// that is not coming back. Sitting in `phase=inCall` behind it indefinitely is the defect
+    /// this replaces.
+    static let recoveryAttempts = 5
+
+    /// The wait before re-dialling after `failures` failed dials, capped at 30 seconds.
+    ///
+    /// The event stream's own backoff (`CallSession.startEvents`), copied rather than invented:
+    /// 2, 4, 8, 16, 30, 30… — so the two connections that carry a call recover on the same curve
+    /// and there is not a second policy to reason about when one of them misbehaves.
+    static func reconnectDelay(failures: Int) -> Int {
+        min(30, Int(pow(2, Double(failures))))
+    }
+
+    /// What to do after `failures` failed dials: one more, or stop.
+    static func socketRecovery(failures: Int) -> SocketRecovery {
+        failures > recoveryAttempts
+            ? .giveUp
+            : .redial(afterSeconds: reconnectDelay(failures: failures))
+    }
+
+    /// The socket has gone, whatever said so. Re-dial it on a backoff, or declare it lost.
+    ///
+    /// Modelled on `CallSession.startEvents`, which has kept the event stream up through network
+    /// changes since it was written: a failure count that climbs, a wait that doubles up to a
+    /// cap, and a person-visible state while it is down. The one difference is the end of it —
+    /// the stream may retry for the life of the app, because the phone has to be able to ring
+    /// again, while a call with no socket must not pretend.
+    private func socketDropped(reason: String) {
+        guard !roomId.isEmpty else {
+            state = "closed"
+            return
+        }
+        // One recovery at a time: a second failure report while a re-dial is already scheduled
+        // is the same drop being noticed twice, not a second drop.
+        guard reconnectTask == nil else { return }
+
+        reconnectFailures += 1
+        switch Self.socketRecovery(failures: reconnectFailures) {
+        case .redial(let delay):
+            // Before the first thing that could read it: the peers are gone and the picture with
+            // them, and the screen has to stop showing a call that is carrying nothing.
+            discardSocketState()
+            isReconnecting = true
+            state = "reconnecting"
+            append("signalling socket down (\(reason)) — reconnecting in \(delay)s")
+            reconnectTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled else { return }
+                self?.redial()
+            }
+
+        case .giveUp:
+            discardSocketState()
+            isReconnecting = false
+            state = "unrecoverable"
+            append("the signalling socket did not come back after \(Self.recoveryAttempts) attempts"
+                   + " — giving up (\(reason))")
+            onUnrecoverable?()
+        }
+    }
+
+    /// Replaces the socket that has gone with a fresh one on the same room.
+    private func redial() {
+        reconnectTask = nil
+        guard !roomId.isEmpty else { return }
+        // The old task and its session go first, and their failure reports are ignored while
+        // doing it (`receiveLoop`, `send`): a cancelled task's death is not this socket's.
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session?.invalidateAndCancel()
         session = nil
-        state = "disconnected"
-        // The room's identifiers name things inside a room, and there is no room now. Left
-        // behind, `myPeerId` answers "am I in a call?" with a stale yes — which is how a
-        // camera came back on after a call had ended, the next time the app came forward.
-        myPeerId = ""
-        roomId = ""
+        dial()
     }
 
     private func receiveLoop(_ task: URLSessionWebSocketTask) {
@@ -226,17 +384,30 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
                     }
                     self.receiveLoop(task)
                 case .failure(let error):
-                    self.state = "closed"
                     self.append("receive failed: \(error.localizedDescription)")
+                    // A socket that has already been replaced is not the one this failure is
+                    // about: cancelling an old task produces exactly this callback, and letting
+                    // it through would take down the socket that replaced it.
+                    guard task === self.task else { return }
+                    self.socketDropped(reason: error.localizedDescription)
                 }
             }
         }
     }
 
     private func send(_ packet: String) {
+        let task = self.task
         task?.send(.string(packet)) { [weak self] error in
             guard let error else { return }
-            Task { @MainActor in self?.append("send failed: \(error.localizedDescription)") }
+            Task { @MainActor in
+                guard let self else { return }
+                self.append("send failed: \(error.localizedDescription)")
+                // A write that cannot reach the server means this socket is not carrying
+                // anything, whatever the task's own state still says. Guarded on the task for the
+                // reason `receiveLoop` gives.
+                guard task === self.task else { return }
+                self.socketDropped(reason: error.localizedDescription)
+            }
         }
     }
 
@@ -271,7 +442,9 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
             send("40") // connect to the default namespace
         case "1":
             append("engine.io close")
-            state = "closed"
+            // The server closing the socket is a drop like any other, and the room is what this
+            // client is trying to be in.
+            socketDropped(reason: "the server closed the socket")
         case "2":
             // Logged because liveness across a test window is otherwise invisible:
             // a socket the server has dropped and a socket that simply received
@@ -300,6 +473,11 @@ final class MiroTalkSignalClient: NSObject, ObservableObject {
                let sid = shape["sid"] as? String {
                 myPeerId = sid
             }
+            // The socket is demonstrably carrying traffic again, so this is where a recovery
+            // ends and where the next failure starts counting from one. `join` follows below,
+            // which is what puts this peer back in its room.
+            reconnectFailures = 0
+            isReconnecting = false
             state = "joined-namespace"
             emitJoin()
         case "2":
