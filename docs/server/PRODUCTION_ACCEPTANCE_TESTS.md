@@ -150,6 +150,25 @@ from that directory**, on a host with nothing but Debian and systemd.
 directory file, and `doctor` passes afterwards. Anything an operator has to know that is not in the
 installer's output or `deploy/README.md` is a finding, not a shortcut.
 
+**Measured 2026-10-02, and it passes by more than the criterion.** A VPS was wiped to nothing
+Crossbar — no account to run it, no deployment tree, no units, no Caddy, no Tailscale, no coturn —
+and one command, `scripts/install.sh`, produced a working deployment with **every one of `doctor`'s
+seventeen lines OK**, an issued certificate, and the relay installed and running. No file is
+hand-written at all: the wizard writes the directory file as well as `.env`. The install is
+idempotent enough to re-run over its own work, and it ends with the invitation minted and the
+checks already run, so what is left for the operator is only what software cannot do — the DNS
+record, the port forwards and the firewall, which the closing block names.
+
+Two runs inform that: one interactive (private mode, by the operator) and one non-interactive
+(`--answers`, public mode), the second after removing Caddy's certificate storage so the
+certificate wait was exercised rather than satisfied.
+
+The findings those runs produced were all fixed rather than recorded: the relay unit installed but
+never started, third-party installers and Caddy's own validation printing into the transcript,
+`doctor` running before ACME had answered, and an `--answers` file the wizard's account could not
+read. The requirement each fix served was the operator's: *"do not leave or try to leave as little
+as possible at the end for the user to do."*
+
 ### 9. Upgrade and roll back
 Install version A, then upgrade to a built version B, then use `upgrade.sh`'s rollback (or restore
 the previous tree).
